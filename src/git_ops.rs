@@ -243,14 +243,35 @@ pub fn push(repo_path: &Path) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
-        let msg = String::from_utf8_lossy(&output.stderr).to_string();
+        let msg = command_message(&output);
         Ok(if msg.trim().is_empty() {
             "Push successful".into()
         } else {
             msg
         })
+    } else if command_message(&output).contains("has no upstream branch") {
+        let Some(branch_name) = current_branch_name(repo_path)? else {
+            return Err(command_message(&output));
+        };
+
+        let upstream_output = Command::new("git")
+            .args(["push", "--set-upstream", "origin", &branch_name])
+            .current_dir(repo_path)
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if upstream_output.status.success() {
+            let msg = command_message(&upstream_output);
+            Ok(if msg.trim().is_empty() {
+                format!("Push successful. Upstream set for {}", branch_name)
+            } else {
+                msg
+            })
+        } else {
+            Err(command_message(&upstream_output))
+        }
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        Err(command_message(&output))
     }
 }
 
@@ -466,6 +487,25 @@ fn command_message(output: &std::process::Output) -> String {
         (false, true) => stdout,
         (true, false) => stderr,
         (false, false) => format!("{}\n{}", stdout, stderr),
+    }
+}
+
+fn current_branch_name(repo_path: &Path) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(command_message(&output));
+    }
+
+    let branch_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if branch_name.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(branch_name))
     }
 }
 
