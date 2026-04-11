@@ -1,21 +1,19 @@
 use git2::{Repository, Status, StatusOptions};
-use reqwest::Url;
+use keyring::{Entry, Error as KeyringError};
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::{ErrorKind, Read, Write};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
-
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use std::time::Duration;
 
 use crate::state::{
     CommitEntry, ConflictChoice, ConflictData, ConflictPart, FileEntry, PullRequestPrompt,
 };
+
+const GITHUB_AUTH_KEYRING_SERVICE: &str = "justanothergitgui";
+const GITHUB_AUTH_KEYRING_USER: &str = "github-auth-session";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GithubRepoVisibility {
@@ -44,10 +42,17 @@ pub struct PushSuccess {
     pub pull_request_prompt: Option<PullRequestPrompt>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GithubAuthSession {
     pub access_token: String,
     pub login: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GithubAuthPrompt {
+    pub user_code: String,
+    pub verification_uri: String,
+    pub browser_url: String,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +78,16 @@ struct GithubTokenResponse {
     access_token: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GithubDeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    interval: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -103,6 +118,33 @@ pub fn get_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
 
 pub fn has_origin_remote(repo: &Repository) -> bool {
     repo.find_remote("origin").is_ok()
+}
+
+pub fn has_github_origin(repo: &Repository) -> bool {
+    repo.find_remote("origin")
+        .ok()
+        .and_then(|remote| remote.url().and_then(parse_github_remote_slug))
+        .is_some()
+}
+
+pub fn load_github_auth_session() -> Result<Option<GithubAuthSession>, String> {
+    let entry = github_auth_keyring_entry()?;
+    match entry.get_password() {
+        Ok(payload) => serde_json::from_str(&payload)
+            .map(Some)
+            .map_err(|e| format!("Saved GitHub sign-in is invalid: {}", e)),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Could not load saved GitHub sign-in: {}", e)),
+    }
+}
+
+pub fn save_github_auth_session(session: &GithubAuthSession) -> Result<(), String> {
+    let entry = github_auth_keyring_entry()?;
+    let payload = serde_json::to_string(session)
+        .map_err(|e| format!("Could not serialize GitHub sign-in: {}", e))?;
+    entry
+        .set_password(&payload)
+        .map_err(|e| format!("Could not save GitHub sign-in to system keychain: {}", e))
 }
 
 pub fn get_file_statuses(
@@ -312,7 +354,7 @@ pub fn push(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<PushSu
     };
 
     if pull_request_prompt.is_none() && auth.is_none() && is_github_origin(repo_path) {
-        message.push_str(" Sign in to GitHub to enable PR actions.");
+        message.push_str(" Use the 'Sign in to GitHub...' button to enable PR actions.");
     }
 
     Ok(PushSuccess {
@@ -340,80 +382,102 @@ pub fn pull(repo_path: &Path) -> Result<String, String> {
     }
 }
 
-pub fn github_auth_login(client_id: &str, redirect_uri: &str) -> Result<GithubAuthSession, String> {
-    let redirect_url =
-        Url::parse(redirect_uri).map_err(|e| format!("Invalid redirect URI: {}", e))?;
-    let callback_host = redirect_url
-        .host_str()
-        .ok_or_else(|| "Redirect URI must include a host".to_string())?;
-    let callback_port = redirect_url
-        .port_or_known_default()
-        .ok_or_else(|| "Redirect URI must include a port".to_string())?;
-    let callback_path = redirect_url.path().to_string();
-
-    let listener = TcpListener::bind((callback_host, callback_port))
-        .map_err(|e| format!("Could not start OAuth callback server: {}", e))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("Could not configure OAuth callback server: {}", e))?;
-
-    let state = generate_pkce_value(24);
-    let code_verifier = generate_pkce_value(64);
-    let code_challenge = pkce_challenge(&code_verifier);
-
-    let mut authorize_url = Url::parse("https://github.com/login/oauth/authorize")
-        .map_err(|e| format!("Could not build authorize URL: {}", e))?;
-    authorize_url
-        .query_pairs_mut()
-        .append_pair("client_id", client_id)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scope", "repo")
-        .append_pair("state", &state)
-        .append_pair("code_challenge", &code_challenge)
-        .append_pair("code_challenge_method", "S256");
-
-    webbrowser::open(authorize_url.as_str())
-        .map_err(|e| format!("Could not open browser for GitHub sign-in: {}", e))?;
-
-    let (code, returned_state) = wait_for_oauth_callback(&listener, &callback_path)?;
-    if returned_state != state {
-        return Err("GitHub OAuth state validation failed".into());
-    }
-
+pub fn github_auth_login<F>(client_id: &str, on_prompt: F) -> Result<GithubAuthSession, String>
+where
+    F: FnOnce(GithubAuthPrompt),
+{
     let client = github_http_client()?;
-    let token_response = client
-        .post("https://github.com/login/oauth/access_token")
+    let device_response = client
+        .post("https://github.com/login/device/code")
         .header(ACCEPT, "application/json")
         .header(USER_AGENT, "justanothergitgui")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(format!(
-            "client_id={}&redirect_uri={}&code={}&code_verifier={}",
+            "client_id={}&scope={}",
             urlencoding::encode(client_id),
-            urlencoding::encode(redirect_uri),
-            urlencoding::encode(&code),
-            urlencoding::encode(&code_verifier)
+            urlencoding::encode("repo")
         ))
         .send()
-        .map_err(|e| format!("GitHub token exchange failed: {}", e))?;
+        .map_err(|e| format!("GitHub device sign-in failed: {}", e))?;
 
-    if !token_response.status().is_success() {
+    if !device_response.status().is_success() {
         return Err(format!(
-            "GitHub token exchange failed with status {}",
-            token_response.status()
+            "GitHub device sign-in failed with status {}",
+            device_response.status()
         ));
     }
 
-    let token_body: GithubTokenResponse = token_response
+    let device: GithubDeviceCodeResponse = device_response
         .json()
-        .map_err(|e| format!("Invalid GitHub token response: {}", e))?;
-    let access_token = token_body.access_token.ok_or_else(|| {
-        token_body
-            .error_description
-            .or(token_body.error)
-            .unwrap_or_else(|| "GitHub did not return an access token".into())
-    })?;
+        .map_err(|e| format!("Invalid GitHub device sign-in response: {}", e))?;
 
-    fetch_github_user(&client, &access_token)
+    let open_url = device
+        .verification_uri_complete
+        .as_deref()
+        .unwrap_or(&device.verification_uri);
+    on_prompt(GithubAuthPrompt {
+        user_code: device.user_code.clone(),
+        verification_uri: device.verification_uri.clone(),
+        browser_url: open_url.to_string(),
+    });
+    let _ = webbrowser::open(open_url);
+
+    let mut poll_interval = device.interval.unwrap_or(5).max(1);
+    let mut remaining_seconds = device.expires_in;
+
+    while remaining_seconds > 0 {
+        std::thread::sleep(Duration::from_secs(poll_interval));
+        remaining_seconds = remaining_seconds.saturating_sub(poll_interval);
+
+        let token_response = client
+            .post("https://github.com/login/oauth/access_token")
+            .header(ACCEPT, "application/json")
+            .header(USER_AGENT, "justanothergitgui")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "client_id={}&device_code={}&grant_type={}",
+                urlencoding::encode(client_id),
+                urlencoding::encode(&device.device_code),
+                urlencoding::encode("urn:ietf:params:oauth:grant-type:device_code")
+            ))
+            .send()
+            .map_err(|e| format!("GitHub token exchange failed: {}", e))?;
+
+        if !token_response.status().is_success() {
+            return Err(format!(
+                "GitHub token exchange failed with status {}",
+                token_response.status()
+            ));
+        }
+
+        let token_body: GithubTokenResponse = token_response
+            .json()
+            .map_err(|e| format!("Invalid GitHub token response: {}", e))?;
+
+        if let Some(access_token) = token_body.access_token {
+            return fetch_github_user(&client, &access_token);
+        }
+
+        match token_body.error.as_deref() {
+            Some("authorization_pending") => continue,
+            Some("slow_down") => {
+                poll_interval += 5;
+            }
+            Some("access_denied") => return Err("GitHub sign-in was cancelled.".into()),
+            Some("expired_token") => {
+                return Err("GitHub sign-in timed out before authorization completed.".into());
+            }
+            _ => {
+                let message = token_body
+                    .error_description
+                    .or(token_body.error)
+                    .unwrap_or_else(|| "GitHub did not return an access token".into());
+                return Err(normalize_github_oauth_error(message));
+            }
+        }
+    }
+
+    Err("GitHub sign-in timed out before authorization completed.".into())
 }
 
 pub fn create_github_repo(
@@ -605,96 +669,21 @@ fn github_http_client() -> Result<Client, String> {
         .map_err(|e| format!("Could not create GitHub HTTP client: {}", e))
 }
 
-fn generate_pkce_value(byte_len: usize) -> String {
-    let mut bytes = vec![0_u8; byte_len];
-    for byte in &mut bytes {
-        *byte = rand::random::<u8>();
-    }
-    URL_SAFE_NO_PAD.encode(bytes)
+fn github_auth_keyring_entry() -> Result<Entry, String> {
+    Entry::new(GITHUB_AUTH_KEYRING_SERVICE, GITHUB_AUTH_KEYRING_USER)
+        .map_err(|e| format!("Could not access system keychain: {}", e))
 }
 
-fn pkce_challenge(code_verifier: &str) -> String {
-    let digest = Sha256::digest(code_verifier.as_bytes());
-    URL_SAFE_NO_PAD.encode(digest)
-}
-
-fn wait_for_oauth_callback(
-    listener: &TcpListener,
-    expected_path: &str,
-) -> Result<(String, String), String> {
-    let deadline = Instant::now() + Duration::from_secs(180);
-    let (mut stream, _) = loop {
-        match listener.accept() {
-            Ok(connection) => break connection,
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    return Err("Timed out waiting for GitHub OAuth callback".into());
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(error) => return Err(format!("GitHub OAuth callback failed: {}", error)),
-        }
-    };
-
-    let mut buffer = [0_u8; 4096];
-    let bytes_read = stream
-        .read(&mut buffer)
-        .map_err(|e| format!("GitHub OAuth callback read failed: {}", e))?;
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let request_line = request
-        .lines()
-        .next()
-        .ok_or_else(|| "GitHub OAuth callback request was empty".to_string())?;
-    let request_target = request_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| "GitHub OAuth callback request was malformed".to_string())?;
-    let callback_url = Url::parse(&format!("http://localhost{}", request_target))
-        .map_err(|e| format!("GitHub OAuth callback URL was invalid: {}", e))?;
-
-    let mut response_message = "GitHub sign-in complete. You can close this window.".to_string();
-    let result = (|| {
-        if callback_url.path() != expected_path {
-            return Err(
-                "GitHub OAuth callback path did not match the configured redirect URI".into(),
-            );
-        }
-
-        let query: HashMap<String, String> = callback_url.query_pairs().into_owned().collect();
-        if let Some(error) = query.get("error") {
-            return Err(query
-                .get("error_description")
-                .cloned()
-                .unwrap_or_else(|| format!("GitHub authorization failed: {}", error)));
-        }
-
-        let code = query.get("code").cloned().ok_or_else(|| {
-            "GitHub OAuth callback did not include an authorization code".to_string()
-        })?;
-        let state = query
-            .get("state")
-            .cloned()
-            .ok_or_else(|| "GitHub OAuth callback did not include a state value".to_string())?;
-        Ok((code, state))
-    })();
-
-    if let Err(error) = &result {
-        response_message = format!(
-            "GitHub sign-in failed: {}. You can close this window.",
-            error
-        );
+fn normalize_github_oauth_error(message: String) -> String {
+    if message.contains("incorrect_client_credentials")
+        || message.contains("client_id and/or client_secret passed are incorrect")
+        || message.contains("client_id is invalid")
+        || message.contains("device flow is disabled")
+    {
+        return "GitHub OAuth configuration error: the configured client ID is not valid for a GitHub OAuth App device flow. Use a GitHub OAuth App client ID and make sure Device Flow is enabled for that app.".into();
     }
 
-    let body = response_message;
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
-
-    result
+    message
 }
 
 fn fetch_github_user(client: &Client, access_token: &str) -> Result<GithubAuthSession, String> {

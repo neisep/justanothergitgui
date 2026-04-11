@@ -6,6 +6,7 @@ use std::sync::mpsc;
 pub enum TaskResult {
     Push(Result<crate::git_ops::PushSuccess, String>),
     Pull(Result<String, String>),
+    GithubAuthPrompt(crate::git_ops::GithubAuthPrompt),
     GithubAuth(Result<crate::git_ops::GithubAuthSession, String>),
     CreateGithubRepo(Result<crate::git_ops::CreateGithubRepoSuccess, String>),
     OpenPullRequest(Result<String, String>),
@@ -15,10 +16,7 @@ pub enum TaskResult {
 enum WorkerTask {
     Push(PathBuf, Option<crate::git_ops::GithubAuthSession>),
     Pull(PathBuf),
-    GithubAuth {
-        client_id: String,
-        redirect_uri: String,
-    },
+    GithubAuth { client_id: String },
     CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
     OpenPullRequest(String),
     CreatePullRequest(String),
@@ -45,13 +43,15 @@ impl Worker {
                         TaskResult::Push(crate::git_ops::push(&path, auth.as_ref()))
                     }
                     WorkerTask::Pull(path) => TaskResult::Pull(crate::git_ops::pull(&path)),
-                    WorkerTask::GithubAuth {
-                        client_id,
-                        redirect_uri,
-                    } => TaskResult::GithubAuth(crate::git_ops::github_auth_login(
-                        &client_id,
-                        &redirect_uri,
-                    )),
+                    WorkerTask::GithubAuth { client_id } => {
+                        let prompt_tx = result_tx.clone();
+                        TaskResult::GithubAuth(crate::git_ops::github_auth_login(
+                            &client_id,
+                            move |prompt| {
+                                let _ = prompt_tx.send(TaskResult::GithubAuthPrompt(prompt));
+                            },
+                        ))
+                    }
                     WorkerTask::CreateGithubRepo(request) => {
                         TaskResult::CreateGithubRepo(crate::git_ops::create_github_repo(&request))
                     }
@@ -86,12 +86,9 @@ impl Worker {
         }
     }
 
-    pub fn login_github(&self, client_id: String, redirect_uri: String) {
+    pub fn login_github(&self, client_id: String) {
         if !self.is_busy() {
-            let _ = self.tx.send(WorkerTask::GithubAuth {
-                client_id,
-                redirect_uri,
-            });
+            let _ = self.tx.send(WorkerTask::GithubAuth { client_id });
         }
     }
 

@@ -94,6 +94,7 @@ pub enum UiAction {
 pub struct AppState {
     pub repo_path: Option<PathBuf>,
     pub has_origin_remote: bool,
+    pub has_github_origin: bool,
     pub branch: String,
     pub branches: Vec<String>,
     pub new_branch_name: String,
@@ -117,6 +118,7 @@ impl Default for AppState {
         Self {
             repo_path: None,
             has_origin_remote: false,
+            has_github_origin: false,
             branch: String::new(),
             branches: Vec::new(),
             new_branch_name: String::new(),
