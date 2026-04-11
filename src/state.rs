@@ -39,6 +39,7 @@ pub enum PullRequestPrompt {
     },
     Create {
         branch: String,
+        url: String,
     },
 }
 

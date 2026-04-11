@@ -6,19 +6,22 @@ use std::sync::mpsc;
 pub enum TaskResult {
     Push(Result<crate::git_ops::PushSuccess, String>),
     Pull(Result<String, String>),
-    GithubAuth(Result<String, String>),
+    GithubAuth(Result<crate::git_ops::GithubAuthSession, String>),
     CreateGithubRepo(Result<crate::git_ops::CreateGithubRepoSuccess, String>),
     OpenPullRequest(Result<String, String>),
     CreatePullRequest(Result<String, String>),
 }
 
 enum WorkerTask {
-    Push(PathBuf),
+    Push(PathBuf, Option<crate::git_ops::GithubAuthSession>),
     Pull(PathBuf),
-    GithubAuth,
+    GithubAuth {
+        client_id: String,
+        redirect_uri: String,
+    },
     CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
-    OpenPullRequest(PathBuf, u64),
-    CreatePullRequest(PathBuf, String),
+    OpenPullRequest(String),
+    CreatePullRequest(String),
 }
 
 pub struct Worker {
@@ -38,20 +41,26 @@ impl Worker {
             while let Ok(task) = task_rx.recv() {
                 busy_clone.store(true, Ordering::SeqCst);
                 let result = match task {
-                    WorkerTask::Push(path) => TaskResult::Push(crate::git_ops::push(&path)),
-                    WorkerTask::Pull(path) => TaskResult::Pull(crate::git_ops::pull(&path)),
-                    WorkerTask::GithubAuth => {
-                        TaskResult::GithubAuth(crate::git_ops::github_auth_login())
+                    WorkerTask::Push(path, auth) => {
+                        TaskResult::Push(crate::git_ops::push(&path, auth.as_ref()))
                     }
+                    WorkerTask::Pull(path) => TaskResult::Pull(crate::git_ops::pull(&path)),
+                    WorkerTask::GithubAuth {
+                        client_id,
+                        redirect_uri,
+                    } => TaskResult::GithubAuth(crate::git_ops::github_auth_login(
+                        &client_id,
+                        &redirect_uri,
+                    )),
                     WorkerTask::CreateGithubRepo(request) => {
                         TaskResult::CreateGithubRepo(crate::git_ops::create_github_repo(&request))
                     }
-                    WorkerTask::OpenPullRequest(path, number) => TaskResult::OpenPullRequest(
-                        crate::git_ops::open_pull_request(&path, number),
-                    ),
-                    WorkerTask::CreatePullRequest(path, branch) => TaskResult::CreatePullRequest(
-                        crate::git_ops::create_pull_request(&path, &branch),
-                    ),
+                    WorkerTask::OpenPullRequest(url) => {
+                        TaskResult::OpenPullRequest(crate::git_ops::open_pull_request(&url))
+                    }
+                    WorkerTask::CreatePullRequest(url) => {
+                        TaskResult::CreatePullRequest(crate::git_ops::create_pull_request(&url))
+                    }
                 };
                 let _ = result_tx.send(result);
                 busy_clone.store(false, Ordering::SeqCst);
@@ -65,9 +74,9 @@ impl Worker {
         }
     }
 
-    pub fn push(&self, repo_path: PathBuf) {
+    pub fn push(&self, repo_path: PathBuf, auth: Option<crate::git_ops::GithubAuthSession>) {
         if !self.is_busy() {
-            let _ = self.tx.send(WorkerTask::Push(repo_path));
+            let _ = self.tx.send(WorkerTask::Push(repo_path, auth));
         }
     }
 
@@ -77,9 +86,12 @@ impl Worker {
         }
     }
 
-    pub fn login_github(&self) {
+    pub fn login_github(&self, client_id: String, redirect_uri: String) {
         if !self.is_busy() {
-            let _ = self.tx.send(WorkerTask::GithubAuth);
+            let _ = self.tx.send(WorkerTask::GithubAuth {
+                client_id,
+                redirect_uri,
+            });
         }
     }
 
@@ -89,17 +101,15 @@ impl Worker {
         }
     }
 
-    pub fn open_pull_request(&self, repo_path: PathBuf, number: u64) {
+    pub fn open_pull_request(&self, url: String) {
         if !self.is_busy() {
-            let _ = self.tx.send(WorkerTask::OpenPullRequest(repo_path, number));
+            let _ = self.tx.send(WorkerTask::OpenPullRequest(url));
         }
     }
 
-    pub fn create_pull_request(&self, repo_path: PathBuf, branch: String) {
+    pub fn create_pull_request(&self, url: String) {
         if !self.is_busy() {
-            let _ = self
-                .tx
-                .send(WorkerTask::CreatePullRequest(repo_path, branch));
+            let _ = self.tx.send(WorkerTask::CreatePullRequest(url));
         }
     }
 
