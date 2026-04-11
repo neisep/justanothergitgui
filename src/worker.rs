@@ -4,10 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 pub enum TaskResult {
-    Push(Result<String, String>),
+    Push(Result<crate::git_ops::PushSuccess, String>),
     Pull(Result<String, String>),
     GithubAuth(Result<String, String>),
     CreateGithubRepo(Result<crate::git_ops::CreateGithubRepoSuccess, String>),
+    OpenPullRequest(Result<String, String>),
+    CreatePullRequest(Result<String, String>),
 }
 
 enum WorkerTask {
@@ -15,6 +17,8 @@ enum WorkerTask {
     Pull(PathBuf),
     GithubAuth,
     CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
+    OpenPullRequest(PathBuf, u64),
+    CreatePullRequest(PathBuf, String),
 }
 
 pub struct Worker {
@@ -42,6 +46,12 @@ impl Worker {
                     WorkerTask::CreateGithubRepo(request) => {
                         TaskResult::CreateGithubRepo(crate::git_ops::create_github_repo(&request))
                     }
+                    WorkerTask::OpenPullRequest(path, number) => TaskResult::OpenPullRequest(
+                        crate::git_ops::open_pull_request(&path, number),
+                    ),
+                    WorkerTask::CreatePullRequest(path, branch) => TaskResult::CreatePullRequest(
+                        crate::git_ops::create_pull_request(&path, &branch),
+                    ),
                 };
                 let _ = result_tx.send(result);
                 busy_clone.store(false, Ordering::SeqCst);
@@ -76,6 +86,20 @@ impl Worker {
     pub fn create_github_repo(&self, request: crate::git_ops::CreateGithubRepoRequest) {
         if !self.is_busy() {
             let _ = self.tx.send(WorkerTask::CreateGithubRepo(request));
+        }
+    }
+
+    pub fn open_pull_request(&self, repo_path: PathBuf, number: u64) {
+        if !self.is_busy() {
+            let _ = self.tx.send(WorkerTask::OpenPullRequest(repo_path, number));
+        }
+    }
+
+    pub fn create_pull_request(&self, repo_path: PathBuf, branch: String) {
+        if !self.is_busy() {
+            let _ = self
+                .tx
+                .send(WorkerTask::CreatePullRequest(repo_path, branch));
         }
     }
 

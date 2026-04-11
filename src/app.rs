@@ -4,7 +4,7 @@ use eframe::egui;
 use git2::Repository;
 
 use crate::git_ops;
-use crate::state::{AppState, CenterView, SelectedFile, UiAction};
+use crate::state::{AppState, CenterView, PullRequestPrompt, SelectedFile, UiAction};
 use crate::ui;
 use crate::worker::{TaskResult, Worker};
 
@@ -283,6 +283,36 @@ impl GitGuiApp {
                     refresh_status(&mut tab.state, &tab.repo);
                 }
 
+                UiAction::LaunchPullRequest => {
+                    let tab = &mut self.tabs[active_index];
+                    let Some(repo_path) = tab.state.repo_path.clone() else {
+                        tab.state.status_msg = "No repository open".into();
+                        continue;
+                    };
+
+                    let Some(prompt) = tab.state.pull_request_prompt.clone() else {
+                        tab.state.status_msg = "No pull request action available".into();
+                        continue;
+                    };
+
+                    if tab.worker.is_busy() {
+                        tab.state.status_msg = "Busy — please wait...".into();
+                        continue;
+                    }
+
+                    match prompt {
+                        PullRequestPrompt::Open { number, .. } => {
+                            tab.state.status_msg = format!("Opening pull request #{}...", number);
+                            tab.worker.open_pull_request(repo_path, number);
+                        }
+                        PullRequestPrompt::Create { branch } => {
+                            tab.state.status_msg =
+                                format!("Opening pull request creation for {}...", branch);
+                            tab.worker.create_pull_request(repo_path, branch);
+                        }
+                    }
+                }
+
                 UiAction::ShowDiff => {
                     self.tabs[active_index].state.center_view = CenterView::Diff;
                 }
@@ -344,7 +374,10 @@ impl GitGuiApp {
                     self.publish_dialog.operation_status = msg.clone();
                     self.welcome_status = format!("Publish failed: {}", msg);
                 }
-                TaskResult::Push(_) | TaskResult::Pull(_) => {}
+                TaskResult::Push(_)
+                | TaskResult::Pull(_)
+                | TaskResult::OpenPullRequest(_)
+                | TaskResult::CreatePullRequest(_) => {}
             }
         }
 
@@ -355,7 +388,20 @@ impl GitGuiApp {
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             if let Some(result) = tab.worker.try_recv() {
                 match result {
-                    TaskResult::Push(Ok(msg)) => tab.state.status_msg = format!("Push: {}", msg),
+                    TaskResult::Push(Ok(result)) => {
+                        let prompt_message = match &result.pull_request_prompt {
+                            Some(PullRequestPrompt::Open { number, .. }) => {
+                                format!(" Pull request #{} is ready.", number)
+                            }
+                            Some(PullRequestPrompt::Create { .. }) => {
+                                " You can create a pull request now.".into()
+                            }
+                            None => String::new(),
+                        };
+                        tab.state.pull_request_prompt = result.pull_request_prompt;
+                        tab.state.status_msg =
+                            format!("Push: {}{}", result.message, prompt_message);
+                    }
                     TaskResult::Push(Err(msg)) => {
                         tab.state.status_msg = format!("Push failed: {}", msg)
                     }
@@ -365,6 +411,18 @@ impl GitGuiApp {
                     }
                     TaskResult::Pull(Err(msg)) => {
                         tab.state.status_msg = format!("Pull failed: {}", msg)
+                    }
+                    TaskResult::OpenPullRequest(Ok(msg)) => {
+                        tab.state.status_msg = msg;
+                    }
+                    TaskResult::OpenPullRequest(Err(msg)) => {
+                        tab.state.status_msg = format!("Open PR failed: {}", msg);
+                    }
+                    TaskResult::CreatePullRequest(Ok(msg)) => {
+                        tab.state.status_msg = msg;
+                    }
+                    TaskResult::CreatePullRequest(Err(msg)) => {
+                        tab.state.status_msg = format!("Create PR failed: {}", msg);
                     }
                     TaskResult::GithubAuth(_) | TaskResult::CreateGithubRepo(_) => {}
                 }
@@ -449,6 +507,7 @@ impl GitGuiApp {
                 let has_repo = state.repo_path.is_some();
                 let repo_path = state.repo_path.clone();
                 let has_origin_remote = state.has_origin_remote;
+                let pull_request_prompt = state.pull_request_prompt.clone();
                 let mut publish_clicked = false;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if has_origin_remote {
@@ -475,6 +534,27 @@ impl GitGuiApp {
                         .clicked()
                     {
                         publish_clicked = true;
+                    }
+
+                    if let Some(prompt) = &pull_request_prompt {
+                        let (label, hover) = match prompt {
+                            PullRequestPrompt::Open { number, url, .. } => (
+                                format!("Open PR #{}", number),
+                                format!("Open existing pull request\n{}", url),
+                            ),
+                            PullRequestPrompt::Create { branch } => (
+                                "Create PR...".into(),
+                                format!("Open GitHub pull request creation for {}", branch),
+                            ),
+                        };
+
+                        if ui
+                            .add_enabled(has_repo, egui::Button::new(label))
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            state.actions.push(UiAction::LaunchPullRequest);
+                        }
                     }
 
                     if ui
@@ -799,6 +879,7 @@ fn refresh_status(state: &mut AppState, repo: &Repository) {
     state.branch = git_ops::get_current_branch(repo).unwrap_or_default();
     state.branches = git_ops::get_branches(repo).unwrap_or_default();
     state.commit_history = git_ops::get_commit_history(repo, 200).unwrap_or_default();
+    sync_pull_request_prompt(state);
     sync_selected_file(state, repo);
 }
 
@@ -816,6 +897,7 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.actions.clear();
     state.center_view = CenterView::Diff;
     state.commit_history.clear();
+    state.pull_request_prompt = None;
     state.conflict_data = None;
     state.dragging = None;
 }
@@ -895,4 +977,16 @@ fn repo_tab_label(path: Option<&Path>) -> String {
 
 fn default_repo_name_for_path(path: &Path) -> String {
     repo_tab_label(Some(path))
+}
+
+fn sync_pull_request_prompt(state: &mut AppState) {
+    let keep_prompt = matches!(
+        state.pull_request_prompt.as_ref(),
+        Some(PullRequestPrompt::Open { branch, .. } | PullRequestPrompt::Create { branch })
+            if branch == &state.branch && state.has_origin_remote
+    );
+
+    if !keep_prompt {
+        state.pull_request_prompt = None;
+    }
 }

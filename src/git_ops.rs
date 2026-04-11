@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::state::{CommitEntry, ConflictChoice, ConflictData, ConflictPart, FileEntry};
+use crate::state::{
+    CommitEntry, ConflictChoice, ConflictData, ConflictPart, FileEntry, PullRequestPrompt,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GithubRepoVisibility {
@@ -23,6 +25,12 @@ pub struct CreateGithubRepoRequest {
 pub struct CreateGithubRepoSuccess {
     pub folder_path: PathBuf,
     pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PushSuccess {
+    pub message: String,
+    pub pull_request_prompt: Option<PullRequestPrompt>,
 }
 
 pub fn open_repo(path: &Path) -> Result<Repository, git2::Error> {
@@ -235,7 +243,8 @@ pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<Stri
     Ok(result)
 }
 
-pub fn push(repo_path: &Path) -> Result<String, String> {
+pub fn push(repo_path: &Path) -> Result<PushSuccess, String> {
+    let branch_name = current_branch_name(repo_path)?;
     let output = Command::new("git")
         .args(["push"])
         .current_dir(repo_path)
@@ -244,13 +253,18 @@ pub fn push(repo_path: &Path) -> Result<String, String> {
 
     if output.status.success() {
         let msg = command_message(&output);
-        Ok(if msg.trim().is_empty() {
-            "Push successful".into()
-        } else {
-            msg
+        Ok(PushSuccess {
+            message: if msg.trim().is_empty() {
+                "Push successful".into()
+            } else {
+                msg
+            },
+            pull_request_prompt: branch_name
+                .as_deref()
+                .and_then(|branch| detect_pull_request_prompt(repo_path, branch)),
         })
     } else if command_message(&output).contains("has no upstream branch") {
-        let Some(branch_name) = current_branch_name(repo_path)? else {
+        let Some(branch_name) = branch_name else {
             return Err(command_message(&output));
         };
 
@@ -262,10 +276,13 @@ pub fn push(repo_path: &Path) -> Result<String, String> {
 
         if upstream_output.status.success() {
             let msg = command_message(&upstream_output);
-            Ok(if msg.trim().is_empty() {
-                format!("Push successful. Upstream set for {}", branch_name)
-            } else {
-                msg
+            Ok(PushSuccess {
+                message: if msg.trim().is_empty() {
+                    format!("Push successful. Upstream set for {}", branch_name)
+                } else {
+                    msg
+                },
+                pull_request_prompt: detect_pull_request_prompt(repo_path, &branch_name),
             })
         } else {
             Err(command_message(&upstream_output))
@@ -409,6 +426,44 @@ pub fn create_github_repo(
     })
 }
 
+pub fn open_pull_request(repo_path: &Path, number: u64) -> Result<String, String> {
+    let output = Command::new("gh")
+        .args(["pr", "view", &number.to_string(), "--web"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        let message = command_message(&output);
+        Ok(if message.trim().is_empty() {
+            format!("Opened pull request #{}", number)
+        } else {
+            message
+        })
+    } else {
+        Err(command_message(&output))
+    }
+}
+
+pub fn create_pull_request(repo_path: &Path, branch: &str) -> Result<String, String> {
+    let output = Command::new("gh")
+        .args(["pr", "create", "--web", "--head", branch])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        let message = command_message(&output);
+        Ok(if message.trim().is_empty() {
+            format!("Opened pull request creation for {}", branch)
+        } else {
+            message
+        })
+    } else {
+        Err(command_message(&output))
+    }
+}
+
 pub fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::Error> {
     let refname = format!("refs/heads/{}", branch_name);
     let obj = repo.revparse_single(&refname)?;
@@ -507,6 +562,46 @@ fn current_branch_name(repo_path: &Path) -> Result<Option<String>, String> {
     } else {
         Ok(Some(branch_name))
     }
+}
+
+fn detect_pull_request_prompt(repo_path: &Path, branch: &str) -> Option<PullRequestPrompt> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number,url",
+            "--template",
+            "{{with index . 0}}{{.number}}\t{{.url}}{{end}}",
+        ])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let details = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if details.is_empty() {
+        return Some(PullRequestPrompt::Create {
+            branch: branch.to_string(),
+        });
+    }
+
+    let mut parts = details.splitn(2, '\t');
+    let number = parts.next()?.trim().parse::<u64>().ok()?;
+    let url = parts.next()?.trim().to_string();
+
+    Some(PullRequestPrompt::Open {
+        branch: branch.to_string(),
+        number,
+        url,
+    })
 }
 
 fn repo_root_path(repo: &Repository) -> PathBuf {
