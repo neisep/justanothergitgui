@@ -31,6 +31,19 @@ pub struct CommitEntry {
 }
 
 #[derive(Clone, Debug)]
+pub enum PullRequestPrompt {
+    Open {
+        branch: String,
+        number: u64,
+        url: String,
+    },
+    Create {
+        branch: String,
+        url: String,
+    },
+}
+
+#[derive(Clone, Debug)]
 pub enum ConflictPart {
     Common(String),
     Conflict {
@@ -72,6 +85,7 @@ pub enum UiAction {
     SelectFile { path: String, staged: bool },
     SwitchBranch(String),
     CreateBranch(String),
+    LaunchPullRequest,
     ShowDiff,
     ShowHistory,
     SaveConflictResolution,
@@ -80,6 +94,7 @@ pub enum UiAction {
 pub struct AppState {
     pub repo_path: Option<PathBuf>,
     pub has_origin_remote: bool,
+    pub has_github_origin: bool,
     pub branch: String,
     pub branches: Vec<String>,
     pub new_branch_name: String,
@@ -93,6 +108,7 @@ pub struct AppState {
     pub actions: Vec<UiAction>,
     pub center_view: CenterView,
     pub commit_history: Vec<CommitEntry>,
+    pub pull_request_prompt: Option<PullRequestPrompt>,
     pub conflict_data: Option<ConflictData>,
     pub dragging: Option<DragFile>,
 }
@@ -102,6 +118,7 @@ impl Default for AppState {
         Self {
             repo_path: None,
             has_origin_remote: false,
+            has_github_origin: false,
             branch: String::new(),
             branches: Vec::new(),
             new_branch_name: String::new(),
@@ -115,6 +132,7 @@ impl Default for AppState {
             actions: Vec::new(),
             center_view: CenterView::default(),
             commit_history: Vec::new(),
+            pull_request_prompt: None,
             conflict_data: None,
             dragging: None,
         }

@@ -4,9 +4,11 @@ use eframe::egui;
 use git2::Repository;
 
 use crate::git_ops;
-use crate::state::{AppState, CenterView, SelectedFile, UiAction};
+use crate::state::{AppState, CenterView, PullRequestPrompt, SelectedFile, UiAction};
 use crate::ui;
 use crate::worker::{TaskResult, Worker};
+
+const GITHUB_OAUTH_CLIENT_ID: &str = "Ov23liRh81zsShRFaA4r";
 
 struct RepoTab {
     state: AppState,
@@ -31,6 +33,8 @@ pub struct GitGuiApp {
     welcome_status: String,
     welcome_worker: Worker,
     publish_dialog: PublishRepoDialogState,
+    github_auth_session: Option<git_ops::GithubAuthSession>,
+    github_auth_prompt: Option<git_ops::GithubAuthPrompt>,
 }
 
 impl PublishRepoDialogState {
@@ -68,17 +72,34 @@ impl PublishRepoDialogState {
 
 impl GitGuiApp {
     pub fn new() -> Self {
+        let mut startup_status = None;
+        let github_auth_session = match git_ops::load_github_auth_session() {
+            Ok(Some(session)) => Some(session),
+            Ok(None) => None,
+            Err(msg) => {
+                startup_status = Some(msg);
+                None
+            }
+        };
+
         let mut app = Self {
             tabs: Vec::new(),
             active_tab: 0,
             welcome_status: "Open a Git repository to get started.".into(),
             welcome_worker: Worker::new(),
             publish_dialog: PublishRepoDialogState::new(),
+            github_auth_session,
+            github_auth_prompt: None,
         };
 
         // Try to open current directory as a repo
         if let Ok(repo) = git_ops::open_repo(Path::new(".")) {
             app.add_repo_tab(repo);
+        }
+
+        app.refresh_github_auth_status();
+        if let Some(message) = startup_status {
+            app.set_status_message(message);
         }
 
         app
@@ -142,16 +163,25 @@ impl GitGuiApp {
     }
 
     fn refresh_github_auth_status(&mut self) {
-        match git_ops::github_auth_status() {
-            Ok(message) => {
-                self.publish_dialog.github_authenticated = true;
-                self.publish_dialog.github_status = message;
-            }
-            Err(message) => {
-                self.publish_dialog.github_authenticated = false;
-                self.publish_dialog.github_status = message;
-            }
+        if let Some(session) = &self.github_auth_session {
+            self.publish_dialog.github_authenticated = true;
+            self.publish_dialog.github_status =
+                format!("Signed in to GitHub as @{}", session.login);
+        } else {
+            self.publish_dialog.github_authenticated = false;
+            self.publish_dialog.github_status =
+                "Not signed in to GitHub. Sign in to create repositories and PRs.".into();
         }
+    }
+
+    fn begin_github_sign_in(&mut self, start_message: &str) {
+        self.github_auth_prompt = None;
+        self.publish_dialog.github_status = start_message.into();
+        self.publish_dialog.operation_status.clear();
+        self.welcome_status = start_message.into();
+        self.set_status_message(start_message.into());
+        self.welcome_worker
+            .login_github(GITHUB_OAUTH_CLIENT_ID.into());
     }
 
     fn process_actions(&mut self) {
@@ -226,7 +256,7 @@ impl GitGuiApp {
                             tab.state.status_msg = "Busy — please wait...".into();
                         } else {
                             tab.state.status_msg = "Pushing...".into();
-                            tab.worker.push(path);
+                            tab.worker.push(path, self.github_auth_session.clone());
                         }
                     }
                 }
@@ -283,6 +313,31 @@ impl GitGuiApp {
                     refresh_status(&mut tab.state, &tab.repo);
                 }
 
+                UiAction::LaunchPullRequest => {
+                    let tab = &mut self.tabs[active_index];
+                    let Some(prompt) = tab.state.pull_request_prompt.clone() else {
+                        tab.state.status_msg = "No pull request action available".into();
+                        continue;
+                    };
+
+                    if tab.worker.is_busy() {
+                        tab.state.status_msg = "Busy — please wait...".into();
+                        continue;
+                    }
+
+                    match prompt {
+                        PullRequestPrompt::Open { number, url, .. } => {
+                            tab.state.status_msg = format!("Opening pull request #{}...", number);
+                            tab.worker.open_pull_request(url);
+                        }
+                        PullRequestPrompt::Create { branch, url } => {
+                            tab.state.status_msg =
+                                format!("Opening pull request creation for {}...", branch);
+                            tab.worker.create_pull_request(url);
+                        }
+                    }
+                }
+
                 UiAction::ShowDiff => {
                     self.tabs[active_index].state.center_view = CenterView::Diff;
                 }
@@ -318,19 +373,54 @@ impl GitGuiApp {
         let mut refresh_indices = Vec::new();
         let mut any_busy = false;
 
-        if let Some(result) = self.welcome_worker.try_recv() {
+        while let Some(result) = self.welcome_worker.try_recv() {
             match result {
-                TaskResult::GithubAuth(Ok(msg)) => {
+                TaskResult::GithubAuthPrompt(prompt) => {
+                    let message = format!(
+                        "Enter GitHub code {} to finish signing in.",
+                        prompt.user_code
+                    );
+                    self.github_auth_prompt = Some(prompt.clone());
+                    self.publish_dialog.github_status = message.clone();
+                    self.publish_dialog.operation_status = format!(
+                        "If GitHub did not open automatically, visit {}.",
+                        prompt.verification_uri
+                    );
+                    self.welcome_status = message.clone();
+                    self.set_status_message(message);
+                }
+                TaskResult::GithubAuth(Ok(session)) => {
+                    let persistence_result = git_ops::save_github_auth_session(&session);
+                    let message = match &persistence_result {
+                        Ok(()) => format!("GitHub sign-in complete for @{}", session.login),
+                        Err(error) => format!(
+                            "GitHub sign-in complete for @{}, but {}",
+                            session.login, error
+                        ),
+                    };
+                    self.github_auth_prompt = None;
+                    self.github_auth_session = Some(session);
                     self.publish_dialog.github_authenticated = true;
-                    self.publish_dialog.github_status = msg.clone();
+                    self.publish_dialog.github_status = message.clone();
                     self.publish_dialog.operation_status.clear();
-                    self.welcome_status = msg;
+                    self.welcome_status = message;
+                    self.set_status_message(self.publish_dialog.github_status.clone());
                 }
                 TaskResult::GithubAuth(Err(msg)) => {
-                    self.publish_dialog.github_authenticated = false;
-                    self.publish_dialog.github_status = msg.clone();
+                    self.github_auth_prompt = None;
+                    self.publish_dialog.github_authenticated = self.github_auth_session.is_some();
+                    self.publish_dialog.github_status =
+                        if let Some(session) = &self.github_auth_session {
+                            format!(
+                                "Signed in to GitHub as @{} (latest sign-in failed: {})",
+                                session.login, msg
+                            )
+                        } else {
+                            format!("GitHub sign-in failed: {}", msg)
+                        };
                     self.publish_dialog.operation_status.clear();
                     self.welcome_status = format!("GitHub sign-in failed: {}", msg);
+                    self.set_status_message(self.publish_dialog.github_status.clone());
                 }
                 TaskResult::CreateGithubRepo(Ok(result)) => {
                     let message = result.message.clone();
@@ -344,7 +434,10 @@ impl GitGuiApp {
                     self.publish_dialog.operation_status = msg.clone();
                     self.welcome_status = format!("Publish failed: {}", msg);
                 }
-                TaskResult::Push(_) | TaskResult::Pull(_) => {}
+                TaskResult::Push(_)
+                | TaskResult::Pull(_)
+                | TaskResult::OpenPullRequest(_)
+                | TaskResult::CreatePullRequest(_) => {}
             }
         }
 
@@ -353,9 +446,22 @@ impl GitGuiApp {
         }
 
         for (index, tab) in self.tabs.iter_mut().enumerate() {
-            if let Some(result) = tab.worker.try_recv() {
+            while let Some(result) = tab.worker.try_recv() {
                 match result {
-                    TaskResult::Push(Ok(msg)) => tab.state.status_msg = format!("Push: {}", msg),
+                    TaskResult::Push(Ok(result)) => {
+                        let prompt_message = match &result.pull_request_prompt {
+                            Some(PullRequestPrompt::Open { number, .. }) => {
+                                format!(" Pull request #{} is ready.", number)
+                            }
+                            Some(PullRequestPrompt::Create { .. }) => {
+                                " You can create a pull request now.".into()
+                            }
+                            None => String::new(),
+                        };
+                        tab.state.pull_request_prompt = result.pull_request_prompt;
+                        tab.state.status_msg =
+                            format!("Push: {}{}", result.message, prompt_message);
+                    }
                     TaskResult::Push(Err(msg)) => {
                         tab.state.status_msg = format!("Push failed: {}", msg)
                     }
@@ -366,7 +472,21 @@ impl GitGuiApp {
                     TaskResult::Pull(Err(msg)) => {
                         tab.state.status_msg = format!("Pull failed: {}", msg)
                     }
-                    TaskResult::GithubAuth(_) | TaskResult::CreateGithubRepo(_) => {}
+                    TaskResult::OpenPullRequest(Ok(msg)) => {
+                        tab.state.status_msg = msg;
+                    }
+                    TaskResult::OpenPullRequest(Err(msg)) => {
+                        tab.state.status_msg = format!("Open PR failed: {}", msg);
+                    }
+                    TaskResult::CreatePullRequest(Ok(msg)) => {
+                        tab.state.status_msg = msg;
+                    }
+                    TaskResult::CreatePullRequest(Err(msg)) => {
+                        tab.state.status_msg = format!("Create PR failed: {}", msg);
+                    }
+                    TaskResult::GithubAuthPrompt(_)
+                    | TaskResult::GithubAuth(_)
+                    | TaskResult::CreateGithubRepo(_) => {}
                 }
             }
 
@@ -449,7 +569,11 @@ impl GitGuiApp {
                 let has_repo = state.repo_path.is_some();
                 let repo_path = state.repo_path.clone();
                 let has_origin_remote = state.has_origin_remote;
+                let has_github_origin = state.has_github_origin;
+                let needs_github_sign_in = has_github_origin && self.github_auth_session.is_none();
+                let pull_request_prompt = state.pull_request_prompt.clone();
                 let mut publish_clicked = false;
+                let mut github_sign_in_clicked = false;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if has_origin_remote {
                         ui.add_enabled_ui(has_repo, |ui| {
@@ -475,6 +599,36 @@ impl GitGuiApp {
                         .clicked()
                     {
                         publish_clicked = true;
+                    }
+
+                    if needs_github_sign_in
+                        && ui
+                            .add_enabled(has_repo, egui::Button::new("Sign in to GitHub..."))
+                            .on_hover_text("Sign in so the app can check and open pull requests")
+                            .clicked()
+                    {
+                        github_sign_in_clicked = true;
+                    }
+
+                    if let Some(prompt) = &pull_request_prompt {
+                        let (label, hover) = match prompt {
+                            PullRequestPrompt::Open { number, url, .. } => (
+                                format!("Open PR #{}", number),
+                                format!("Open existing pull request\n{}", url),
+                            ),
+                            PullRequestPrompt::Create { branch, .. } => (
+                                "Create PR...".into(),
+                                format!("Open GitHub pull request creation for {}", branch),
+                            ),
+                        };
+
+                        if ui
+                            .add_enabled(has_repo, egui::Button::new(label))
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            state.actions.push(UiAction::LaunchPullRequest);
+                        }
                     }
 
                     if ui
@@ -504,6 +658,9 @@ impl GitGuiApp {
 
                 if publish_clicked {
                     self.open_publish_repo_dialog(repo_path);
+                }
+                if github_sign_in_clicked {
+                    self.begin_github_sign_in("Requesting GitHub sign-in code...");
                 }
             });
         });
@@ -656,21 +813,25 @@ impl GitGuiApp {
         }
 
         if sign_in_clicked {
-            self.publish_dialog.github_status = "Starting GitHub sign-in...".into();
-            self.publish_dialog.operation_status.clear();
-            self.welcome_worker.login_github();
+            self.begin_github_sign_in("Requesting GitHub sign-in code...");
         }
 
         if create_clicked {
-            let folder_path = PathBuf::from(self.publish_dialog.folder_path.trim());
-            self.publish_dialog.operation_status = "Publishing folder to GitHub...".into();
-            self.welcome_worker
-                .create_github_repo(git_ops::CreateGithubRepoRequest {
-                    folder_path,
-                    repo_name: self.publish_dialog.repo_name.trim().to_string(),
-                    commit_message: self.publish_dialog.commit_message.trim().to_string(),
-                    visibility: self.publish_dialog.visibility,
-                });
+            if let Some(auth) = self.github_auth_session.clone() {
+                let folder_path = PathBuf::from(self.publish_dialog.folder_path.trim());
+                self.publish_dialog.operation_status = "Publishing folder to GitHub...".into();
+                self.welcome_worker
+                    .create_github_repo(git_ops::CreateGithubRepoRequest {
+                        folder_path,
+                        repo_name: self.publish_dialog.repo_name.trim().to_string(),
+                        commit_message: self.publish_dialog.commit_message.trim().to_string(),
+                        visibility: self.publish_dialog.visibility,
+                        auth,
+                    });
+            } else {
+                self.publish_dialog.operation_status =
+                    "Sign in to GitHub before creating a repository.".into();
+            }
         }
 
         if close_requested {
@@ -745,6 +906,37 @@ impl GitGuiApp {
             }
         }
     }
+
+    fn show_github_auth_dialog(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.github_auth_prompt.clone() else {
+            return;
+        };
+
+        egui::Window::new("GitHub Sign In")
+            .id(egui::Id::new("github_auth_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("Enter this code on GitHub to finish signing in:");
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(&prompt.user_code)
+                        .monospace()
+                        .size(24.0)
+                        .strong(),
+                );
+                ui.add_space(8.0);
+                ui.label("Verification page");
+                ui.hyperlink_to(&prompt.verification_uri, &prompt.verification_uri);
+                ui.add_space(8.0);
+                if ui.button("Open GitHub Again").clicked() {
+                    let _ = webbrowser::open(&prompt.browser_url);
+                }
+                ui.add_space(4.0);
+                ui.weak("This window closes automatically after sign-in completes.");
+            });
+    }
 }
 
 impl eframe::App for GitGuiApp {
@@ -758,6 +950,7 @@ impl eframe::App for GitGuiApp {
         if self.tabs.is_empty() {
             self.show_welcome(ui);
             self.show_publish_repo_dialog(&ctx);
+            self.show_github_auth_dialog(&ctx);
             return;
         }
 
@@ -779,6 +972,7 @@ impl eframe::App for GitGuiApp {
 
         self.show_publish_repo_dialog(&ctx);
         self.show_create_branch_dialog(&ctx);
+        self.show_github_auth_dialog(&ctx);
 
         // Process deferred actions
         self.process_actions();
@@ -787,6 +981,7 @@ impl eframe::App for GitGuiApp {
 
 fn refresh_status(state: &mut AppState, repo: &Repository) {
     state.has_origin_remote = git_ops::has_origin_remote(repo);
+    state.has_github_origin = git_ops::has_github_origin(repo);
     match git_ops::get_file_statuses(repo) {
         Ok((unstaged, staged)) => {
             state.unstaged = unstaged;
@@ -799,11 +994,13 @@ fn refresh_status(state: &mut AppState, repo: &Repository) {
     state.branch = git_ops::get_current_branch(repo).unwrap_or_default();
     state.branches = git_ops::get_branches(repo).unwrap_or_default();
     state.commit_history = git_ops::get_commit_history(repo, 200).unwrap_or_default();
+    sync_pull_request_prompt(state);
     sync_selected_file(state, repo);
 }
 
 fn reset_repo_view_state(state: &mut AppState) {
     state.has_origin_remote = false;
+    state.has_github_origin = false;
     state.branch.clear();
     state.branches.clear();
     state.new_branch_name.clear();
@@ -816,6 +1013,7 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.actions.clear();
     state.center_view = CenterView::Diff;
     state.commit_history.clear();
+    state.pull_request_prompt = None;
     state.conflict_data = None;
     state.dragging = None;
 }
@@ -895,4 +1093,16 @@ fn repo_tab_label(path: Option<&Path>) -> String {
 
 fn default_repo_name_for_path(path: &Path) -> String {
     repo_tab_label(Some(path))
+}
+
+fn sync_pull_request_prompt(state: &mut AppState) {
+    let keep_prompt = matches!(
+        state.pull_request_prompt.as_ref(),
+        Some(PullRequestPrompt::Open { branch, .. } | PullRequestPrompt::Create { branch, .. })
+            if branch == &state.branch && state.has_origin_remote
+    );
+
+    if !keep_prompt {
+        state.pull_request_prompt = None;
+    }
 }
