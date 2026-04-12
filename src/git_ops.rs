@@ -179,6 +179,12 @@ pub fn has_github_origin(repo: &Repository) -> bool {
         .is_some()
 }
 
+pub fn has_github_https_origin(repo: &Repository) -> bool {
+    repo.find_remote("origin")
+        .ok()
+        .is_some_and(|remote| remote.url().is_some_and(is_github_https_url))
+}
+
 pub fn load_github_auth_session() -> Result<Option<GithubAuthSession>, String> {
     let entry = github_auth_keyring_entry()?;
     match entry.get_password() {
@@ -399,18 +405,15 @@ pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<Stri
 
 pub fn push(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<PushSuccess, String> {
     let branch_name = current_branch_name(repo_path)?;
-    let base_message = if is_github_origin(repo_path) {
-        match try_push_with_auth(repo_path, branch_name.as_deref(), auth) {
-            Ok(Some(message)) => message,
-            Ok(None) => unreachable!("GitHub push path must not continue without auth"),
-            Err(error) => return Err(error),
-        }
-    } else {
-        let branch_name = branch_name
-            .as_deref()
-            .ok_or_else(|| "Push requires a checked-out branch.".to_string())?;
-        push_with_git2(repo_path, branch_name, RemoteAuth::System)?
-    };
+    let base_message =
+        if let Some(message) = try_push_with_auth(repo_path, branch_name.as_deref(), auth)? {
+            message
+        } else {
+            let branch_name = branch_name
+                .as_deref()
+                .ok_or_else(|| "Push requires a checked-out branch.".to_string())?;
+            push_with_git2(repo_path, branch_name, RemoteAuth::System)?
+        };
 
     let mut message = base_message;
     let pull_request_prompt = match branch_name.as_deref() {
@@ -806,14 +809,8 @@ fn try_push_with_auth(
     branch_name: Option<&str>,
     auth: Option<&GithubAuthSession>,
 ) -> Result<Option<String>, String> {
-    if !is_github_origin(repo_path) {
-        return Ok(None);
-    }
-
     if !is_github_https_origin(repo_path) {
-        return Err(
-            "GitHub pushes in the app require an HTTPS 'origin' so the saved GitHub device-flow sign-in can be used consistently. Change the remote URL to https://github.com/<owner>/<repo>.git and try again.".into(),
-        );
+        return Ok(None);
     }
 
     let Some(branch_name) = branch_name else {
@@ -918,13 +915,7 @@ fn push_tag(
     tag_name: &str,
     auth: Option<&GithubAuthSession>,
 ) -> Result<(), String> {
-    if is_github_origin(repo_path) {
-        if !is_github_https_origin(repo_path) {
-            return Err(
-                "GitHub tag creation in the app requires an HTTPS 'origin' so the saved GitHub device-flow sign-in can be used consistently. Change the remote URL to https://github.com/<owner>/<repo>.git and try again.".into(),
-            );
-        }
-
+    if is_github_https_origin(repo_path) {
         let auth = auth.ok_or_else(|| {
             "GitHub tag creation requires the app's GitHub sign-in. Use 'Sign in to GitHub...' and try again."
                 .to_string()
@@ -1113,10 +1104,6 @@ fn rollback_tag(repo: &Repository, tag_name: &str) -> Result<(), String> {
         .map_err(|e| format!("Tag rollback error: {}", e))
 }
 
-fn is_github_origin(repo_path: &Path) -> bool {
-    github_repo_slug(repo_path).is_some()
-}
-
 fn is_github_https_origin(repo_path: &Path) -> bool {
     let Ok(repo) = Repository::open(repo_path) else {
         return false;
@@ -1281,6 +1268,42 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
 #[cfg(test)]
 mod tests {
     use super::{is_github_https_url, parse_github_remote_slug};
+    use git2::Repository;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestRepoDir {
+        path: PathBuf,
+    }
+
+    impl TestRepoDir {
+        fn init_with_origin(origin_url: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "justanothergitgui-git-ops-test-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            std::fs::create_dir_all(&path).expect("create temp repo dir");
+            let repo = Repository::init(&path).expect("init temp repo");
+            repo.remote("origin", origin_url)
+                .expect("add origin remote");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestRepoDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 
     #[test]
     fn treats_https_github_remotes_as_app_auth_candidates() {
@@ -1305,6 +1328,24 @@ mod tests {
         assert!(!is_github_https_url(
             "ssh://git@github.com/octocat/hello-world.git"
         ));
+    }
+
+    #[test]
+    fn github_https_pushes_require_app_auth() {
+        let repo_dir = TestRepoDir::init_with_origin("https://github.com/octocat/hello-world.git");
+        let error = super::try_push_with_auth(repo_dir.path(), Some("main"), None)
+            .expect_err("https GitHub remotes should require app auth");
+        assert!(error.contains("GitHub push requires the app's GitHub sign-in"));
+    }
+
+    #[test]
+    fn github_ssh_pushes_fall_back_to_system_auth() {
+        let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
+        assert_eq!(
+            super::try_push_with_auth(repo_dir.path(), Some("main"), None)
+                .expect("ssh GitHub remotes should stay on system auth"),
+            None
+        );
     }
 }
 
