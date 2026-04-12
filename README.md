@@ -29,6 +29,7 @@ The application combines:
 - **Write commits** from the right-hand commit panel
 - **Switch branches** from the toolbar
 - **Create a new branch** from inside the app
+- **Create and push tags** from `main` / `master`
 - **Browse commit history** with a visual graph lane
 - **Resolve merge conflicts** with built-in “Accept Ours / Theirs / Both” actions
 - **Pull and push** directly from the main toolbar
@@ -49,9 +50,10 @@ Just Another Git GUI includes a built-in GitHub publishing and pull request flow
 1. **Publish Folder to GitHub** initializes a repository if needed, creates the first commit, creates the GitHub repository, adds `origin`, and pushes `main`
 2. **Sign in to GitHub** uses OAuth Device Flow and stores the session in the OS credential store
 3. **GitHub pushes and pulls inside the app** use that saved device-flow session consistently
-4. After you **push a branch**, the app checks whether a pull request already exists
-5. If a PR exists, you get a shortcut to **open it**
-6. If not, you get a shortcut to **create one**
+4. **GitHub tag pushes inside the app** use that same saved device-flow session
+5. After you **push a branch**, the app checks whether a pull request already exists
+6. If a PR exists, you get a shortcut to **open it**
+7. If not, you get a shortcut to **create one**
 
 This is implemented directly in Rust without relying on `gh`.
 
@@ -108,7 +110,8 @@ target\release\justanothergitgui.exe
 5. **Commit** from the right-side panel
 6. **Switch branches** or create a new one from the toolbar
 7. Use **Pull** / **Push** from the top-right area
-8. If you are working with GitHub, **sign in once** and let the app handle publishing and PR shortcuts
+8. On `main` or `master`, use **Create Tag...** to tag the current HEAD commit
+9. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
 
 ### GitHub Sign-In
 
@@ -120,7 +123,7 @@ The app uses **GitHub OAuth Device Flow**:
 
 On restart, the saved GitHub session is loaded automatically if the system keychain allows access.
 
-For GitHub repositories, the in-app push and pull flow expects `origin` to use an HTTPS GitHub URL so the saved device-flow session can be reused consistently.
+For GitHub repositories, the in-app push, pull, and tag flow expects `origin` to use an HTTPS GitHub URL so the saved device-flow session can be reused consistently.
 
 If an operation fails, the UI shows a short message and writes sanitized details to the application log. When logs exist, use the **Logs** / **View Logs** button in the app to inspect them.
 
@@ -179,7 +182,7 @@ cargo test
 Areas that would be valuable to improve next:
 
 - richer branch and remote management
-- tags, stashes, and cherry-pick support
+- stashes and cherry-pick support
 - better repository settings and preferences
 - improved history graph for more complex merge topologies
 - release packaging for Linux and Windows

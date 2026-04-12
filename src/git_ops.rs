@@ -120,6 +120,10 @@ pub fn get_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
     Ok(names)
 }
 
+pub fn can_create_tag_on_branch(branch_name: &str) -> bool {
+    matches!(branch_name.trim(), "main" | "master")
+}
+
 pub fn has_origin_remote(repo: &Repository) -> bool {
     repo.find_remote("origin").is_ok()
 }
@@ -403,6 +407,55 @@ pub fn pull(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<String
     let branch_name = current_branch_name(repo_path)?
         .ok_or_else(|| "Pull requires a checked-out branch.".to_string())?;
     pull_with_git2(repo_path, &branch_name, RemoteAuth::System)
+}
+
+pub fn create_tag(
+    repo_path: &Path,
+    tag_name: &str,
+    auth: Option<&GithubAuthSession>,
+) -> Result<String, String> {
+    let tag_name = tag_name.trim();
+    if tag_name.is_empty() {
+        return Err("Tag name cannot be empty.".into());
+    }
+
+    let branch_name = current_branch_name(repo_path)?
+        .ok_or_else(|| "Tag creation requires a checked-out branch.".to_string())?;
+    if !can_create_tag_on_branch(&branch_name) {
+        return Err("Tags can only be created from the main or master branch.".into());
+    }
+
+    let refname = format!("refs/tags/{}", tag_name);
+    if !git2::Reference::is_valid_name(&refname) {
+        return Err("Invalid tag name.".into());
+    }
+
+    let repo = Repository::open(repo_path).map_err(|e| format!("Open repo error: {}", e))?;
+    if repo.find_reference(&refname).is_ok() {
+        return Err("Tag already exists.".into());
+    }
+
+    let target = repo
+        .head()
+        .and_then(|head| head.peel(git2::ObjectType::Commit))
+        .map_err(|_| "Cannot create a tag without a current commit.".to_string())?;
+    repo.tag_lightweight(tag_name, &target, false)
+        .map_err(|e| format!("Create tag error: {}", e))?;
+
+    if !has_origin_remote(&repo) {
+        return Ok(format!("Created local tag {}", tag_name));
+    }
+
+    match push_tag(repo_path, tag_name, auth) {
+        Ok(()) => Ok(format!("Created and pushed tag {}", tag_name)),
+        Err(error) => match rollback_tag(&repo, tag_name) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{} Local tag rollback also failed: {}",
+                error, rollback_error
+            )),
+        },
+    }
 }
 
 pub fn github_auth_login<F>(client_id: &str, on_prompt: F) -> Result<GithubAuthSession, String>
@@ -764,6 +817,46 @@ fn push_with_git2(
     Ok("Push successful".into())
 }
 
+fn push_tag(
+    repo_path: &Path,
+    tag_name: &str,
+    auth: Option<&GithubAuthSession>,
+) -> Result<(), String> {
+    if is_github_origin(repo_path) {
+        if !is_github_https_origin(repo_path) {
+            return Err(
+                "GitHub tag creation in the app requires an HTTPS 'origin' so the saved GitHub device-flow sign-in can be used consistently. Change the remote URL to https://github.com/<owner>/<repo>.git and try again.".into(),
+            );
+        }
+
+        let auth = auth.ok_or_else(|| {
+            "GitHub tag creation requires the app's GitHub sign-in. Use 'Sign in to GitHub...' and try again."
+                .to_string()
+        })?;
+        return push_tag_with_git2(repo_path, tag_name, RemoteAuth::GitHub(auth));
+    }
+
+    push_tag_with_git2(repo_path, tag_name, RemoteAuth::System)
+}
+
+fn push_tag_with_git2(
+    repo_path: &Path,
+    tag_name: &str,
+    auth: RemoteAuth<'_>,
+) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Open repo error: {}", e))?;
+    let mut remote = repo
+        .find_remote("origin")
+        .map_err(|e| format!("Remote error: {}", e))?;
+    let mut push_options = git2::PushOptions::new();
+    push_options.remote_callbacks(remote_callbacks(&repo, auth)?);
+    let refspec = format!("refs/tags/{0}:refs/tags/{0}", tag_name);
+    remote
+        .push(&[&refspec], Some(&mut push_options))
+        .map_err(|e| format!("Tag push error: {}", e))?;
+    Ok(())
+}
+
 fn pull_with_git2(
     repo_path: &Path,
     branch_name: &str,
@@ -912,6 +1005,16 @@ fn parse_github_slug(slug: &str) -> Option<(String, String)> {
     } else {
         Some((owner.to_string(), repo.to_string()))
     }
+}
+
+fn rollback_tag(repo: &Repository, tag_name: &str) -> Result<(), String> {
+    let refname = format!("refs/tags/{}", tag_name);
+    let mut reference = repo
+        .find_reference(&refname)
+        .map_err(|e| format!("Tag rollback error: {}", e))?;
+    reference
+        .delete()
+        .map_err(|e| format!("Tag rollback error: {}", e))
 }
 
 fn is_github_origin(repo_path: &Path) -> bool {
@@ -1099,6 +1202,20 @@ pub fn get_commit_history(
                         .or_default()
                         .push(name.to_string());
                 }
+            }
+        }
+    }
+
+    if let Ok(tag_names) = repo.tag_names(None) {
+        for name in tag_names.iter().flatten() {
+            let refname = format!("refs/tags/{}", name);
+            if let Ok(reference) = repo.find_reference(&refname)
+                && let Ok(target) = reference.peel_to_commit()
+            {
+                branch_map
+                    .entry(target.id().to_string())
+                    .or_default()
+                    .push(name.to_string());
             }
         }
     }

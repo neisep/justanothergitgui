@@ -384,6 +384,29 @@ impl GitGuiApp {
                     refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
+                UiAction::CreateTag(tag_name) => {
+                    let tab = &mut self.tabs[active_index];
+                    if let Some(path) = tab.state.repo_path.clone() {
+                        if tab.worker.is_busy() {
+                            tab.state.status_msg = "Busy — please wait...".into();
+                        } else if !git_ops::can_create_tag_on_branch(&tab.state.branch) {
+                            tab.state.status_msg =
+                                "Tags can only be created from the main or master branch.".into();
+                        } else if tab.state.has_github_origin && self.github_auth_session.is_none()
+                        {
+                            tab.state.status_msg =
+                                "Sign in to GitHub before creating tags for this repository."
+                                    .into();
+                        } else {
+                            tab.state.status_msg = format!("Creating tag {}...", tag_name);
+                            tab.state.new_tag_name.clear();
+                            tab.state.show_create_tag_dialog = false;
+                            tab.worker
+                                .create_tag(path, tag_name, self.github_auth_session.clone());
+                        }
+                    }
+                }
+
                 UiAction::LaunchPullRequest => {
                     let tab = &mut self.tabs[active_index];
                     let Some(prompt) = tab.state.pull_request_prompt.clone() else {
@@ -526,6 +549,7 @@ impl GitGuiApp {
                 }
                 TaskResult::Push(_)
                 | TaskResult::Pull(_)
+                | TaskResult::CreateTag(_)
                 | TaskResult::OpenPullRequest(_)
                 | TaskResult::CreatePullRequest(_) => {}
             }
@@ -563,6 +587,15 @@ impl GitGuiApp {
                     TaskResult::Pull(Err(msg)) => {
                         tab.state.status_msg = status_message_for_error("Pull", &msg);
                         tab_logs.push(("Pull".into(), msg));
+                    }
+                    TaskResult::CreateTag(Ok(msg)) => {
+                        tab.state.status_msg = msg;
+                        refresh_indices.push(index);
+                    }
+                    TaskResult::CreateTag(Err(msg)) => {
+                        tab.state.status_msg = status_message_for_error("Create tag", &msg);
+                        tab_logs.push(("Create tag".into(), msg));
+                        refresh_indices.push(index);
                     }
                     TaskResult::OpenPullRequest(Ok(msg)) => {
                         tab.state.status_msg = msg;
@@ -639,9 +672,9 @@ impl GitGuiApp {
             ui.horizontal(|ui| {
                 let state = &mut self.tabs[active_index].state;
                 let controls_width = if state.branch.is_empty() {
-                    320.0
+                    420.0
                 } else {
-                    460.0
+                    580.0
                 };
 
                 if ui.button("Open...").clicked() {
@@ -745,6 +778,27 @@ impl GitGuiApp {
                         .clicked()
                     {
                         state.show_create_branch_dialog = true;
+                    }
+
+                    let can_create_tag = has_repo
+                        && git_ops::can_create_tag_on_branch(&state.branch)
+                        && (!state.has_github_origin || self.github_auth_session.is_some());
+                    if ui
+                        .add_enabled(can_create_tag, egui::Button::new("Create Tag..."))
+                        .on_hover_text(if can_create_tag {
+                            if state.has_origin_remote {
+                                "Create a tag from the current HEAD commit and push it to origin"
+                            } else {
+                                "Create a local tag from the current HEAD commit"
+                            }
+                        } else if state.has_github_origin && self.github_auth_session.is_none() {
+                            "Sign in to GitHub to create and push tags for this repository"
+                        } else {
+                            "Switch to main or master to create a tag"
+                        })
+                        .clicked()
+                    {
+                        state.show_create_tag_dialog = true;
                     }
 
                     if !state.branch.is_empty() {
@@ -1018,6 +1072,89 @@ impl GitGuiApp {
         }
     }
 
+    fn show_create_tag_dialog(&mut self, ctx: &egui::Context) {
+        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let state = &mut self.tabs[active_index].state;
+
+        if !state.show_create_tag_dialog {
+            return;
+        }
+
+        let mut keep_open = state.show_create_tag_dialog;
+        let mut close_requested = false;
+        let mut submit_tag = None;
+        let can_create_tag = git_ops::can_create_tag_on_branch(&state.branch)
+            && (!state.has_github_origin || self.github_auth_session.is_some());
+
+        egui::Window::new("Create Tag")
+            .id(egui::Id::new("create_tag_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                ui.label(format!("Current branch: {}", state.branch));
+                ui.add_space(6.0);
+                ui.label("Tag name");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut state.new_tag_name)
+                        .desired_width(260.0)
+                        .hint_text("v1.0.0"),
+                );
+                let can_submit = can_create_tag && !state.new_tag_name.trim().is_empty();
+
+                if response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    && can_submit
+                {
+                    submit_tag = Some(state.new_tag_name.trim().to_string());
+                }
+
+                ui.add_space(8.0);
+                if can_create_tag {
+                    if state.has_origin_remote {
+                        ui.weak("The tag will be pushed to origin after it is created.");
+                    } else {
+                        ui.weak("No origin remote is configured, so the tag will be local only.");
+                    }
+                } else if state.has_github_origin && self.github_auth_session.is_none() {
+                    ui.weak("Sign in to GitHub before creating tags for this repository.");
+                } else {
+                    ui.weak("Tags can only be created from the main or master branch.");
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(can_submit, egui::Button::new("Create"))
+                            .clicked()
+                        {
+                            submit_tag = Some(state.new_tag_name.trim().to_string());
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+            });
+
+        if let Some(tag_name) = submit_tag {
+            state.actions.push(UiAction::CreateTag(tag_name));
+        }
+
+        if close_requested {
+            state.new_tag_name.clear();
+            state.show_create_tag_dialog = false;
+        } else {
+            state.show_create_tag_dialog = keep_open;
+            if !keep_open {
+                state.new_tag_name.clear();
+            }
+        }
+    }
+
     fn show_github_auth_dialog(&mut self, ctx: &egui::Context) {
         let Some(prompt) = self.github_auth_prompt.clone() else {
             return;
@@ -1097,6 +1234,7 @@ impl eframe::App for GitGuiApp {
 
         self.show_publish_repo_dialog(&ctx);
         self.show_create_branch_dialog(&ctx);
+        self.show_create_tag_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);
         self.show_log_viewer_dialog(&ctx);
 
@@ -1135,6 +1273,8 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.branches.clear();
     state.new_branch_name.clear();
     state.show_create_branch_dialog = false;
+    state.new_tag_name.clear();
+    state.show_create_tag_dialog = false;
     state.unstaged.clear();
     state.staged.clear();
     state.commit_msg.clear();
