@@ -6,6 +6,7 @@ use std::sync::mpsc;
 pub enum TaskResult {
     Push(Result<crate::git_ops::PushSuccess, String>),
     Pull(Result<String, String>),
+    CreateTag(Result<String, String>),
     GithubAuthPrompt(crate::git_ops::GithubAuthPrompt),
     GithubAuth(Result<crate::git_ops::GithubAuthSession, String>),
     CreateGithubRepo(Result<crate::git_ops::CreateGithubRepoSuccess, String>),
@@ -15,7 +16,8 @@ pub enum TaskResult {
 
 enum WorkerTask {
     Push(PathBuf, Option<crate::git_ops::GithubAuthSession>),
-    Pull(PathBuf),
+    Pull(PathBuf, Option<crate::git_ops::GithubAuthSession>),
+    CreateTag(PathBuf, String, Option<crate::git_ops::GithubAuthSession>),
     GithubAuth { client_id: String },
     CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
     OpenPullRequest(String),
@@ -42,7 +44,12 @@ impl Worker {
                     WorkerTask::Push(path, auth) => {
                         TaskResult::Push(crate::git_ops::push(&path, auth.as_ref()))
                     }
-                    WorkerTask::Pull(path) => TaskResult::Pull(crate::git_ops::pull(&path)),
+                    WorkerTask::Pull(path, auth) => {
+                        TaskResult::Pull(crate::git_ops::pull(&path, auth.as_ref()))
+                    }
+                    WorkerTask::CreateTag(path, tag_name, auth) => TaskResult::CreateTag(
+                        crate::git_ops::create_tag(&path, &tag_name, auth.as_ref()),
+                    ),
                     WorkerTask::GithubAuth { client_id } => {
                         let prompt_tx = result_tx.clone();
                         TaskResult::GithubAuth(crate::git_ops::github_auth_login(
@@ -80,9 +87,22 @@ impl Worker {
         }
     }
 
-    pub fn pull(&self, repo_path: PathBuf) {
+    pub fn pull(&self, repo_path: PathBuf, auth: Option<crate::git_ops::GithubAuthSession>) {
         if !self.is_busy() {
-            let _ = self.tx.send(WorkerTask::Pull(repo_path));
+            let _ = self.tx.send(WorkerTask::Pull(repo_path, auth));
+        }
+    }
+
+    pub fn create_tag(
+        &self,
+        repo_path: PathBuf,
+        tag_name: String,
+        auth: Option<crate::git_ops::GithubAuthSession>,
+    ) {
+        if !self.is_busy() {
+            let _ = self
+                .tx
+                .send(WorkerTask::CreateTag(repo_path, tag_name, auth));
         }
     }
 
