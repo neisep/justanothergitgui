@@ -7,6 +7,7 @@ edition = "2024"
 eframe = "0.34.1"
 git2 = { version = "0.20.4", features = ["vendored-libgit2", "vendored-openssl"] }
 keyring = { version = "3.6.2", default-features = false, features = ["windows-native", "sync-secret-service", "vendored"] }
+regex = "1.12.2"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 rfd = "0.17.2"
 serde = { version = "1.0.228", features = ["derive"] }

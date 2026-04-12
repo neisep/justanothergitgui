@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use git2::Repository;
 
+use crate::commit_rules::{self, CommitMessageRuleSet};
 use crate::git_ops;
 use crate::logging::{self, AppLogger};
+use crate::settings::{self, AppSettings};
 use crate::state::{AppState, CenterView, PullRequestPrompt, SelectedFile, UiAction};
 use crate::ui;
 use crate::worker::{TaskResult, Worker};
@@ -28,12 +30,19 @@ struct PublishRepoDialogState {
     operation_status: String,
 }
 
+struct SettingsDialogState {
+    show: bool,
+    status: String,
+}
+
 pub struct GitGuiApp {
     tabs: Vec<RepoTab>,
     active_tab: usize,
     welcome_status: String,
     welcome_worker: Worker,
     publish_dialog: PublishRepoDialogState,
+    settings: AppSettings,
+    settings_dialog: SettingsDialogState,
     github_auth_session: Option<git_ops::GithubAuthSession>,
     github_auth_prompt: Option<git_ops::GithubAuthPrompt>,
     logger: AppLogger,
@@ -41,13 +50,13 @@ pub struct GitGuiApp {
 }
 
 impl PublishRepoDialogState {
-    fn new() -> Self {
+    fn new(ruleset: CommitMessageRuleSet) -> Self {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let mut state = Self {
             show: false,
             folder_path: current_dir.display().to_string(),
             repo_name: default_repo_name_for_path(&current_dir),
-            commit_message: "Initial commit".into(),
+            commit_message: commit_rules::default_initial_commit_message(ruleset).into(),
             visibility: git_ops::GithubRepoVisibility::Private,
             github_authenticated: false,
             github_status: String::new(),
@@ -57,11 +66,11 @@ impl PublishRepoDialogState {
         state
     }
 
-    fn reset_for_path(&mut self, path: Option<PathBuf>) {
+    fn reset_for_path(&mut self, path: Option<PathBuf>, ruleset: CommitMessageRuleSet) {
         let path =
             path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         self.set_folder(path);
-        self.commit_message = "Initial commit".into();
+        self.commit_message = commit_rules::default_initial_commit_message(ruleset).into();
         self.visibility = git_ops::GithubRepoVisibility::Private;
         self.operation_status.clear();
     }
@@ -77,12 +86,22 @@ impl GitGuiApp {
     pub fn new() -> Self {
         let logger = AppLogger::new();
         let mut startup_status = None;
+        let settings = match settings::load_app_settings() {
+            Ok(settings) => settings,
+            Err(msg) => {
+                logger.log_error("Settings", &msg);
+                startup_status = Some(status_message_for_error("Settings", &msg));
+                AppSettings::default()
+            }
+        };
         let github_auth_session = match git_ops::load_github_auth_session() {
             Ok(Some(session)) => Some(session),
             Ok(None) => None,
             Err(msg) => {
                 logger.log_error("GitHub sign-in", &msg);
-                startup_status = Some(status_message_for_error("GitHub sign-in", &msg));
+                if startup_status.is_none() {
+                    startup_status = Some(status_message_for_error("GitHub sign-in", &msg));
+                }
                 None
             }
         };
@@ -92,7 +111,12 @@ impl GitGuiApp {
             active_tab: 0,
             welcome_status: "Open a Git repository to get started.".into(),
             welcome_worker: Worker::new(),
-            publish_dialog: PublishRepoDialogState::new(),
+            publish_dialog: PublishRepoDialogState::new(settings.commit_message_ruleset),
+            settings,
+            settings_dialog: SettingsDialogState {
+                show: false,
+                status: String::new(),
+            },
             github_auth_session,
             github_auth_prompt: None,
             logger,
@@ -172,9 +196,14 @@ impl GitGuiApp {
     }
 
     fn open_publish_repo_dialog(&mut self, path: Option<PathBuf>) {
-        self.publish_dialog.reset_for_path(path);
+        self.publish_dialog
+            .reset_for_path(path, self.settings.commit_message_ruleset);
         self.publish_dialog.show = true;
         self.refresh_github_auth_status();
+    }
+
+    fn open_settings_dialog(&mut self) {
+        self.settings_dialog.show = true;
     }
 
     fn refresh_github_auth_status(&mut self) {
@@ -297,21 +326,33 @@ impl GitGuiApp {
                 UiAction::Commit => {
                     let tab = &mut self.tabs[active_index];
                     let msg = tab.state.commit_msg.trim().to_string();
-                    match git_ops::create_commit(&tab.repo, &msg) {
-                        Ok(oid) => {
-                            tab.state.status_msg = format!("Committed: {}", &oid.to_string()[..8]);
-                            tab.state.commit_msg.clear();
-                            tab.state.selected_file = None;
-                            tab.state.diff_content.clear();
-                            tab.state.conflict_data = None;
-                        }
-                        Err(e) => {
-                            let detail = e.to_string();
-                            tab.state.status_msg = status_message_for_error("Commit", &detail);
-                            log_entry = Some(("Commit", detail));
+                    match commit_rules::validate_for_submit(
+                        self.settings.commit_message_ruleset,
+                        &msg,
+                    ) {
+                        Ok(()) => match git_ops::create_commit(&tab.repo, &msg) {
+                            Ok(oid) => {
+                                tab.state.status_msg =
+                                    format!("Committed: {}", &oid.to_string()[..8]);
+                                tab.state.commit_msg.clear();
+                                tab.state.selected_file = None;
+                                tab.state.diff_content.clear();
+                                tab.state.conflict_data = None;
+                            }
+                            Err(e) => {
+                                let detail = e.to_string();
+                                tab.state.status_msg = status_message_for_error("Commit", &detail);
+                                log_entry = Some(("Commit", detail));
+                            }
+                        },
+                        Err(detail) => {
+                            tab.state.status_msg = detail;
                         }
                     }
-                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
+
+                    if tab.state.status_msg.starts_with("Committed:") || log_entry.is_some() {
+                        refresh_error = refresh_status(&mut tab.state, &tab.repo);
+                    }
                 }
 
                 UiAction::Push => {
@@ -654,6 +695,7 @@ impl GitGuiApp {
     fn show_repo_tabs(&mut self, ui: &mut egui::Ui) {
         let mut next_active = None;
         let mut open_clicked = false;
+        let mut settings_clicked = false;
         let active_index = self.active_tab.min(self.tabs.len() - 1);
         let tab_labels: Vec<(String, Option<String>)> = self
             .tabs
@@ -673,13 +715,17 @@ impl GitGuiApp {
             ui.horizontal(|ui| {
                 let state = &mut self.tabs[active_index].state;
                 let controls_width = if state.branch.is_empty() {
-                    420.0
+                    520.0
                 } else {
-                    620.0
+                    720.0
                 };
 
                 if ui.button("Open...").clicked() {
                     open_clicked = true;
+                }
+
+                if ui.button("Settings...").clicked() {
+                    settings_clicked = true;
                 }
 
                 ui.separator();
@@ -848,6 +894,9 @@ impl GitGuiApp {
         if open_clicked {
             self.open_repo_dialog();
         }
+        if settings_clicked {
+            self.open_settings_dialog();
+        }
     }
 
     fn show_welcome(&mut self, ui: &mut egui::Ui) {
@@ -863,12 +912,95 @@ impl GitGuiApp {
             if ui.button("Publish Folder to GitHub...").clicked() {
                 self.open_publish_repo_dialog(None);
             }
+            if ui.button("Settings...").clicked() {
+                self.open_settings_dialog();
+            }
             ui.add_space(12.0);
             ui.weak(&self.welcome_status);
             if self.logger.has_entries() && ui.button("View Logs").clicked() {
                 self.show_log_viewer = true;
             }
         });
+    }
+
+    fn show_settings_dialog(&mut self, ctx: &egui::Context) {
+        if !self.settings_dialog.show {
+            return;
+        }
+
+        let mut keep_open = self.settings_dialog.show;
+        let mut close_requested = false;
+        let mut selected_ruleset = self.settings.commit_message_ruleset;
+
+        egui::Window::new("Settings")
+            .id(egui::Id::new("settings_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                ui.label("Commit message rules");
+                egui::ComboBox::from_id_salt("commit_message_ruleset")
+                    .selected_text(selected_ruleset.display_name())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut selected_ruleset,
+                            CommitMessageRuleSet::Off,
+                            CommitMessageRuleSet::Off.display_name(),
+                        );
+                        ui.selectable_value(
+                            &mut selected_ruleset,
+                            CommitMessageRuleSet::ConventionalCommits,
+                            CommitMessageRuleSet::ConventionalCommits.display_name(),
+                        );
+                    });
+
+                ui.add_space(8.0);
+                if let Some(description) = selected_ruleset.description() {
+                    ui.weak(description);
+                    ui.add_space(6.0);
+                    ui.weak("Right-click a commit message editor to insert a valid prefix.");
+                } else {
+                    ui.weak("Leave this off to allow any commit message format.");
+                }
+
+                if !self.settings_dialog.status.is_empty() {
+                    ui.add_space(8.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 120, 120),
+                        &self.settings_dialog.status,
+                    );
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+            });
+
+        if selected_ruleset != self.settings.commit_message_ruleset {
+            self.settings.commit_message_ruleset = selected_ruleset;
+            match settings::save_app_settings(&self.settings) {
+                Ok(()) => {
+                    self.settings_dialog.status.clear();
+                }
+                Err(error) => {
+                    self.logger.log_error("Settings", &error);
+                    self.settings_dialog.status = status_message_for_error("Settings", &error);
+                    self.set_status_message(self.settings_dialog.status.clone());
+                }
+            }
+        }
+
+        if close_requested {
+            keep_open = false;
+        }
+
+        self.settings_dialog.show = keep_open;
     }
 
     fn show_publish_repo_dialog(&mut self, ctx: &egui::Context) {
@@ -911,10 +1043,42 @@ impl GitGuiApp {
 
                 ui.add_space(8.0);
                 ui.label("Initial commit message");
-                ui.add(
+                let response = ui.add(
                     egui::TextEdit::singleline(&mut self.publish_dialog.commit_message)
                         .desired_width(320.0),
                 );
+                response.context_menu(|ui| {
+                    if self.settings.commit_message_ruleset == CommitMessageRuleSet::Off {
+                        ui.weak("Enable a commit message ruleset in Settings to insert a prefix.");
+                        return;
+                    }
+
+                    ui.label("Insert prefix");
+                    ui.separator();
+                    for prefix in self.settings.commit_message_ruleset.prefixes() {
+                        if ui.button(*prefix).clicked() {
+                            commit_rules::apply_prefix(
+                                self.settings.commit_message_ruleset,
+                                &mut self.publish_dialog.commit_message,
+                                prefix,
+                            );
+                            ui.close();
+                        }
+                    }
+                });
+
+                let commit_message_error = commit_rules::validation_error(
+                    self.settings.commit_message_ruleset,
+                    &self.publish_dialog.commit_message,
+                );
+                if let Some(error) = &commit_message_error {
+                    ui.add_space(4.0);
+                    ui.colored_label(egui::Color32::from_rgb(220, 120, 120), error);
+                } else if let Some(description) = self.settings.commit_message_ruleset.description()
+                {
+                    ui.add_space(4.0);
+                    ui.weak(description);
+                }
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -953,7 +1117,8 @@ impl GitGuiApp {
                     && self.publish_dialog.github_authenticated
                     && !self.publish_dialog.folder_path.trim().is_empty()
                     && !self.publish_dialog.repo_name.trim().is_empty()
-                    && !self.publish_dialog.commit_message.trim().is_empty();
+                    && !self.publish_dialog.commit_message.trim().is_empty()
+                    && commit_message_error.is_none();
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -1218,6 +1383,7 @@ impl eframe::App for GitGuiApp {
 
         if self.tabs.is_empty() {
             self.show_welcome(ui);
+            self.show_settings_dialog(&ctx);
             self.show_publish_repo_dialog(&ctx);
             self.show_github_auth_dialog(&ctx);
             self.show_log_viewer_dialog(&ctx);
@@ -1234,7 +1400,7 @@ impl eframe::App for GitGuiApp {
             // Render panels (order: top/bottom first, then sides, then center)
             let open_logs = ui::bottom_bar::show(ui, &tab.state, has_logs);
             ui::file_panel::show(ui, &mut tab.state);
-            ui::commit_panel::show(ui, &mut tab.state);
+            ui::commit_panel::show(ui, &mut tab.state, self.settings.commit_message_ruleset);
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui::diff_panel::show(ui, &mut tab.state);
@@ -1247,6 +1413,7 @@ impl eframe::App for GitGuiApp {
         }
 
         self.show_publish_repo_dialog(&ctx);
+        self.show_settings_dialog(&ctx);
         self.show_create_branch_dialog(&ctx);
         self.show_create_tag_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);

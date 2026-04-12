@@ -1,8 +1,9 @@
 use eframe::egui;
 
+use crate::commit_rules::{self, CommitMessageRuleSet};
 use crate::state::{AppState, UiAction};
 
-pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn show(ui: &mut egui::Ui, state: &mut AppState, ruleset: CommitMessageRuleSet) {
     egui::Panel::right("commit_panel")
         .default_size(260.0)
         .min_size(180.0)
@@ -15,23 +16,53 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 .id_salt("commit_msg_scroll")
                 .max_height(150.0)
                 .show(ui, |ui| {
-                    ui.add(
+                    let response = ui.add(
                         egui::TextEdit::multiline(&mut state.commit_msg)
                             .desired_width(f32::INFINITY)
                             .hint_text("Describe your changes...")
                             .desired_rows(6),
                     );
+                    response.context_menu(|ui| {
+                        if ruleset == CommitMessageRuleSet::Off {
+                            ui.weak(
+                                "Enable a commit message ruleset in Settings to insert a prefix.",
+                            );
+                            return;
+                        }
+
+                        ui.label("Insert prefix");
+                        ui.separator();
+                        for prefix in ruleset.prefixes() {
+                            if ui.button(*prefix).clicked() {
+                                commit_rules::apply_prefix(ruleset, &mut state.commit_msg, prefix);
+                                ui.close();
+                            }
+                        }
+                    });
                 });
 
             ui.add_space(8.0);
+            let validation_error = commit_rules::validation_error(ruleset, &state.commit_msg);
 
-            let can_commit = !state.staged.is_empty() && !state.commit_msg.trim().is_empty();
+            if let Some(error) = &validation_error {
+                ui.colored_label(egui::Color32::from_rgb(220, 120, 120), error);
+                ui.add_space(8.0);
+            } else if let Some(description) = ruleset.description() {
+                ui.weak(description);
+                ui.add_space(8.0);
+            }
+
+            let can_commit = !state.staged.is_empty()
+                && !state.commit_msg.trim().is_empty()
+                && validation_error.is_none();
 
             ui.add_enabled_ui(can_commit, |ui| {
                 if ui
                     .button("Commit")
                     .on_hover_text(if can_commit {
                         "Create a commit with staged changes"
+                    } else if validation_error.is_some() {
+                        "Fix the commit message format first"
                     } else if state.staged.is_empty() {
                         "Stage files first"
                     } else {

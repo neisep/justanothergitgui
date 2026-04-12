@@ -27,6 +27,8 @@ The application combines:
 - **Drag and drop files between staged and unstaged lists**
 - **Review diffs** in a built-in changes view
 - **Write commits** from the right-hand commit panel
+- **Optionally enforce Conventional Commits** from a settings dialog
+- **Right-click commit message editors** to insert an allowed Conventional Commit prefix
 - **Switch branches** from the toolbar
 - **Create a new branch** from inside the app
 - **Create and push tags** from `main` / `master`
@@ -114,6 +116,16 @@ target\release\justanothergitgui.exe
 8. When the current branch has local commits that are not on the remote yet, the app shows them as **Push(n)**
 9. On `main` or `master`, use **Create Tag...** to tag the current HEAD commit
 10. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
+
+### Commit Message Rules
+
+Use **Settings...** to leave commit message validation off or enable **Conventional Commits**.
+
+When Conventional Commits is enabled:
+
+- the first line of the commit message must match the Conventional Commits format
+- invalid commit messages are blocked before commit or repository publish
+- you can **right-click** the commit message editor to insert a valid prefix such as `feat: ` or `fix: `
 
 ### GitHub Sign-In
 
