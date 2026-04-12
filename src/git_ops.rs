@@ -135,10 +135,9 @@ pub fn get_outgoing_commit_count(repo: &Repository) -> Result<usize, git2::Error
         return Ok(0);
     }
 
-    let branch = repo.find_branch(branch_name, git2::BranchType::Local)?;
-    if let Ok(upstream) = branch.upstream()
-        && let Some(upstream_oid) = upstream.get().target()
-    {
+    let _ = repair_branch_upstream(repo, branch_name);
+
+    if let Some(upstream_oid) = upstream_target_oid(repo, branch_name)? {
         let (ahead, _) = repo.graph_ahead_behind(local_oid, upstream_oid)?;
         return Ok(ahead);
     }
@@ -855,10 +854,8 @@ fn push_with_git2(
 
     sync_remote_tracking_branch(&repo, branch_name)?;
 
-    if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
-        branch
-            .set_upstream(Some(branch_name))
-            .map_err(|e| format!("Upstream configuration error: {}", e))?;
+    if let Err(error) = repair_branch_upstream(&repo, branch_name) {
+        return Err(format!("Upstream configuration error: {}", error));
     }
 
     Ok("Push successful".into())
@@ -877,6 +874,48 @@ fn sync_remote_tracking_branch(repo: &Repository, branch_name: &str) -> Result<(
         "Update remote-tracking ref after push",
     )
     .map_err(|e| format!("Push tracking update error: {}", e))?;
+    Ok(())
+}
+
+fn upstream_target_oid(
+    repo: &Repository,
+    branch_name: &str,
+) -> Result<Option<git2::Oid>, git2::Error> {
+    let branch = repo.find_branch(branch_name, git2::BranchType::Local)?;
+    let Ok(upstream) = branch.upstream() else {
+        return Ok(None);
+    };
+
+    let local_ref_name = format!("refs/heads/{}", branch_name);
+    if upstream.get().name() == Some(local_ref_name.as_str()) {
+        return Ok(None);
+    }
+
+    Ok(upstream.get().target())
+}
+
+fn repair_branch_upstream(repo: &Repository, branch_name: &str) -> Result<(), String> {
+    let remote_ref_name = format!("refs/remotes/origin/{}", branch_name);
+    if repo.find_reference(&remote_ref_name).is_err() {
+        return Ok(());
+    }
+
+    let mut branch = repo
+        .find_branch(branch_name, git2::BranchType::Local)
+        .map_err(|e| e.to_string())?;
+    let needs_repair = match branch.upstream() {
+        Ok(upstream) => {
+            upstream.get().name() == Some(format!("refs/heads/{}", branch_name).as_str())
+        }
+        Err(_) => true,
+    };
+
+    if needs_repair {
+        branch
+            .set_upstream(Some(&format!("origin/{}", branch_name)))
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
