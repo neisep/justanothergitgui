@@ -4,6 +4,20 @@
 
 It focuses on the everyday local workflow first—review changes, stage files, commit, switch branches, inspect history—and adds a practical GitHub flow on top: publish an existing folder, sign in with GitHub device flow, push branches, and jump straight into the relevant pull request page.
 
+<p align="center">
+  <a href="https://github.com/neisep/justanothergitgui/releases">Download</a>
+  &middot;
+  <a href="https://github.com/neisep/justanothergitgui/issues">Report Bug</a>
+  &middot;
+  <a href="https://github.com/neisep/justanothergitgui/issues">Request Feature</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/neisep/justanothergitgui/releases"><img src="https://img.shields.io/github/v/release/neisep/justanothergitgui?style=flat-square" alt="Latest Release"></a>
+  <a href="https://github.com/neisep/justanothergitgui"><img src="https://img.shields.io/github/license/neisep/justanothergitgui?style=flat-square" alt="License"></a>
+  <a href="https://github.com/neisep/justanothergitgui/actions"><img src="https://img.shields.io/github/actions/workflow/status/neisep/justanothergitgui/build.yml?style=flat-square" alt="Build Status"></a>
+</p>
+
 ---
 
 ## About
@@ -28,6 +42,7 @@ The application combines:
 - **Review diffs** in a built-in changes view
 - **Write commits** from the right-hand commit panel
 - **Optionally enforce Conventional Commits** from a settings dialog
+- **Autocomplete Conventional Commit prefixes** with inferred scopes from changed paths
 - **Right-click commit message editors** to insert an allowed Conventional Commit prefix
 - **Switch branches** from the toolbar
 - **Create a new branch** from inside the app
@@ -125,6 +140,10 @@ When Conventional Commits is enabled:
 
 - the first line of the commit message must match the Conventional Commits format
 - invalid commit messages are blocked before commit or repository publish
+- typing a prefix like `fix` shows scope-aware suggestions such as `fix(ui): ` or `fix(ui,settings): `
+- inferred scopes come from changed file paths and the repository / crate name when needed
+- custom scopes from **Settings...** stay available in the suggestion list
+- a plain no-scope option like `fix: ` is always available
 - you can **right-click** the commit message editor to insert a valid prefix such as `feat: ` or `fix: `
 
 ### GitHub Sign-In

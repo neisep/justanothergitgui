@@ -3,7 +3,12 @@ use eframe::egui;
 use crate::commit_rules::{self, CommitMessageRuleSet};
 use crate::state::{AppState, UiAction};
 
-pub fn show(ui: &mut egui::Ui, state: &mut AppState, ruleset: CommitMessageRuleSet) {
+pub fn show(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    ruleset: CommitMessageRuleSet,
+    custom_scopes: &[String],
+) {
     egui::Panel::right("commit_panel")
         .default_size(260.0)
         .min_size(180.0)
@@ -16,6 +21,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ruleset: CommitMessageRuleS
                 .id_salt("commit_msg_scroll")
                 .max_height(150.0)
                 .show(ui, |ui| {
+                    let inferred_scopes = state.inferred_commit_scopes.clone();
                     let response = ui.add(
                         egui::TextEdit::multiline(&mut state.commit_msg)
                             .desired_width(f32::INFINITY)
@@ -39,6 +45,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ruleset: CommitMessageRuleS
                             }
                         }
                     });
+                    show_prefix_suggestions(
+                        ui,
+                        &mut state.commit_msg,
+                        ruleset,
+                        &inferred_scopes,
+                        custom_scopes,
+                        response.has_focus(),
+                    );
                 });
 
             ui.add_space(8.0);
@@ -78,4 +92,35 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ruleset: CommitMessageRuleS
             ui.separator();
             ui.weak(format!("{} file(s) staged", state.staged.len()));
         });
+}
+
+pub fn show_prefix_suggestions(
+    ui: &mut egui::Ui,
+    message: &mut String,
+    ruleset: CommitMessageRuleSet,
+    inferred_scopes: &[String],
+    custom_scopes: &[String],
+    input_has_focus: bool,
+) {
+    if !input_has_focus {
+        return;
+    }
+
+    let suggestions =
+        commit_rules::prefix_suggestions(ruleset, message, inferred_scopes, custom_scopes);
+    if suggestions.is_empty() {
+        return;
+    }
+
+    ui.add_space(4.0);
+    egui::Frame::popup(ui.style()).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.weak("Suggestions");
+        ui.separator();
+        for suggestion in suggestions {
+            if ui.button(&suggestion).clicked() {
+                commit_rules::apply_prefix(ruleset, message, &suggestion);
+            }
+        }
+    });
 }

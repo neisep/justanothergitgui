@@ -10,12 +10,15 @@ use crate::commit_rules::CommitMessageRuleSet;
 pub struct AppSettings {
     #[serde(default)]
     pub commit_message_ruleset: CommitMessageRuleSet,
+    #[serde(default)]
+    pub commit_message_custom_scopes: Vec<String>,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             commit_message_ruleset: CommitMessageRuleSet::Off,
+            commit_message_custom_scopes: Vec::new(),
         }
     }
 }

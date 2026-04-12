@@ -33,6 +33,7 @@ struct PublishRepoDialogState {
 struct SettingsDialogState {
     show: bool,
     status: String,
+    custom_scopes_input: String,
 }
 
 pub struct GitGuiApp {
@@ -105,6 +106,7 @@ impl GitGuiApp {
                 None
             }
         };
+        let settings_custom_scopes_input = settings.commit_message_custom_scopes.join(", ");
 
         let mut app = Self {
             tabs: Vec::new(),
@@ -116,6 +118,7 @@ impl GitGuiApp {
             settings_dialog: SettingsDialogState {
                 show: false,
                 status: String::new(),
+                custom_scopes_input: settings_custom_scopes_input,
             },
             github_auth_session,
             github_auth_prompt: None,
@@ -204,6 +207,8 @@ impl GitGuiApp {
 
     fn open_settings_dialog(&mut self) {
         self.settings_dialog.show = true;
+        self.settings_dialog.custom_scopes_input =
+            self.settings.commit_message_custom_scopes.join(", ");
     }
 
     fn refresh_github_auth_status(&mut self) {
@@ -931,6 +936,7 @@ impl GitGuiApp {
         let mut keep_open = self.settings_dialog.show;
         let mut close_requested = false;
         let mut selected_ruleset = self.settings.commit_message_ruleset;
+        let mut custom_scope_error = None;
 
         egui::Window::new("Settings")
             .id(egui::Id::new("settings_dialog"))
@@ -959,9 +965,36 @@ impl GitGuiApp {
                 if let Some(description) = selected_ruleset.description() {
                     ui.weak(description);
                     ui.add_space(6.0);
-                    ui.weak("Right-click a commit message editor to insert a valid prefix.");
+                    ui.weak(
+                        "Type a prefix like `fix` for scope suggestions, or right-click a commit message editor to insert a valid prefix.",
+                    );
                 } else {
                     ui.weak("Leave this off to allow any commit message format.");
+                }
+
+                ui.add_space(10.0);
+                ui.label("Custom commit scopes");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.settings_dialog.custom_scopes_input)
+                        .desired_width(320.0)
+                        .hint_text("ui, settings, worker"),
+                );
+
+                match commit_rules::parse_custom_scopes(&self.settings_dialog.custom_scopes_input) {
+                    Ok(scopes) => {
+                        if scopes.is_empty() {
+                            ui.weak("Optional. Add comma-separated scopes to keep them available in autocomplete.");
+                        } else {
+                            ui.weak("Custom scopes stay available alongside inferred scopes.");
+                        }
+                    }
+                    Err(error) => {
+                        custom_scope_error = Some(error.clone());
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 120, 120),
+                            error,
+                        );
+                    }
                 }
 
                 if !self.settings_dialog.status.is_empty() {
@@ -982,9 +1015,17 @@ impl GitGuiApp {
                 });
             });
 
-        if selected_ruleset != self.settings.commit_message_ruleset {
+        let parsed_custom_scopes =
+            commit_rules::parse_custom_scopes(&self.settings_dialog.custom_scopes_input);
+        if custom_scope_error.is_none()
+            && (selected_ruleset != self.settings.commit_message_ruleset
+                || parsed_custom_scopes.as_ref().ok()
+                    != Some(&self.settings.commit_message_custom_scopes))
+        {
             let mut next_settings = self.settings.clone();
             next_settings.commit_message_ruleset = selected_ruleset;
+            next_settings.commit_message_custom_scopes =
+                parsed_custom_scopes.unwrap_or_else(|_| unreachable!());
             match settings::save_app_settings(&next_settings) {
                 Ok(()) => {
                     self.settings = next_settings;
@@ -1049,6 +1090,10 @@ impl GitGuiApp {
                     egui::TextEdit::singleline(&mut self.publish_dialog.commit_message)
                         .desired_width(320.0),
                 );
+                let inferred_publish_scopes = commit_rules::infer_commit_scopes(
+                    folder_path_from_text(&self.publish_dialog.folder_path),
+                    std::iter::empty::<&str>(),
+                );
                 response.context_menu(|ui| {
                     if self.settings.commit_message_ruleset == CommitMessageRuleSet::Off {
                         ui.weak("Enable a commit message ruleset in Settings to insert a prefix.");
@@ -1068,6 +1113,14 @@ impl GitGuiApp {
                         }
                     }
                 });
+                ui::commit_panel::show_prefix_suggestions(
+                    ui,
+                    &mut self.publish_dialog.commit_message,
+                    self.settings.commit_message_ruleset,
+                    &inferred_publish_scopes,
+                    &self.settings.commit_message_custom_scopes,
+                    response.has_focus(),
+                );
 
                 let commit_message_error = commit_rules::validation_error(
                     self.settings.commit_message_ruleset,
@@ -1414,7 +1467,12 @@ impl eframe::App for GitGuiApp {
             // Render panels (order: top/bottom first, then sides, then center)
             let open_logs = ui::bottom_bar::show(ui, &tab.state, has_logs);
             ui::file_panel::show(ui, &mut tab.state);
-            ui::commit_panel::show(ui, &mut tab.state, self.settings.commit_message_ruleset);
+            ui::commit_panel::show(
+                ui,
+                &mut tab.state,
+                self.settings.commit_message_ruleset,
+                &self.settings.commit_message_custom_scopes,
+            );
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui::diff_panel::show(ui, &mut tab.state);
@@ -1447,11 +1505,27 @@ fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<String> {
         Ok((unstaged, staged)) => {
             state.unstaged = unstaged;
             state.staged = staged;
+            let changed_paths = if state.staged.is_empty() {
+                state
+                    .unstaged
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect::<Vec<_>>()
+            } else {
+                state
+                    .staged
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect::<Vec<_>>()
+            };
+            state.inferred_commit_scopes =
+                commit_rules::infer_commit_scopes(state.repo_path.as_deref(), changed_paths);
         }
         Err(e) => {
             let detail = e.to_string();
             state.status_msg = status_message_for_error("Refresh", &detail);
             error_detail = Some(detail);
+            state.inferred_commit_scopes.clear();
         }
     }
     state.branch = git_ops::get_current_branch(repo).unwrap_or_default();
@@ -1474,6 +1548,7 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.show_create_tag_dialog = false;
     state.unstaged.clear();
     state.staged.clear();
+    state.inferred_commit_scopes.clear();
     state.commit_msg.clear();
     state.selected_file = None;
     state.diff_content.clear();
@@ -1483,6 +1558,15 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.pull_request_prompt = None;
     state.conflict_data = None;
     state.dragging = None;
+}
+
+fn folder_path_from_text(folder_path: &str) -> Option<&Path> {
+    let trimmed = folder_path.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(Path::new(trimmed))
+    }
 }
 
 fn sync_selected_file(state: &mut AppState, repo: &Repository) {
