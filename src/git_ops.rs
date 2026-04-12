@@ -153,10 +153,12 @@ pub fn get_outgoing_commit_count(repo: &Repository) -> Result<usize, git2::Error
 
     let mut walk = repo.revwalk()?;
     walk.push(local_oid)?;
-    for reference in repo.references_glob("refs/remotes/*")? {
-        let reference = reference?;
-        if let Some(remote_oid) = reference.target() {
-            let _ = walk.hide(remote_oid);
+    if let Ok(references) = repo.references_glob("refs/remotes/*") {
+        for reference in references {
+            let reference = reference?;
+            if let Some(remote_oid) = reference.target() {
+                let _ = walk.hide(remote_oid);
+            }
         }
     }
 
@@ -851,6 +853,8 @@ fn push_with_git2(
         .push(&[&refspec], Some(&mut push_options))
         .map_err(|e| format!("Push error: {}", e))?;
 
+    sync_remote_tracking_branch(&repo, branch_name)?;
+
     if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
         branch
             .set_upstream(Some(branch_name))
@@ -858,6 +862,22 @@ fn push_with_git2(
     }
 
     Ok("Push successful".into())
+}
+
+fn sync_remote_tracking_branch(repo: &Repository, branch_name: &str) -> Result<(), String> {
+    let branch_ref_name = format!("refs/heads/{}", branch_name);
+    let local_oid = repo
+        .refname_to_id(&branch_ref_name)
+        .map_err(|e| format!("Push tracking update error: {}", e))?;
+    let remote_ref_name = format!("refs/remotes/origin/{}", branch_name);
+    repo.reference(
+        &remote_ref_name,
+        local_oid,
+        true,
+        "Update remote-tracking ref after push",
+    )
+    .map_err(|e| format!("Push tracking update error: {}", e))?;
+    Ok(())
 }
 
 fn push_tag(
