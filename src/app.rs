@@ -438,7 +438,8 @@ impl GitGuiApp {
                         } else if !git_ops::can_create_tag_on_branch(&tab.state.branch) {
                             tab.state.status_msg =
                                 "Tags can only be created from the main or master branch.".into();
-                        } else if tab.state.has_github_origin && self.github_auth_session.is_none()
+                        } else if tab.state.has_github_https_origin
+                            && self.github_auth_session.is_none()
                         {
                             tab.state.status_msg =
                                 "Sign in to GitHub before creating tags for this repository."
@@ -763,6 +764,7 @@ impl GitGuiApp {
                 let repo_path = state.repo_path.clone();
                 let has_origin_remote = state.has_origin_remote;
                 let has_github_origin = state.has_github_origin;
+                let has_github_https_origin = state.has_github_https_origin;
                 let needs_github_sign_in = has_github_origin && self.github_auth_session.is_none();
                 let push_label = if state.outgoing_commit_count > 0 {
                     format!("Push({})", state.outgoing_commit_count)
@@ -847,7 +849,7 @@ impl GitGuiApp {
 
                     let can_create_tag = has_repo
                         && git_ops::can_create_tag_on_branch(&state.branch)
-                        && (!state.has_github_origin || self.github_auth_session.is_some());
+                        && (!has_github_https_origin || self.github_auth_session.is_some());
                     if ui
                         .add_enabled(can_create_tag, egui::Button::new("Create Tag..."))
                         .on_hover_text(if can_create_tag {
@@ -856,7 +858,7 @@ impl GitGuiApp {
                             } else {
                                 "Create a local tag from the current HEAD commit"
                             }
-                        } else if state.has_github_origin && self.github_auth_session.is_none() {
+                        } else if has_github_https_origin && self.github_auth_session.is_none() {
                             "Sign in to GitHub to create and push tags for this repository"
                         } else {
                             "Switch to main or master to create a tag"
@@ -1309,7 +1311,7 @@ impl GitGuiApp {
         let mut close_requested = false;
         let mut submit_tag = None;
         let can_create_tag = git_ops::can_create_tag_on_branch(&state.branch)
-            && (!state.has_github_origin || self.github_auth_session.is_some());
+            && (!state.has_github_https_origin || self.github_auth_session.is_some());
 
         egui::Window::new("Create Tag")
             .id(egui::Id::new("create_tag_dialog"))
@@ -1342,7 +1344,7 @@ impl GitGuiApp {
                     } else {
                         ui.weak("No origin remote is configured, so the tag will be local only.");
                     }
-                } else if state.has_github_origin && self.github_auth_session.is_none() {
+                } else if state.has_github_https_origin && self.github_auth_session.is_none() {
                     ui.weak("Sign in to GitHub before creating tags for this repository.");
                 } else {
                     ui.weak("Tags can only be created from the main or master branch.");
@@ -1479,6 +1481,7 @@ fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<String> {
     let mut error_detail = None;
     state.has_origin_remote = git_ops::has_origin_remote(repo);
     state.has_github_origin = git_ops::has_github_origin(repo);
+    state.has_github_https_origin = git_ops::has_github_https_origin(repo);
     state.outgoing_commit_count = git_ops::get_outgoing_commit_count(repo).unwrap_or(0);
     match git_ops::get_file_statuses(repo) {
         Ok((unstaged, staged)) => {
@@ -1518,6 +1521,7 @@ fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<String> {
 fn reset_repo_view_state(state: &mut AppState) {
     state.has_origin_remote = false;
     state.has_github_origin = false;
+    state.has_github_https_origin = false;
     state.branch.clear();
     state.outgoing_commit_count = 0;
     state.branches.clear();
