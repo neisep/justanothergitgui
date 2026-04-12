@@ -431,13 +431,7 @@ pub fn push(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<PushSu
 }
 
 pub fn pull(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<String, String> {
-    if is_github_origin(repo_path) {
-        if !is_github_https_origin(repo_path) {
-            return Err(
-                "GitHub pulls in the app require an HTTPS 'origin' so the saved GitHub device-flow sign-in can be used consistently. Change the remote URL to https://github.com/<owner>/<repo>.git and try again.".into(),
-            );
-        }
-
+    if is_github_https_origin(repo_path) {
         let branch_name = current_branch_name(repo_path)?
             .ok_or_else(|| "GitHub pull requires a checked-out branch.".to_string())?;
         let auth = auth.ok_or_else(|| {
@@ -1130,9 +1124,11 @@ fn is_github_https_origin(repo_path: &Path) -> bool {
     let Ok(remote) = repo.find_remote("origin") else {
         return false;
     };
-    remote
-        .url()
-        .is_some_and(|url| url.starts_with("https://github.com/"))
+    remote.url().is_some_and(is_github_https_url)
+}
+
+fn is_github_https_url(url: &str) -> bool {
+    url.starts_with("https://github.com/")
 }
 
 fn detect_pull_request_prompt(
@@ -1280,6 +1276,36 @@ fn merge_fetched_branch(
 fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
     repo.workdir()
         .ok_or_else(|| git2::Error::from_str("Bare repositories are not supported"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_github_https_url, parse_github_remote_slug};
+
+    #[test]
+    fn treats_https_github_remotes_as_app_auth_candidates() {
+        assert!(is_github_https_url(
+            "https://github.com/octocat/hello-world.git"
+        ));
+    }
+
+    #[test]
+    fn keeps_github_ssh_remotes_on_system_auth_path() {
+        assert_eq!(
+            parse_github_remote_slug("git@github.com:octocat/hello-world.git"),
+            Some(("octocat".into(), "hello-world".into()))
+        );
+        assert_eq!(
+            parse_github_remote_slug("ssh://git@github.com/octocat/hello-world.git"),
+            Some(("octocat".into(), "hello-world".into()))
+        );
+        assert!(!is_github_https_url(
+            "git@github.com:octocat/hello-world.git"
+        ));
+        assert!(!is_github_https_url(
+            "ssh://git@github.com/octocat/hello-world.git"
+        ));
+    }
 }
 
 impl GithubRepoVisibility {
