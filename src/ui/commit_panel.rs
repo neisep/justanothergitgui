@@ -28,23 +28,6 @@ pub fn show(
                             .hint_text("Describe your changes...")
                             .desired_rows(6),
                     );
-                    response.context_menu(|ui| {
-                        if ruleset == CommitMessageRuleSet::Off {
-                            ui.weak(
-                                "Enable a commit message ruleset in Settings to insert a prefix.",
-                            );
-                            return;
-                        }
-
-                        ui.label("Insert prefix");
-                        ui.separator();
-                        for prefix in ruleset.prefixes() {
-                            if ui.button(*prefix).clicked() {
-                                commit_rules::apply_prefix(ruleset, &mut state.commit_msg, prefix);
-                                ui.close();
-                            }
-                        }
-                    });
                     show_prefix_suggestions(
                         ui,
                         &response,
@@ -127,10 +110,27 @@ pub fn show_prefix_suggestions(
             for suggestion in suggestions {
                 if ui.button(&suggestion).clicked() {
                     commit_rules::apply_prefix(ruleset, message, &suggestion);
+                    move_text_cursor_to_subject_end(ui.ctx(), response.id, message);
                     egui::Popup::close_id(ui.ctx(), popup_id);
                     ui.memory_mut(|memory| memory.request_focus(response.id));
                     ui.ctx().request_repaint();
                 }
             }
         });
+}
+
+fn move_text_cursor_to_subject_end(ctx: &egui::Context, text_edit_id: egui::Id, message: &str) {
+    let mut state = egui::TextEdit::load_state(ctx, text_edit_id).unwrap_or_default();
+    let cursor_index = message
+        .lines()
+        .next()
+        .map(|line| line.chars().count())
+        .unwrap_or_default();
+
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::one(
+            egui::text::CCursor::new(cursor_index),
+        )));
+    state.store(ctx, text_edit_id);
 }

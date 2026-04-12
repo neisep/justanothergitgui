@@ -965,9 +965,7 @@ impl GitGuiApp {
                 if let Some(description) = selected_ruleset.description() {
                     ui.weak(description);
                     ui.add_space(6.0);
-                    ui.weak(
-                        "Type a prefix like `fix` for scope suggestions, or right-click a commit message editor to insert a valid prefix.",
-                    );
+                    ui.weak("Type a prefix like `fix` to get scope suggestions.");
                 } else {
                     ui.weak("Leave this off to allow any commit message format.");
                 }
@@ -1094,25 +1092,6 @@ impl GitGuiApp {
                     folder_path_from_text(&self.publish_dialog.folder_path),
                     std::iter::empty::<&str>(),
                 );
-                response.context_menu(|ui| {
-                    if self.settings.commit_message_ruleset == CommitMessageRuleSet::Off {
-                        ui.weak("Enable a commit message ruleset in Settings to insert a prefix.");
-                        return;
-                    }
-
-                    ui.label("Insert prefix");
-                    ui.separator();
-                    for prefix in self.settings.commit_message_ruleset.prefixes() {
-                        if ui.button(*prefix).clicked() {
-                            commit_rules::apply_prefix(
-                                self.settings.commit_message_ruleset,
-                                &mut self.publish_dialog.commit_message,
-                                prefix,
-                            );
-                            ui.close();
-                        }
-                    }
-                });
                 ui::commit_panel::show_prefix_suggestions(
                     ui,
                     &response,

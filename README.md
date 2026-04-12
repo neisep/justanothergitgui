@@ -43,7 +43,6 @@ The application combines:
 - **Write commits** from the right-hand commit panel
 - **Optionally enforce Conventional Commits** from a settings dialog
 - **Autocomplete Conventional Commit prefixes** with inferred scopes from changed paths
-- **Right-click commit message editors** to insert an allowed Conventional Commit prefix
 - **Switch branches** from the toolbar
 - **Create a new branch** from inside the app
 - **Create and push tags** from `main` / `master`
@@ -144,7 +143,6 @@ When Conventional Commits is enabled:
 - inferred scopes come from changed file paths and the repository / crate name when needed
 - custom scopes from **Settings...** stay available in the suggestion list
 - a plain no-scope option like `fix: ` is always available
-- you can **right-click** the commit message editor to insert a valid prefix such as `feat: ` or `fix: `
 
 ### GitHub Sign-In
 

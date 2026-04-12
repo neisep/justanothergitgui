@@ -6,20 +6,6 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-const CONVENTIONAL_COMMIT_PREFIXES: [&str; 11] = [
-    "build: ",
-    "chore: ",
-    "ci: ",
-    "docs: ",
-    "feat: ",
-    "fix: ",
-    "perf: ",
-    "refactor: ",
-    "revert: ",
-    "style: ",
-    "test: ",
-];
-
 const CONVENTIONAL_COMMIT_TYPES: [&str; 11] = [
     "build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test",
 ];
@@ -61,13 +47,6 @@ impl CommitMessageRuleSet {
             Self::ConventionalCommits => Some(
                 "Require the first line to look like `feat: add search` or `fix(parser): handle empty input`.",
             ),
-        }
-    }
-
-    pub fn prefixes(self) -> &'static [&'static str] {
-        match self {
-            Self::Off => &[],
-            Self::ConventionalCommits => &CONVENTIONAL_COMMIT_PREFIXES,
         }
     }
 }
