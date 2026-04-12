@@ -95,6 +95,10 @@ fn validate_conventional_commit(message: &str) -> Result<(), String> {
 
     if CONVENTIONAL_COMMITS_SUBJECT_REGEX.is_match(subject) {
         Ok(())
+    } else if conventional_subject_remainder(subject)
+        .is_some_and(|remainder| remainder.trim().is_empty())
+    {
+        Err("Add a short summary after the commit type prefix.".into())
     } else {
         Err(
             "Commit message must start with a Conventional Commits prefix like `feat: add search` or `fix(parser): handle empty input`."

@@ -983,9 +983,11 @@ impl GitGuiApp {
             });
 
         if selected_ruleset != self.settings.commit_message_ruleset {
-            self.settings.commit_message_ruleset = selected_ruleset;
-            match settings::save_app_settings(&self.settings) {
+            let mut next_settings = self.settings.clone();
+            next_settings.commit_message_ruleset = selected_ruleset;
+            match settings::save_app_settings(&next_settings) {
                 Ok(()) => {
+                    self.settings = next_settings;
                     self.settings_dialog.status.clear();
                 }
                 Err(error) => {
@@ -1162,16 +1164,28 @@ impl GitGuiApp {
 
         if create_clicked {
             if let Some(auth) = self.github_auth_session.clone() {
-                let folder_path = PathBuf::from(self.publish_dialog.folder_path.trim());
-                self.publish_dialog.operation_status = "Publishing folder to GitHub...".into();
-                self.welcome_worker
-                    .create_github_repo(git_ops::CreateGithubRepoRequest {
-                        folder_path,
-                        repo_name: self.publish_dialog.repo_name.trim().to_string(),
-                        commit_message: self.publish_dialog.commit_message.trim().to_string(),
-                        visibility: self.publish_dialog.visibility,
-                        auth,
-                    });
+                let commit_message = self.publish_dialog.commit_message.trim().to_string();
+                match commit_rules::validate_for_submit(
+                    self.settings.commit_message_ruleset,
+                    &commit_message,
+                ) {
+                    Ok(()) => {
+                        let folder_path = PathBuf::from(self.publish_dialog.folder_path.trim());
+                        self.publish_dialog.operation_status =
+                            "Publishing folder to GitHub...".into();
+                        self.welcome_worker
+                            .create_github_repo(git_ops::CreateGithubRepoRequest {
+                                folder_path,
+                                repo_name: self.publish_dialog.repo_name.trim().to_string(),
+                                commit_message,
+                                visibility: self.publish_dialog.visibility,
+                                auth,
+                            });
+                    }
+                    Err(error) => {
+                        self.publish_dialog.operation_status = error;
+                    }
+                }
             } else {
                 self.publish_dialog.operation_status =
                     "Sign in to GitHub before creating a repository.".into();
