@@ -97,7 +97,11 @@ struct GithubCreateRepoBody<'a> {
 }
 
 pub fn open_repo(path: &Path) -> Result<Repository, git2::Error> {
-    Repository::discover(path)
+    let repo = Repository::discover(path)?;
+    if repo.is_bare() {
+        return Err(git2::Error::from_str("Bare repositories are not supported"));
+    }
+    Ok(repo)
 }
 
 pub fn get_current_branch(repo: &Repository) -> Result<String, git2::Error> {
@@ -224,7 +228,7 @@ fn status_label_unstaged(s: Status) -> &'static str {
 
 pub fn stage_file(repo: &Repository, path: &str) -> Result<(), git2::Error> {
     let mut index = repo.index()?;
-    let full_path = repo.workdir().unwrap().join(path);
+    let full_path = repo_workdir(repo)?.join(path);
 
     if full_path.exists() {
         index.add_path(Path::new(path))?;
@@ -296,15 +300,27 @@ pub fn create_commit(repo: &Repository, message: &str) -> Result<git2::Oid, git2
     let tree_oid = index.write_tree()?;
     let tree = repo.find_tree(tree_oid)?;
     let sig = repo.signature()?;
+    let mut parents = Vec::new();
 
-    let parent = match repo.head() {
-        Ok(head) => Some(head.peel_to_commit()?),
-        Err(_) => None,
-    };
+    if let Ok(head) = repo.head() {
+        parents.push(head.peel_to_commit()?);
+    }
 
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
+    if repo.state() == git2::RepositoryState::Merge
+        && let Ok(merge_head) = repo.find_reference("MERGE_HEAD")
+        && let Some(merge_oid) = merge_head.target()
+    {
+        parents.push(repo.find_commit(merge_oid)?);
+    }
 
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+    let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)?;
+
+    if repo.state() == git2::RepositoryState::Merge {
+        repo.cleanup_state()?;
+    }
+
+    Ok(oid)
 }
 
 pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<String, git2::Error> {
@@ -312,8 +328,8 @@ pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<Stri
     opts.pathspec(path);
 
     let diff = if staged {
-        let head = repo.head()?.peel_to_tree()?;
-        repo.diff_tree_to_index(Some(&head), None, Some(&mut opts))?
+        let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
     } else {
         repo.diff_index_to_workdir(None, Some(&mut opts))?
     };
@@ -335,10 +351,17 @@ pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<Stri
 
 pub fn push(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<PushSuccess, String> {
     let branch_name = current_branch_name(repo_path)?;
-    let base_message = match try_push_with_auth(repo_path, branch_name.as_deref(), auth) {
-        Ok(Some(message)) => message,
-        Ok(None) => push_with_git_cli(repo_path, branch_name.as_deref())?,
-        Err(error) => return Err(error),
+    let base_message = if is_github_origin(repo_path) {
+        match try_push_with_auth(repo_path, branch_name.as_deref(), auth) {
+            Ok(Some(message)) => message,
+            Ok(None) => unreachable!("GitHub push path must not continue without auth"),
+            Err(error) => return Err(error),
+        }
+    } else {
+        let branch_name = branch_name
+            .as_deref()
+            .ok_or_else(|| "Push requires a checked-out branch.".to_string())?;
+        push_with_git2(repo_path, branch_name, RemoteAuth::System)?
     };
 
     let mut message = base_message;
@@ -353,33 +376,33 @@ pub fn push(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<PushSu
         None => None,
     };
 
-    if pull_request_prompt.is_none() && auth.is_none() && is_github_origin(repo_path) {
-        message.push_str(" Use the 'Sign in to GitHub...' button to enable PR actions.");
-    }
-
     Ok(PushSuccess {
         message,
         pull_request_prompt,
     })
 }
 
-pub fn pull(repo_path: &Path) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(["pull"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub fn pull(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<String, String> {
+    if is_github_origin(repo_path) {
+        if !is_github_https_origin(repo_path) {
+            return Err(
+                "GitHub pulls in the app require an HTTPS 'origin' so the saved GitHub device-flow sign-in can be used consistently. Change the remote URL to https://github.com/<owner>/<repo>.git and try again.".into(),
+            );
+        }
 
-    if output.status.success() {
-        let msg = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(if msg.trim().is_empty() {
-            "Pull successful".into()
-        } else {
-            msg
-        })
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        let branch_name = current_branch_name(repo_path)?
+            .ok_or_else(|| "GitHub pull requires a checked-out branch.".to_string())?;
+        let auth = auth.ok_or_else(|| {
+            "GitHub pull requires the app's GitHub sign-in. Use 'Sign in to GitHub...' and try again."
+                .to_string()
+        })?;
+
+        return pull_with_git2(repo_path, &branch_name, RemoteAuth::GitHub(auth));
     }
+
+    let branch_name = current_branch_name(repo_path)?
+        .ok_or_else(|| "Pull requires a checked-out branch.".to_string())?;
+    pull_with_git2(repo_path, &branch_name, RemoteAuth::System)
 }
 
 pub fn github_auth_login<F>(client_id: &str, on_prompt: F) -> Result<GithubAuthSession, String>
@@ -631,35 +654,18 @@ fn repo_has_changes(repo: &Repository) -> Result<bool, String> {
     Ok(!unstaged.is_empty() || !staged.is_empty())
 }
 
-fn command_message(output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-    match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => stdout,
-        (true, false) => stderr,
-        (false, false) => format!("{}\n{}", stdout, stderr),
-    }
-}
-
 fn current_branch_name(repo_path: &Path) -> Result<Option<String>, String> {
-    let output = Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let repo = Repository::open(repo_path).map_err(|e| format!("Open repo error: {}", e))?;
+    let head = match repo.head() {
+        Ok(head) => head,
+        Err(_) => return Ok(None),
+    };
 
-    if !output.status.success() {
-        return Err(command_message(&output));
+    if !head.is_branch() {
+        return Ok(None);
     }
 
-    let branch_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if branch_name.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(branch_name))
-    }
+    Ok(head.shorthand().map(ToOwned::to_owned))
 }
 
 fn github_http_client() -> Result<Client, String> {
@@ -709,76 +715,41 @@ fn try_push_with_auth(
     branch_name: Option<&str>,
     auth: Option<&GithubAuthSession>,
 ) -> Result<Option<String>, String> {
-    let (Some(branch_name), Some(auth)) = (branch_name, auth) else {
-        return Ok(None);
-    };
-
-    if !is_github_https_origin(repo_path) {
+    if !is_github_origin(repo_path) {
         return Ok(None);
     }
 
-    push_with_git2_auth(repo_path, branch_name, auth)?;
+    if !is_github_https_origin(repo_path) {
+        return Err(
+            "GitHub pushes in the app require an HTTPS 'origin' so the saved GitHub device-flow sign-in can be used consistently. Change the remote URL to https://github.com/<owner>/<repo>.git and try again.".into(),
+        );
+    }
+
+    let Some(branch_name) = branch_name else {
+        return Err("GitHub push requires a checked-out branch.".into());
+    };
+    let Some(auth) = auth else {
+        return Err(
+            "GitHub push requires the app's GitHub sign-in. Use 'Sign in to GitHub...' and try again."
+                .into(),
+        );
+    };
+
+    push_with_git2(repo_path, branch_name, RemoteAuth::GitHub(auth))?;
     Ok(Some("Push successful".into()))
 }
 
-fn push_with_git_cli(repo_path: &Path, branch_name: Option<&str>) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(["push"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        let msg = command_message(&output);
-        return Ok(if msg.trim().is_empty() {
-            "Push successful".into()
-        } else {
-            msg
-        });
-    }
-
-    if command_message(&output).contains("has no upstream branch") {
-        let Some(branch_name) = branch_name else {
-            return Err(command_message(&output));
-        };
-        let upstream_output = Command::new("git")
-            .args(["push", "--set-upstream", "origin", branch_name])
-            .current_dir(repo_path)
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        if upstream_output.status.success() {
-            let msg = command_message(&upstream_output);
-            return Ok(if msg.trim().is_empty() {
-                format!("Push successful. Upstream set for {}", branch_name)
-            } else {
-                msg
-            });
-        }
-
-        return Err(command_message(&upstream_output));
-    }
-
-    Err(command_message(&output))
-}
-
-fn push_with_git2_auth(
+fn push_with_git2(
     repo_path: &Path,
     branch_name: &str,
-    auth: &GithubAuthSession,
-) -> Result<(), String> {
+    auth: RemoteAuth<'_>,
+) -> Result<String, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Open repo error: {}", e))?;
     let mut remote = repo
         .find_remote("origin")
         .map_err(|e| format!("Remote error: {}", e))?;
-    let token = auth.access_token.clone();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |_url, username_from_url, _allowed_types| {
-        git2::Cred::userpass_plaintext(username_from_url.unwrap_or("x-access-token"), &token)
-    });
-
     let mut push_options = git2::PushOptions::new();
-    push_options.remote_callbacks(callbacks);
+    push_options.remote_callbacks(remote_callbacks(&repo, auth)?);
     let refspec = format!("refs/heads/{0}:refs/heads/{0}", branch_name);
     remote
         .push(&[&refspec], Some(&mut push_options))
@@ -790,7 +761,56 @@ fn push_with_git2_auth(
             .map_err(|e| format!("Upstream configuration error: {}", e))?;
     }
 
-    Ok(())
+    Ok("Push successful".into())
+}
+
+fn pull_with_git2(
+    repo_path: &Path,
+    branch_name: &str,
+    auth: RemoteAuth<'_>,
+) -> Result<String, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Open repo error: {}", e))?;
+    let mut remote = repo
+        .find_remote("origin")
+        .map_err(|e| format!("Remote error: {}", e))?;
+
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(remote_callbacks(&repo, auth)?);
+    remote
+        .fetch(&[branch_name], Some(&mut fetch_options), None)
+        .map_err(|e| format!("Pull fetch error: {}", e))?;
+
+    let fetch_ref_name = format!("refs/remotes/origin/{}", branch_name);
+    let fetch_ref = repo
+        .find_reference(&fetch_ref_name)
+        .map_err(|e| format!("Pull reference error: {}", e))?;
+    let fetch_commit = repo
+        .reference_to_annotated_commit(&fetch_ref)
+        .map_err(|e| format!("Pull analysis error: {}", e))?;
+
+    let (analysis, _) = repo
+        .merge_analysis(&[&fetch_commit])
+        .map_err(|e| format!("Pull analysis error: {}", e))?;
+
+    if analysis.is_up_to_date() {
+        return Ok("Already up to date".into());
+    }
+
+    if analysis.is_fast_forward() {
+        fast_forward_branch(&repo, branch_name, &fetch_commit)?;
+        return Ok("Pull successful".into());
+    }
+
+    if analysis.is_normal() {
+        return merge_fetched_branch(&repo, branch_name, &fetch_commit);
+    }
+
+    Err("Pull requires manual reconciliation.".into())
+}
+
+enum RemoteAuth<'a> {
+    GitHub(&'a GithubAuthSession),
+    System,
 }
 
 fn parse_target_repo_name(
@@ -830,6 +850,56 @@ fn parse_github_remote_slug(remote_url: &str) -> Option<(String, String)> {
         return parse_github_slug(rest);
     }
     None
+}
+
+fn remote_callbacks(
+    repo: &Repository,
+    auth: RemoteAuth<'_>,
+) -> Result<git2::RemoteCallbacks<'static>, String> {
+    match auth {
+        RemoteAuth::GitHub(auth) => Ok(github_remote_callbacks(auth)),
+        RemoteAuth::System => standard_remote_callbacks(repo),
+    }
+}
+
+fn github_remote_callbacks(auth: &GithubAuthSession) -> git2::RemoteCallbacks<'static> {
+    let token = auth.access_token.clone();
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |_url, username_from_url, _allowed_types| {
+        git2::Cred::userpass_plaintext(username_from_url.unwrap_or("x-access-token"), &token)
+    });
+    callbacks
+}
+
+fn standard_remote_callbacks(repo: &Repository) -> Result<git2::RemoteCallbacks<'static>, String> {
+    let config = repo
+        .config()
+        .map_err(|e| format!("Credential configuration error: {}", e))?;
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed_types| {
+        if allowed_types.contains(git2::CredentialType::SSH_KEY)
+            && let Some(username) = username_from_url
+            && let Ok(cred) = git2::Cred::ssh_key_from_agent(username)
+        {
+            return Ok(cred);
+        }
+
+        if (allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT)
+            || allowed_types.contains(git2::CredentialType::USERNAME))
+            && let Ok(cred) = git2::Cred::credential_helper(&config, url, username_from_url)
+        {
+            return Ok(cred);
+        }
+
+        if allowed_types.contains(git2::CredentialType::USERNAME)
+            && let Some(username) = username_from_url
+        {
+            return git2::Cred::username(username);
+        }
+
+        git2::Cred::default()
+    });
+    Ok(callbacks)
 }
 
 fn parse_github_slug(slug: &str) -> Option<(String, String)> {
@@ -922,6 +992,89 @@ fn repo_root_path(repo: &Repository) -> PathBuf {
     repo.workdir()
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| repo.path().parent().unwrap_or(repo.path()).to_path_buf())
+}
+
+fn fast_forward_branch(
+    repo: &Repository,
+    branch_name: &str,
+    fetch_commit: &git2::AnnotatedCommit<'_>,
+) -> Result<(), String> {
+    let refname = format!("refs/heads/{}", branch_name);
+    let mut branch_ref = repo
+        .find_reference(&refname)
+        .map_err(|e| format!("Pull fast-forward error: {}", e))?;
+    branch_ref
+        .set_target(fetch_commit.id(), &format!("Fast-forward {}", refname))
+        .map_err(|e| format!("Pull fast-forward error: {}", e))?;
+    repo.set_head(&refname)
+        .map_err(|e| format!("Pull head update error: {}", e))?;
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().safe()))
+        .map_err(|e| format!("Pull checkout error: {}", e))?;
+    Ok(())
+}
+
+fn merge_fetched_branch(
+    repo: &Repository,
+    branch_name: &str,
+    fetch_commit: &git2::AnnotatedCommit<'_>,
+) -> Result<String, String> {
+    let head_commit = repo
+        .head()
+        .and_then(|head| head.peel_to_commit())
+        .map_err(|e| format!("Pull head error: {}", e))?;
+    let remote_commit = repo
+        .find_commit(fetch_commit.id())
+        .map_err(|e| format!("Pull merge error: {}", e))?;
+
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.safe();
+    repo.merge(&[fetch_commit], None, Some(&mut checkout))
+        .map_err(|e| format!("Pull merge error: {}", e))?;
+
+    let mut index = repo
+        .index()
+        .map_err(|e| format!("Pull index error: {}", e))?;
+    if index.has_conflicts() {
+        return Ok(format!(
+            "Pull completed with conflicts on {}. Resolve them and commit the merge.",
+            branch_name
+        ));
+    }
+
+    let tree_oid = index
+        .write_tree_to(repo)
+        .map_err(|e| format!("Pull tree error: {}", e))?;
+    let tree = repo
+        .find_tree(tree_oid)
+        .map_err(|e| format!("Pull tree error: {}", e))?;
+    let signature = repo
+        .signature()
+        .map_err(|e| format!("Pull signature error: {}", e))?;
+    let remote_label = repo
+        .find_remote("origin")
+        .ok()
+        .and_then(|remote| remote.url().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "origin".into());
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        &format!("Merge branch '{}' of {}", branch_name, remote_label),
+        &tree,
+        &[&head_commit, &remote_commit],
+    )
+    .map_err(|e| format!("Pull commit error: {}", e))?;
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().safe()))
+        .map_err(|e| format!("Pull checkout error: {}", e))?;
+    repo.cleanup_state()
+        .map_err(|e| format!("Pull cleanup error: {}", e))?;
+
+    Ok("Pull successful".into())
+}
+
+fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
+    repo.workdir()
+        .ok_or_else(|| git2::Error::from_str("Bare repositories are not supported"))
 }
 
 impl GithubRepoVisibility {
@@ -1026,7 +1179,7 @@ fn format_relative_time(now: i64, then: i64) -> String {
 // --- Conflict resolution ---
 
 pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData, String> {
-    let full_path = repo.workdir().unwrap().join(path);
+    let full_path = repo_workdir(repo).map_err(|e| e.to_string())?.join(path);
     let content = std::fs::read_to_string(&full_path).map_err(|e| e.to_string())?;
     let sections = parse_conflict_markers(&content);
     Ok(ConflictData {
@@ -1085,7 +1238,9 @@ fn parse_conflict_markers(content: &str) -> Vec<ConflictPart> {
 }
 
 pub fn write_resolved_file(repo: &Repository, data: &ConflictData) -> Result<(), String> {
-    let full_path = repo.workdir().unwrap().join(&data.path);
+    let full_path = repo_workdir(repo)
+        .map_err(|e| e.to_string())?
+        .join(&data.path);
     let mut content = String::new();
 
     for (i, section) in data.sections.iter().enumerate() {

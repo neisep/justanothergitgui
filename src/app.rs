@@ -4,6 +4,7 @@ use eframe::egui;
 use git2::Repository;
 
 use crate::git_ops;
+use crate::logging::{self, AppLogger};
 use crate::state::{AppState, CenterView, PullRequestPrompt, SelectedFile, UiAction};
 use crate::ui;
 use crate::worker::{TaskResult, Worker};
@@ -35,6 +36,8 @@ pub struct GitGuiApp {
     publish_dialog: PublishRepoDialogState,
     github_auth_session: Option<git_ops::GithubAuthSession>,
     github_auth_prompt: Option<git_ops::GithubAuthPrompt>,
+    logger: AppLogger,
+    show_log_viewer: bool,
 }
 
 impl PublishRepoDialogState {
@@ -72,12 +75,14 @@ impl PublishRepoDialogState {
 
 impl GitGuiApp {
     pub fn new() -> Self {
+        let logger = AppLogger::new();
         let mut startup_status = None;
         let github_auth_session = match git_ops::load_github_auth_session() {
             Ok(Some(session)) => Some(session),
             Ok(None) => None,
             Err(msg) => {
-                startup_status = Some(msg);
+                logger.log_error("GitHub sign-in", &msg);
+                startup_status = Some(status_message_for_error("GitHub sign-in", &msg));
                 None
             }
         };
@@ -90,6 +95,8 @@ impl GitGuiApp {
             publish_dialog: PublishRepoDialogState::new(),
             github_auth_session,
             github_auth_prompt: None,
+            logger,
+            show_log_viewer: false,
         };
 
         // Try to open current directory as a repo
@@ -114,7 +121,11 @@ impl GitGuiApp {
     fn open_repo(&mut self, path: PathBuf) {
         match git_ops::open_repo(&path) {
             Ok(repo) => self.add_repo_tab(repo),
-            Err(e) => self.set_status_message(format!("Failed to open: {}", e)),
+            Err(e) => {
+                let detail = e.to_string();
+                self.logger.log_error("Open repository", &detail);
+                self.set_status_message(status_message_for_error("Open repository", &detail));
+            }
         }
     }
 
@@ -136,8 +147,12 @@ impl GitGuiApp {
             ..AppState::default()
         };
         reset_repo_view_state(&mut state);
-        refresh_status(&mut state, &repo);
-        state.status_msg = format!("Repository loaded: {}", repo_tab_label(Some(&repo_path)));
+        let refresh_error = refresh_status(&mut state, &repo);
+        if let Some(detail) = refresh_error {
+            self.logger.log_error("Refresh", &detail);
+        } else {
+            state.status_msg = format!("Repository loaded: {}", repo_tab_label(Some(&repo_path)));
+        }
 
         self.tabs.push(RepoTab {
             state,
@@ -184,6 +199,36 @@ impl GitGuiApp {
             .login_github(GITHUB_OAUTH_CLIENT_ID.into());
     }
 
+    fn show_log_viewer_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_log_viewer {
+            return;
+        }
+
+        let mut keep_open = self.show_log_viewer;
+        let log_path = self.logger.path().display().to_string();
+        let mut contents = self.logger.read_entries();
+
+        egui::Window::new("Application Logs")
+            .id(egui::Id::new("app_logs_dialog"))
+            .default_size(egui::vec2(720.0, 420.0))
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                ui.label(format!("Log file: {}", log_path));
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut contents)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(24)
+                            .interactive(false)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                });
+            });
+
+        self.show_log_viewer = keep_open;
+    }
+
     fn process_actions(&mut self) {
         if self.tabs.is_empty() {
             return;
@@ -194,41 +239,59 @@ impl GitGuiApp {
         let actions: Vec<UiAction> = self.tabs[active_index].state.actions.drain(..).collect();
 
         for action in actions {
+            let mut log_entry: Option<(&str, String)> = None;
+            let mut refresh_error = None;
             match action {
                 UiAction::StageFile(path) => {
                     let tab = &mut self.tabs[active_index];
                     match git_ops::stage_file(&tab.repo, &path) {
                         Ok(()) => tab.state.status_msg = format!("Staged: {}", path),
-                        Err(e) => tab.state.status_msg = format!("Stage error: {}", e),
+                        Err(e) => {
+                            let detail = e.to_string();
+                            tab.state.status_msg = status_message_for_error("Stage", &detail);
+                            log_entry = Some(("Stage", detail));
+                        }
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
                 UiAction::UnstageFile(path) => {
                     let tab = &mut self.tabs[active_index];
                     match git_ops::unstage_file(&tab.repo, &path) {
                         Ok(()) => tab.state.status_msg = format!("Unstaged: {}", path),
-                        Err(e) => tab.state.status_msg = format!("Unstage error: {}", e),
+                        Err(e) => {
+                            let detail = e.to_string();
+                            tab.state.status_msg = status_message_for_error("Unstage", &detail);
+                            log_entry = Some(("Unstage", detail));
+                        }
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
                 UiAction::StageAll => {
                     let tab = &mut self.tabs[active_index];
                     match git_ops::stage_all(&tab.repo) {
                         Ok(()) => tab.state.status_msg = "Staged all changes".into(),
-                        Err(e) => tab.state.status_msg = format!("Stage all error: {}", e),
+                        Err(e) => {
+                            let detail = e.to_string();
+                            tab.state.status_msg = status_message_for_error("Stage all", &detail);
+                            log_entry = Some(("Stage all", detail));
+                        }
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
                 UiAction::UnstageAll => {
                     let tab = &mut self.tabs[active_index];
                     match git_ops::unstage_all(&tab.repo) {
                         Ok(()) => tab.state.status_msg = "Unstaged all changes".into(),
-                        Err(e) => tab.state.status_msg = format!("Unstage all error: {}", e),
+                        Err(e) => {
+                            let detail = e.to_string();
+                            tab.state.status_msg = status_message_for_error("Unstage all", &detail);
+                            log_entry = Some(("Unstage all", detail));
+                        }
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
                 UiAction::Commit => {
@@ -243,10 +306,12 @@ impl GitGuiApp {
                             tab.state.conflict_data = None;
                         }
                         Err(e) => {
-                            tab.state.status_msg = format!("Commit error: {}", e);
+                            let detail = e.to_string();
+                            tab.state.status_msg = status_message_for_error("Commit", &detail);
+                            log_entry = Some(("Commit", detail));
                         }
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
                 UiAction::Push => {
@@ -268,7 +333,7 @@ impl GitGuiApp {
                             tab.state.status_msg = "Busy — please wait...".into();
                         } else {
                             tab.state.status_msg = "Pulling...".into();
-                            tab.worker.pull(path);
+                            tab.worker.pull(path, self.github_auth_session.clone());
                         }
                     }
                 }
@@ -289,10 +354,13 @@ impl GitGuiApp {
                             tab.state.conflict_data = None;
                         }
                         Err(e) => {
-                            tab.state.status_msg = format!("Switch error: {}", e);
+                            let detail = e.to_string();
+                            tab.state.status_msg =
+                                status_message_for_error("Switch branch", &detail);
+                            log_entry = Some(("Switch branch", detail));
                         }
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
                 UiAction::CreateBranch(branch) => {
@@ -307,10 +375,13 @@ impl GitGuiApp {
                             tab.state.show_create_branch_dialog = false;
                         }
                         Err(e) => {
-                            tab.state.status_msg = format!("Create branch error: {}", e);
+                            let detail = e.to_string();
+                            tab.state.status_msg =
+                                status_message_for_error("Create branch", &detail);
+                            log_entry = Some(("Create branch", detail));
                         }
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
 
                 UiAction::LaunchPullRequest => {
@@ -357,14 +428,24 @@ impl GitGuiApp {
                                 tab.state.conflict_data = None;
                             }
                             Err(e) => {
-                                tab.state.status_msg = format!("Save resolution error: {}", e);
+                                let detail = e.to_string();
+                                tab.state.status_msg =
+                                    status_message_for_error("Save resolution", &detail);
+                                log_entry = Some(("Save resolution", detail));
                             }
                         }
                     } else {
                         tab.state.status_msg = "No conflict selected".into();
                     }
-                    refresh_status(&mut tab.state, &tab.repo);
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
                 }
+            }
+
+            if let Some((context, detail)) = log_entry {
+                self.logger.log_error(context, &detail);
+            }
+            if let Some(detail) = refresh_error {
+                self.logger.log_error("Refresh", &detail);
             }
         }
     }
@@ -372,6 +453,7 @@ impl GitGuiApp {
     fn poll_workers(&mut self) -> bool {
         let mut refresh_indices = Vec::new();
         let mut any_busy = false;
+        let mut tab_logs: Vec<(String, String)> = Vec::new();
 
         while let Some(result) = self.welcome_worker.try_recv() {
             match result {
@@ -393,10 +475,14 @@ impl GitGuiApp {
                     let persistence_result = git_ops::save_github_auth_session(&session);
                     let message = match &persistence_result {
                         Ok(()) => format!("GitHub sign-in complete for @{}", session.login),
-                        Err(error) => format!(
-                            "GitHub sign-in complete for @{}, but {}",
-                            session.login, error
-                        ),
+                        Err(error) => {
+                            self.logger.log_error("GitHub sign-in", error);
+                            format!(
+                                "GitHub sign-in complete for @{}, but {}",
+                                session.login,
+                                logging::summarize_for_ui(error)
+                            )
+                        }
                     };
                     self.github_auth_prompt = None;
                     self.github_auth_session = Some(session);
@@ -407,19 +493,21 @@ impl GitGuiApp {
                     self.set_status_message(self.publish_dialog.github_status.clone());
                 }
                 TaskResult::GithubAuth(Err(msg)) => {
+                    self.logger.log_error("GitHub sign-in", &msg);
                     self.github_auth_prompt = None;
                     self.publish_dialog.github_authenticated = self.github_auth_session.is_some();
                     self.publish_dialog.github_status =
                         if let Some(session) = &self.github_auth_session {
                             format!(
                                 "Signed in to GitHub as @{} (latest sign-in failed: {})",
-                                session.login, msg
+                                session.login,
+                                logging::summarize_for_ui(&msg)
                             )
                         } else {
-                            format!("GitHub sign-in failed: {}", msg)
+                            status_message_for_error("GitHub sign-in", &msg)
                         };
                     self.publish_dialog.operation_status.clear();
-                    self.welcome_status = format!("GitHub sign-in failed: {}", msg);
+                    self.welcome_status = status_message_for_error("GitHub sign-in", &msg);
                     self.set_status_message(self.publish_dialog.github_status.clone());
                 }
                 TaskResult::CreateGithubRepo(Ok(result)) => {
@@ -431,8 +519,10 @@ impl GitGuiApp {
                     self.set_status_message(message);
                 }
                 TaskResult::CreateGithubRepo(Err(msg)) => {
-                    self.publish_dialog.operation_status = msg.clone();
-                    self.welcome_status = format!("Publish failed: {}", msg);
+                    self.logger.log_error("Publish to GitHub", &msg);
+                    self.publish_dialog.operation_status =
+                        status_message_for_error("Publish to GitHub", &msg);
+                    self.welcome_status = status_message_for_error("Publish to GitHub", &msg);
                 }
                 TaskResult::Push(_)
                 | TaskResult::Pull(_)
@@ -463,26 +553,30 @@ impl GitGuiApp {
                             format!("Push: {}{}", result.message, prompt_message);
                     }
                     TaskResult::Push(Err(msg)) => {
-                        tab.state.status_msg = format!("Push failed: {}", msg)
+                        tab.state.status_msg = status_message_for_error("Push", &msg);
+                        tab_logs.push(("Push".into(), msg));
                     }
                     TaskResult::Pull(Ok(msg)) => {
                         tab.state.status_msg = format!("Pull: {}", msg);
                         refresh_indices.push(index);
                     }
                     TaskResult::Pull(Err(msg)) => {
-                        tab.state.status_msg = format!("Pull failed: {}", msg)
+                        tab.state.status_msg = status_message_for_error("Pull", &msg);
+                        tab_logs.push(("Pull".into(), msg));
                     }
                     TaskResult::OpenPullRequest(Ok(msg)) => {
                         tab.state.status_msg = msg;
                     }
                     TaskResult::OpenPullRequest(Err(msg)) => {
-                        tab.state.status_msg = format!("Open PR failed: {}", msg);
+                        tab.state.status_msg = status_message_for_error("Open PR", &msg);
+                        tab_logs.push(("Open PR".into(), msg));
                     }
                     TaskResult::CreatePullRequest(Ok(msg)) => {
                         tab.state.status_msg = msg;
                     }
                     TaskResult::CreatePullRequest(Err(msg)) => {
-                        tab.state.status_msg = format!("Create PR failed: {}", msg);
+                        tab.state.status_msg = status_message_for_error("Create PR", &msg);
+                        tab_logs.push(("Create PR".into(), msg));
                     }
                     TaskResult::GithubAuthPrompt(_)
                     | TaskResult::GithubAuth(_)
@@ -500,10 +594,24 @@ impl GitGuiApp {
                 continue;
             };
 
-            if let Ok(repo) = git_ops::open_repo(&path) {
-                refresh_status(&mut self.tabs[index].state, &repo);
-                self.tabs[index].repo = repo;
+            match git_ops::open_repo(&path) {
+                Ok(repo) => {
+                    if let Some(detail) = refresh_status(&mut self.tabs[index].state, &repo) {
+                        tab_logs.push(("Refresh".into(), detail));
+                    }
+                    self.tabs[index].repo = repo;
+                }
+                Err(error) => {
+                    let detail = error.to_string();
+                    self.tabs[index].state.status_msg =
+                        status_message_for_error("Refresh", &detail);
+                    tab_logs.push(("Refresh".into(), detail));
+                }
             }
+        }
+
+        for (context, detail) in tab_logs {
+            self.logger.log_error(&context, &detail);
         }
 
         any_busy
@@ -689,6 +797,9 @@ impl GitGuiApp {
             }
             ui.add_space(12.0);
             ui.weak(&self.welcome_status);
+            if self.logger.has_entries() && ui.button("View Logs").clicked() {
+                self.show_log_viewer = true;
+            }
         });
     }
 
@@ -931,7 +1042,14 @@ impl GitGuiApp {
                 ui.hyperlink_to(&prompt.verification_uri, &prompt.verification_uri);
                 ui.add_space(8.0);
                 if ui.button("Open GitHub Again").clicked() {
-                    let _ = webbrowser::open(&prompt.browser_url);
+                    if let Err(error) = webbrowser::open(&prompt.browser_url) {
+                        let detail = error.to_string();
+                        self.logger.log_error("GitHub sign-in", &detail);
+                        self.set_status_message(status_message_for_error(
+                            "GitHub sign-in",
+                            &detail,
+                        ));
+                    }
                 }
                 ui.add_space(4.0);
                 ui.weak("This window closes automatically after sign-in completes.");
@@ -951,35 +1069,44 @@ impl eframe::App for GitGuiApp {
             self.show_welcome(ui);
             self.show_publish_repo_dialog(&ctx);
             self.show_github_auth_dialog(&ctx);
+            self.show_log_viewer_dialog(&ctx);
             return;
         }
 
         self.show_repo_tabs(ui);
         self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+        let has_logs = self.logger.has_entries();
 
-        {
+        let open_logs_clicked = {
             let tab = &mut self.tabs[self.active_tab];
 
             // Render panels (order: top/bottom first, then sides, then center)
-            ui::bottom_bar::show(ui, &tab.state);
+            let open_logs = ui::bottom_bar::show(ui, &tab.state, has_logs);
             ui::file_panel::show(ui, &mut tab.state);
             ui::commit_panel::show(ui, &mut tab.state);
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui::diff_panel::show(ui, &mut tab.state);
             });
+            open_logs
+        };
+
+        if open_logs_clicked {
+            self.show_log_viewer = true;
         }
 
         self.show_publish_repo_dialog(&ctx);
         self.show_create_branch_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);
+        self.show_log_viewer_dialog(&ctx);
 
         // Process deferred actions
         self.process_actions();
     }
 }
 
-fn refresh_status(state: &mut AppState, repo: &Repository) {
+fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<String> {
+    let mut error_detail = None;
     state.has_origin_remote = git_ops::has_origin_remote(repo);
     state.has_github_origin = git_ops::has_github_origin(repo);
     match git_ops::get_file_statuses(repo) {
@@ -988,7 +1115,9 @@ fn refresh_status(state: &mut AppState, repo: &Repository) {
             state.staged = staged;
         }
         Err(e) => {
-            state.status_msg = format!("Error refreshing: {}", e);
+            let detail = e.to_string();
+            state.status_msg = status_message_for_error("Refresh", &detail);
+            error_detail = Some(detail);
         }
     }
     state.branch = git_ops::get_current_branch(repo).unwrap_or_default();
@@ -996,6 +1125,7 @@ fn refresh_status(state: &mut AppState, repo: &Repository) {
     state.commit_history = git_ops::get_commit_history(repo, 200).unwrap_or_default();
     sync_pull_request_prompt(state);
     sync_selected_file(state, repo);
+    error_detail
 }
 
 fn reset_repo_view_state(state: &mut AppState) {
@@ -1105,4 +1235,12 @@ fn sync_pull_request_prompt(state: &mut AppState) {
     if !keep_prompt {
         state.pull_request_prompt = None;
     }
+}
+
+fn status_message_for_error(context: &str, detail: &str) -> String {
+    format!(
+        "{} failed: {}. See Logs.",
+        context,
+        logging::summarize_for_ui(detail)
+    )
 }

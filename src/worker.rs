@@ -15,7 +15,7 @@ pub enum TaskResult {
 
 enum WorkerTask {
     Push(PathBuf, Option<crate::git_ops::GithubAuthSession>),
-    Pull(PathBuf),
+    Pull(PathBuf, Option<crate::git_ops::GithubAuthSession>),
     GithubAuth { client_id: String },
     CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
     OpenPullRequest(String),
@@ -42,7 +42,9 @@ impl Worker {
                     WorkerTask::Push(path, auth) => {
                         TaskResult::Push(crate::git_ops::push(&path, auth.as_ref()))
                     }
-                    WorkerTask::Pull(path) => TaskResult::Pull(crate::git_ops::pull(&path)),
+                    WorkerTask::Pull(path, auth) => {
+                        TaskResult::Pull(crate::git_ops::pull(&path, auth.as_ref()))
+                    }
                     WorkerTask::GithubAuth { client_id } => {
                         let prompt_tx = result_tx.clone();
                         TaskResult::GithubAuth(crate::git_ops::github_auth_login(
@@ -80,9 +82,9 @@ impl Worker {
         }
     }
 
-    pub fn pull(&self, repo_path: PathBuf) {
+    pub fn pull(&self, repo_path: PathBuf, auth: Option<crate::git_ops::GithubAuthSession>) {
         if !self.is_busy() {
-            let _ = self.tx.send(WorkerTask::Pull(repo_path));
+            let _ = self.tx.send(WorkerTask::Pull(repo_path, auth));
         }
     }
 

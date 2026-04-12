@@ -13,7 +13,7 @@ This project aims to be a simple, fast, user-friendly Git desktop app without de
 The application combines:
 
 - a native Rust desktop UI with `eframe` / `egui`
-- local Git operations through `git2` and the Git CLI where it fits best
+- local Git operations through `git2`, with Git CLI use limited to history rendering
 - direct GitHub API integration for repository publishing and pull request actions
 - secure GitHub session persistence through the operating system keychain / credential store
 
@@ -38,6 +38,7 @@ The application combines:
 - **Persist GitHub sign-in securely** in the system keychain
 - **Detect existing pull requests after push**
 - **Open an existing PR or create a new one** in the browser
+- **View sanitized application logs** from inside the UI when an operation fails
 
 ---
 
@@ -47,11 +48,14 @@ Just Another Git GUI includes a built-in GitHub publishing and pull request flow
 
 1. **Publish Folder to GitHub** initializes a repository if needed, creates the first commit, creates the GitHub repository, adds `origin`, and pushes `main`
 2. **Sign in to GitHub** uses OAuth Device Flow and stores the session in the OS credential store
-3. After you **push a branch**, the app checks whether a pull request already exists
-4. If a PR exists, you get a shortcut to **open it**
-5. If not, you get a shortcut to **create one**
+3. **GitHub pushes and pulls inside the app** use that saved device-flow session consistently
+4. After you **push a branch**, the app checks whether a pull request already exists
+5. If a PR exists, you get a shortcut to **open it**
+6. If not, you get a shortcut to **create one**
 
 This is implemented directly in Rust without relying on `gh`.
+
+For repositories that do **not** use GitHub, the app still uses `git2` for local commit/branch work and for remote push/pull through the configured non-GitHub transport credentials.
 
 ---
 
@@ -115,6 +119,10 @@ The app uses **GitHub OAuth Device Flow**:
 - after approval, the session is stored in the OS credential store
 
 On restart, the saved GitHub session is loaded automatically if the system keychain allows access.
+
+For GitHub repositories, the in-app push and pull flow expects `origin` to use an HTTPS GitHub URL so the saved device-flow session can be reused consistently.
+
+If an operation fails, the UI shows a short message and writes sanitized details to the application log. When logs exist, use the **Logs** / **View Logs** button in the app to inspect them.
 
 ---
 

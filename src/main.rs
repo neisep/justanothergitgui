@@ -1,5 +1,6 @@
 mod app;
 mod git_ops;
+mod logging;
 mod state;
 mod ui;
 mod worker;
