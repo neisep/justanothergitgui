@@ -575,6 +575,7 @@ impl GitGuiApp {
                         tab.state.pull_request_prompt = result.pull_request_prompt;
                         tab.state.status_msg =
                             format!("Push: {}{}", result.message, prompt_message);
+                        refresh_indices.push(index);
                     }
                     TaskResult::Push(Err(msg)) => {
                         tab.state.status_msg = status_message_for_error("Push", &msg);
@@ -674,7 +675,7 @@ impl GitGuiApp {
                 let controls_width = if state.branch.is_empty() {
                     420.0
                 } else {
-                    580.0
+                    620.0
                 };
 
                 if ui.button("Open...").clicked() {
@@ -712,6 +713,19 @@ impl GitGuiApp {
                 let has_origin_remote = state.has_origin_remote;
                 let has_github_origin = state.has_github_origin;
                 let needs_github_sign_in = has_github_origin && self.github_auth_session.is_none();
+                let push_label = if state.outgoing_commit_count > 0 {
+                    format!("Push({})", state.outgoing_commit_count)
+                } else {
+                    "Push".into()
+                };
+                let push_tooltip = if state.outgoing_commit_count > 0 {
+                    format!(
+                        "Push {} local commit(s) to remote",
+                        state.outgoing_commit_count
+                    )
+                } else {
+                    "Push to remote".into()
+                };
                 let pull_request_prompt = state.pull_request_prompt.clone();
                 let mut publish_clicked = false;
                 let mut github_sign_in_clicked = false;
@@ -721,7 +735,7 @@ impl GitGuiApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.button("Push").on_hover_text("Push to remote").clicked() {
+                                    if ui.button(push_label).on_hover_text(push_tooltip).clicked() {
                                         state.actions.push(UiAction::Push);
                                     }
                                     if ui
@@ -1247,6 +1261,7 @@ fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<String> {
     let mut error_detail = None;
     state.has_origin_remote = git_ops::has_origin_remote(repo);
     state.has_github_origin = git_ops::has_github_origin(repo);
+    state.outgoing_commit_count = git_ops::get_outgoing_commit_count(repo).unwrap_or(0);
     match git_ops::get_file_statuses(repo) {
         Ok((unstaged, staged)) => {
             state.unstaged = unstaged;
@@ -1270,6 +1285,7 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.has_origin_remote = false;
     state.has_github_origin = false;
     state.branch.clear();
+    state.outgoing_commit_count = 0;
     state.branches.clear();
     state.new_branch_name.clear();
     state.show_create_branch_dialog = false;

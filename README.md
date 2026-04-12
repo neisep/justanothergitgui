@@ -33,6 +33,7 @@ The application combines:
 - **Browse commit history** with a visual graph lane
 - **Resolve merge conflicts** with built-in “Accept Ours / Theirs / Both” actions
 - **Pull and push** directly from the main toolbar
+- **See unpushed local commits** directly on the **Push(n)** button
 - **Automatically set upstream** on first push for a new branch
 - **Publish a local folder to GitHub** as a new repository
 - **Sign in to GitHub with OAuth Device Flow**
@@ -110,8 +111,9 @@ target\release\justanothergitgui.exe
 5. **Commit** from the right-side panel
 6. **Switch branches** or create a new one from the toolbar
 7. Use **Pull** / **Push** from the top-right area
-8. On `main` or `master`, use **Create Tag...** to tag the current HEAD commit
-9. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
+8. When the current branch has local commits that are not on the remote yet, the app shows them as **Push(n)**
+9. On `main` or `master`, use **Create Tag...** to tag the current HEAD commit
+10. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
 
 ### GitHub Sign-In
 

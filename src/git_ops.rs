@@ -120,6 +120,49 @@ pub fn get_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
     Ok(names)
 }
 
+pub fn get_outgoing_commit_count(repo: &Repository) -> Result<usize, git2::Error> {
+    let head = match repo.head() {
+        Ok(head) if head.is_branch() => head,
+        Ok(_) | Err(_) => return Ok(0),
+    };
+
+    let Some(local_oid) = head.target() else {
+        return Ok(0);
+    };
+
+    let branch_name = head.shorthand().unwrap_or_default();
+    if branch_name.is_empty() {
+        return Ok(0);
+    }
+
+    let branch = repo.find_branch(branch_name, git2::BranchType::Local)?;
+    if let Ok(upstream) = branch.upstream()
+        && let Some(upstream_oid) = upstream.get().target()
+    {
+        let (ahead, _) = repo.graph_ahead_behind(local_oid, upstream_oid)?;
+        return Ok(ahead);
+    }
+
+    let remote_ref = format!("refs/remotes/origin/{}", branch_name);
+    if let Ok(reference) = repo.find_reference(&remote_ref)
+        && let Some(remote_oid) = reference.target()
+    {
+        let (ahead, _) = repo.graph_ahead_behind(local_oid, remote_oid)?;
+        return Ok(ahead);
+    }
+
+    let mut walk = repo.revwalk()?;
+    walk.push(local_oid)?;
+    for reference in repo.references_glob("refs/remotes/*")? {
+        let reference = reference?;
+        if let Some(remote_oid) = reference.target() {
+            let _ = walk.hide(remote_oid);
+        }
+    }
+
+    Ok(walk.count())
+}
+
 pub fn can_create_tag_on_branch(branch_name: &str) -> bool {
     matches!(branch_name.trim(), "main" | "master")
 }
