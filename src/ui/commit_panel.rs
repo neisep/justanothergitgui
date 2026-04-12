@@ -47,11 +47,11 @@ pub fn show(
                     });
                     show_prefix_suggestions(
                         ui,
+                        &response,
                         &mut state.commit_msg,
                         ruleset,
                         &inferred_scopes,
                         custom_scopes,
-                        response.has_focus(),
                     );
                 });
 
@@ -96,31 +96,41 @@ pub fn show(
 
 pub fn show_prefix_suggestions(
     ui: &mut egui::Ui,
+    response: &egui::Response,
     message: &mut String,
     ruleset: CommitMessageRuleSet,
     inferred_scopes: &[String],
     custom_scopes: &[String],
-    input_has_focus: bool,
 ) {
-    if !input_has_focus {
-        return;
-    }
-
     let suggestions =
         commit_rules::prefix_suggestions(ruleset, message, inferred_scopes, custom_scopes);
+    let popup_id = egui::Popup::default_response_id(response);
+
     if suggestions.is_empty() {
+        egui::Popup::close_id(ui.ctx(), popup_id);
         return;
     }
 
-    ui.add_space(4.0);
-    egui::Frame::popup(ui.style()).show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        ui.weak("Suggestions");
-        ui.separator();
-        for suggestion in suggestions {
-            if ui.button(&suggestion).clicked() {
-                commit_rules::apply_prefix(ruleset, message, &suggestion);
+    let should_open = response.has_focus() || egui::Popup::is_id_open(ui.ctx(), popup_id);
+    if !should_open {
+        egui::Popup::close_id(ui.ctx(), popup_id);
+        return;
+    }
+
+    egui::Popup::from_response(response)
+        .open_memory(Some(egui::SetOpenCommand::Bool(true)))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(response.rect.width().max(220.0));
+            ui.weak("Suggestions");
+            ui.separator();
+            for suggestion in suggestions {
+                if ui.button(&suggestion).clicked() {
+                    commit_rules::apply_prefix(ruleset, message, &suggestion);
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                    ui.memory_mut(|memory| memory.request_focus(response.id));
+                    ui.ctx().request_repaint();
+                }
             }
-        }
-    });
+        });
 }

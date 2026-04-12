@@ -1115,11 +1115,11 @@ impl GitGuiApp {
                 });
                 ui::commit_panel::show_prefix_suggestions(
                     ui,
+                    &response,
                     &mut self.publish_dialog.commit_message,
                     self.settings.commit_message_ruleset,
                     &inferred_publish_scopes,
                     &self.settings.commit_message_custom_scopes,
-                    response.has_focus(),
                 );
 
                 let commit_message_error = commit_rules::validation_error(

@@ -198,9 +198,13 @@ fn apply_conventional_prefix(message: &mut String, prefix: &str) {
     };
 
     let subject = subject.trim_start();
-    let remainder = conventional_subject_remainder(subject)
-        .unwrap_or(subject)
-        .trim_start();
+    let remainder = if prefix_matches_subject(prefix, subject) {
+        ""
+    } else {
+        conventional_subject_remainder(subject)
+            .unwrap_or(subject)
+            .trim_start()
+    };
 
     let mut new_subject = prefix.to_string();
     if !remainder.is_empty() {
@@ -465,5 +469,31 @@ mod tests {
             prefix_suggestions(CommitMessageRuleSet::ConventionalCommits, "fix", &[], &[]);
 
         assert_eq!(suggestions, vec!["fix: "]);
+    }
+
+    #[test]
+    fn apply_prefix_replaces_partial_prefix_fragments() {
+        let mut message = "fix(".to_string();
+
+        apply_prefix(
+            CommitMessageRuleSet::ConventionalCommits,
+            &mut message,
+            "fix(ui): ",
+        );
+
+        assert_eq!(message, "fix(ui): ");
+    }
+
+    #[test]
+    fn apply_prefix_preserves_existing_summary_text() {
+        let mut message = "fix: preserve the summary".to_string();
+
+        apply_prefix(
+            CommitMessageRuleSet::ConventionalCommits,
+            &mut message,
+            "fix(ui): ",
+        );
+
+        assert_eq!(message, "fix(ui): preserve the summary");
     }
 }
