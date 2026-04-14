@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::state::{
@@ -837,11 +838,24 @@ fn push_with_git2(
         .find_remote("origin")
         .map_err(|e| format!("Remote error: {}", e))?;
     let mut push_options = git2::PushOptions::new();
-    push_options.remote_callbacks(remote_callbacks(&repo, auth)?);
+    let push_rejected: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let push_rejected_cb = Arc::clone(&push_rejected);
+    let mut callbacks = remote_callbacks(&repo, auth)?;
+    callbacks.push_update_reference(move |_refname, status| {
+        if let Some(msg) = status {
+            *push_rejected_cb.lock().unwrap() = Some(msg.to_string());
+        }
+        Ok(())
+    });
+    push_options.remote_callbacks(callbacks);
     let refspec = format!("refs/heads/{0}:refs/heads/{0}", branch_name);
     remote
         .push(&[&refspec], Some(&mut push_options))
         .map_err(|e| format!("Push error: {}", e))?;
+
+    if let Some(reason) = push_rejected.lock().unwrap().take() {
+        return Err(format!("Push rejected by remote: {}", reason));
+    }
 
     sync_remote_tracking_branch(&repo, branch_name)?;
 
@@ -936,11 +950,25 @@ fn push_tag_with_git2(
         .find_remote("origin")
         .map_err(|e| format!("Remote error: {}", e))?;
     let mut push_options = git2::PushOptions::new();
-    push_options.remote_callbacks(remote_callbacks(&repo, auth)?);
+    let push_rejected: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let push_rejected_cb = Arc::clone(&push_rejected);
+    let mut callbacks = remote_callbacks(&repo, auth)?;
+    callbacks.push_update_reference(move |_refname, status| {
+        if let Some(msg) = status {
+            *push_rejected_cb.lock().unwrap() = Some(msg.to_string());
+        }
+        Ok(())
+    });
+    push_options.remote_callbacks(callbacks);
     let refspec = format!("refs/tags/{0}:refs/tags/{0}", tag_name);
     remote
         .push(&[&refspec], Some(&mut push_options))
         .map_err(|e| format!("Tag push error: {}", e))?;
+
+    if let Some(reason) = push_rejected.lock().unwrap().take() {
+        return Err(format!("Tag push rejected by remote: {}", reason));
+    }
+
     Ok(())
 }
 
