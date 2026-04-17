@@ -14,7 +14,7 @@ It focuses on the everyday local workflow first—review changes, stage files, c
 
 <p align="center">
   <a href="https://github.com/neisep/justanothergitgui/releases"><img src="https://img.shields.io/github/v/release/neisep/justanothergitgui?style=flat-square" alt="Latest Release"></a>
-  <a href="https://github.com/neisep/justanothergitgui"><img src="https://img.shields.io/github/license/neisep/justanothergitgui?style=flat-square" alt="License"></a>
+  <a href="https://github.com/neisep/justanothergitgui/blob/master/LICENSE"><img src="https://img.shields.io/github/license/neisep/justanothergitgui?style=flat-square" alt="License"></a>
   <a href="https://github.com/neisep/justanothergitgui/actions"><img src="https://img.shields.io/github/actions/workflow/status/neisep/justanothergitgui/build.yml?style=flat-square" alt="Build Status"></a>
 </p>
 
