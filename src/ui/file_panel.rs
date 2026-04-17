@@ -69,11 +69,10 @@ fn render_file_table(
         state.unstaged.clone()
     };
     let row_height = ui.spacing().interact_size.y.max(28.0);
-    let empty_msg = if staged {
-        "No staged changes"
-    } else {
-        "No unstaged changes"
-    };
+
+    if files.is_empty() {
+        return render_empty_section(ui, state, staged, max_height);
+    }
 
     TableBuilder::new(ui)
         .id_salt(if staged {
@@ -104,18 +103,7 @@ fn render_file_table(
                 });
             });
         })
-        .body(|mut body| {
-            if files.is_empty() {
-                body.row(row_height, |mut row| {
-                    row.col(|ui| {
-                        ui.weak(empty_msg);
-                    });
-                    row.col(|_ui| {});
-                    row.col(|_ui| {});
-                });
-                return;
-            }
-
+        .body(|body| {
             body.rows(row_height, files.len(), |mut row| {
                 let file = &files[row.index()];
                 let is_selected = state.selected_file.as_ref().is_some_and(|selected| {
@@ -202,6 +190,66 @@ fn render_file_table(
             });
         })
         .inner_rect
+}
+
+fn render_empty_section(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    staged: bool,
+    max_height: f32,
+) -> egui::Rect {
+    let (title, hint) = if staged {
+        if state.unstaged.is_empty() {
+            (
+                "Nothing staged yet",
+                "Edit a file in your project — changes will show up here.",
+            )
+        } else {
+            (
+                "Nothing staged yet",
+                "Click Stage, or drag a file from Unstaged above.",
+            )
+        }
+    } else if state.staged.is_empty() {
+        (
+            "Working tree is clean",
+            "Edit any file in your project to see it here.",
+        )
+    } else {
+        (
+            "All changes are staged",
+            "Write a message on the right and commit when ready.",
+        )
+    };
+
+    let width = ui.available_width();
+    let height = max_height.clamp(72.0, 140.0);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(width, height),
+        egui::Sense::hover(),
+    );
+
+    let painter = ui.painter_at(rect);
+    let weak = ui.visuals().weak_text_color();
+    let strong = ui.visuals().text_color();
+    let center = rect.center();
+
+    painter.text(
+        egui::pos2(center.x, center.y - 10.0),
+        egui::Align2::CENTER_CENTER,
+        title,
+        egui::FontId::proportional(13.0),
+        strong,
+    );
+    painter.text(
+        egui::pos2(center.x, center.y + 10.0),
+        egui::Align2::CENTER_CENTER,
+        hint,
+        egui::FontId::proportional(11.0),
+        weak,
+    );
+
+    rect
 }
 
 fn render_status_badge(ui: &mut egui::Ui, file: &FileEntry) {

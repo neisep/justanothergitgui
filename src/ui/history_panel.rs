@@ -4,8 +4,24 @@ use crate::state::AppState;
 
 pub fn show(ui: &mut egui::Ui, state: &AppState) {
     if state.commit_history.is_empty() {
-        ui.centered_and_justified(|ui| {
-            ui.weak("No commit history available");
+        let (title, hint) = if state.repo_path.is_none() {
+            (
+                "No repository open",
+                "Use the top bar to open or clone a repository.",
+            )
+        } else {
+            (
+                "No commits yet",
+                "Stage some files and commit — your history will appear here.",
+            )
+        };
+
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.35);
+            ui.weak(title);
+            ui.add_space(4.0);
+            let weak = ui.visuals().weak_text_color();
+            ui.label(egui::RichText::new(hint).small().color(weak));
         });
         return;
     }

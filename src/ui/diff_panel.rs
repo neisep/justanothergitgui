@@ -33,10 +33,35 @@ fn show_diff_or_conflict(ui: &mut egui::Ui, state: &mut AppState) {
     } else if state.selected_file.is_some() {
         show_diff_view(ui, state);
     } else {
-        ui.centered_and_justified(|ui| {
-            ui.weak("Select a file to view changes");
-        });
+        show_diff_empty_state(ui, state);
     }
+}
+
+fn show_diff_empty_state(ui: &mut egui::Ui, state: &AppState) {
+    let (title, hint) = if state.repo_path.is_none() {
+        (
+            "No repository open",
+            "Use the top bar to open, clone, or init a repository.",
+        )
+    } else if state.unstaged.is_empty() && state.staged.is_empty() {
+        (
+            "Nothing to show",
+            "Edit a file in your project — changes will appear on the left.",
+        )
+    } else {
+        (
+            "Pick a file to inspect",
+            "Click any file on the left to see what changed.",
+        )
+    };
+
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.35);
+        ui.weak(title);
+        ui.add_space(4.0);
+        let weak = ui.visuals().weak_text_color();
+        ui.label(egui::RichText::new(hint).small().color(weak));
+    });
 }
 
 fn show_diff_view(ui: &mut egui::Ui, state: &mut AppState) {
