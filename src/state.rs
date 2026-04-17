@@ -120,6 +120,33 @@ pub enum UiAction {
     DiscardAndReset { clean_untracked: bool },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusyAction {
+    Push,
+    Pull,
+    CreateTag,
+    OpenPullRequest,
+    CreatePullRequest,
+    DiscardAndReset,
+    GithubSignIn,
+    PublishRepository,
+}
+
+#[derive(Clone, Debug)]
+pub struct BusyState {
+    pub action: BusyAction,
+    pub label: String,
+}
+
+impl BusyState {
+    pub fn new(action: BusyAction, label: impl Into<String>) -> Self {
+        Self {
+            action,
+            label: label.into(),
+        }
+    }
+}
+
 pub struct AppState {
     pub repo_path: Option<PathBuf>,
     pub has_origin_remote: bool,
@@ -153,6 +180,7 @@ pub struct AppState {
     pub pull_request_prompt: Option<PullRequestPrompt>,
     pub conflict_data: Option<ConflictData>,
     pub dragging: Option<DragFile>,
+    pub busy: Option<BusyState>,
 }
 
 impl Default for AppState {
@@ -190,6 +218,7 @@ impl Default for AppState {
             pull_request_prompt: None,
             conflict_data: None,
             dragging: None,
+            busy: None,
         }
     }
 }

@@ -7,7 +7,9 @@ use crate::commit_rules::{self, CommitMessageRuleSet};
 use crate::git_ops;
 use crate::logging::{self, AppLogger};
 use crate::settings::{self, AppSettings};
-use crate::state::{AppState, CenterView, PullRequestPrompt, SelectedFile, UiAction};
+use crate::state::{
+    AppState, BusyAction, BusyState, CenterView, PullRequestPrompt, SelectedFile, UiAction,
+};
 use crate::ui;
 use crate::worker::{TaskResult, Worker};
 
@@ -41,6 +43,7 @@ pub struct GitGuiApp {
     active_tab: usize,
     welcome_status: String,
     welcome_worker: Worker,
+    welcome_busy: Option<BusyState>,
     publish_dialog: PublishRepoDialogState,
     settings: AppSettings,
     settings_dialog: SettingsDialogState,
@@ -113,6 +116,7 @@ impl GitGuiApp {
             active_tab: 0,
             welcome_status: "Open a Git repository to get started.".into(),
             welcome_worker: Worker::new(),
+            welcome_busy: None,
             publish_dialog: PublishRepoDialogState::new(settings.commit_message_ruleset),
             settings,
             settings_dialog: SettingsDialogState {
@@ -224,10 +228,17 @@ impl GitGuiApp {
     }
 
     fn begin_github_sign_in(&mut self, start_message: &str) {
+        if self.welcome_worker.is_busy() {
+            self.welcome_status = "Busy — please wait...".into();
+            self.set_status_message("Busy — please wait...".into());
+            return;
+        }
+
         self.github_auth_prompt = None;
         self.publish_dialog.github_status = start_message.into();
         self.publish_dialog.operation_status.clear();
         self.welcome_status = start_message.into();
+        self.welcome_busy = Some(BusyState::new(BusyAction::GithubSignIn, start_message));
         self.set_status_message(start_message.into());
         self.welcome_worker
             .login_github(GITHUB_OAUTH_CLIENT_ID.into());
@@ -385,7 +396,9 @@ impl GitGuiApp {
                         if tab.worker.is_busy() {
                             tab.state.status_msg = "Busy — please wait...".into();
                         } else {
-                            tab.state.status_msg = "Pushing...".into();
+                            let busy = BusyState::new(BusyAction::Push, "Pushing...");
+                            tab.state.status_msg = busy.label.clone();
+                            tab.state.busy = Some(busy);
                             tab.worker.push(path, self.github_auth_session.clone());
                         }
                     }
@@ -397,7 +410,9 @@ impl GitGuiApp {
                         if tab.worker.is_busy() {
                             tab.state.status_msg = "Busy — please wait...".into();
                         } else {
-                            tab.state.status_msg = "Pulling...".into();
+                            let busy = BusyState::new(BusyAction::Pull, "Pulling...");
+                            tab.state.status_msg = busy.label.clone();
+                            tab.state.busy = Some(busy);
                             tab.worker.pull(path, self.github_auth_session.clone());
                         }
                     }
@@ -492,9 +507,12 @@ impl GitGuiApp {
                                 "Sign in to GitHub before creating tags for this repository."
                                     .into();
                         } else {
-                            tab.state.status_msg = format!("Creating tag {}...", tag_name);
-                            tab.state.new_tag_name.clear();
-                            tab.state.show_create_tag_dialog = false;
+                            let busy = BusyState::new(
+                                BusyAction::CreateTag,
+                                format!("Creating tag {}...", tag_name),
+                            );
+                            tab.state.status_msg = busy.label.clone();
+                            tab.state.busy = Some(busy);
                             tab.worker
                                 .create_tag(path, tag_name, self.github_auth_session.clone());
                         }
@@ -515,12 +533,21 @@ impl GitGuiApp {
 
                     match prompt {
                         PullRequestPrompt::Open { number, url, .. } => {
-                            tab.state.status_msg = format!("Opening pull request #{}...", number);
+                            let busy = BusyState::new(
+                                BusyAction::OpenPullRequest,
+                                format!("Opening pull request #{}...", number),
+                            );
+                            tab.state.status_msg = busy.label.clone();
+                            tab.state.busy = Some(busy);
                             tab.worker.open_pull_request(url);
                         }
                         PullRequestPrompt::Create { branch, url } => {
-                            tab.state.status_msg =
-                                format!("Opening pull request creation for {}...", branch);
+                            let busy = BusyState::new(
+                                BusyAction::CreatePullRequest,
+                                format!("Opening pull request creation for {}...", branch),
+                            );
+                            tab.state.status_msg = busy.label.clone();
+                            tab.state.busy = Some(busy);
                             tab.worker.create_pull_request(url);
                         }
                     }
@@ -588,9 +615,12 @@ impl GitGuiApp {
                         if tab.worker.is_busy() {
                             tab.state.status_msg = "Busy — please wait...".into();
                         } else {
-                            tab.state.status_msg = "Resetting to remote...".into();
-                            tab.state.show_discard_dialog = false;
-                            tab.state.discard_preview = None;
+                            let busy = BusyState::new(
+                                BusyAction::DiscardAndReset,
+                                "Resetting to remote...",
+                            );
+                            tab.state.status_msg = busy.label.clone();
+                            tab.state.busy = Some(busy);
                             tab.worker.discard_and_reset(
                                 path,
                                 self.github_auth_session.clone(),
@@ -655,6 +685,7 @@ impl GitGuiApp {
                     self.set_status_message(message);
                 }
                 TaskResult::GithubAuth(Ok(session)) => {
+                    self.welcome_busy = None;
                     let persistence_result = git_ops::save_github_auth_session(&session);
                     let message = match &persistence_result {
                         Ok(()) => format!("GitHub sign-in complete for @{}", session.login),
@@ -676,6 +707,7 @@ impl GitGuiApp {
                     self.set_status_message(self.publish_dialog.github_status.clone());
                 }
                 TaskResult::GithubAuth(Err(msg)) => {
+                    self.welcome_busy = None;
                     self.logger.log_error("GitHub sign-in", &msg);
                     self.github_auth_prompt = None;
                     self.publish_dialog.github_authenticated = self.github_auth_session.is_some();
@@ -694,6 +726,7 @@ impl GitGuiApp {
                     self.set_status_message(self.publish_dialog.github_status.clone());
                 }
                 TaskResult::CreateGithubRepo(Ok(result)) => {
+                    self.welcome_busy = None;
                     let message = result.message.clone();
                     self.publish_dialog.show = false;
                     self.publish_dialog.operation_status.clear();
@@ -702,6 +735,7 @@ impl GitGuiApp {
                     self.set_status_message(message);
                 }
                 TaskResult::CreateGithubRepo(Err(msg)) => {
+                    self.welcome_busy = None;
                     self.logger.log_error("Publish to GitHub", &msg);
                     self.publish_dialog.operation_status =
                         status_message_for_error("Publish to GitHub", &msg);
@@ -724,6 +758,7 @@ impl GitGuiApp {
             while let Some(result) = tab.worker.try_recv() {
                 match result {
                     TaskResult::Push(Ok(result)) => {
+                        tab.state.busy = None;
                         let prompt_message = match &result.pull_request_prompt {
                             Some(PullRequestPrompt::Open { number, .. }) => {
                                 format!(" Pull request #{} is ready.", number)
@@ -739,45 +774,61 @@ impl GitGuiApp {
                         refresh_indices.push(index);
                     }
                     TaskResult::Push(Err(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = status_message_for_error("Push", &msg);
                         tab_logs.push(("Push".into(), msg));
                     }
                     TaskResult::Pull(Ok(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = format!("Pull: {}", msg);
                         refresh_indices.push(index);
                     }
                     TaskResult::Pull(Err(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = status_message_for_error("Pull", &msg);
                         tab_logs.push(("Pull".into(), msg));
                     }
                     TaskResult::CreateTag(Ok(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = msg;
+                        tab.state.new_tag_name.clear();
+                        tab.state.show_create_tag_dialog = false;
                         refresh_indices.push(index);
                     }
                     TaskResult::CreateTag(Err(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = status_message_for_error("Create tag", &msg);
                         tab_logs.push(("Create tag".into(), msg));
                         refresh_indices.push(index);
                     }
                     TaskResult::OpenPullRequest(Ok(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = msg;
                     }
                     TaskResult::OpenPullRequest(Err(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = status_message_for_error("Open PR", &msg);
                         tab_logs.push(("Open PR".into(), msg));
                     }
                     TaskResult::CreatePullRequest(Ok(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = msg;
                     }
                     TaskResult::CreatePullRequest(Err(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = status_message_for_error("Create PR", &msg);
                         tab_logs.push(("Create PR".into(), msg));
                     }
                     TaskResult::DiscardAndReset(Ok(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = format!("Discard: {}", msg);
+                        tab.state.show_discard_dialog = false;
+                        tab.state.discard_preview = None;
+                        tab.state.discard_clean_untracked = false;
                         refresh_indices.push(index);
                     }
                     TaskResult::DiscardAndReset(Err(msg)) => {
+                        tab.state.busy = None;
                         tab.state.status_msg = status_message_for_error("Discard & reset", &msg);
                         tab_logs.push(("Discard & reset".into(), msg));
                         refresh_indices.push(index);
@@ -844,7 +895,11 @@ impl GitGuiApp {
 
         egui::Panel::top("repo_tabs").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
+                let welcome_busy = self.welcome_busy.clone();
                 let state = &mut self.tabs[active_index].state;
+                let repo_busy = state.busy.clone();
+                let repo_worker_busy = repo_busy.is_some();
+                let welcome_worker_busy = welcome_busy.is_some();
                 let controls_width = if state.branch.is_empty() {
                     380.0
                 } else {
@@ -913,7 +968,7 @@ impl GitGuiApp {
 
                     if ui
                         .add_enabled(
-                            has_repo && !has_origin_remote,
+                            has_repo && !has_origin_remote && !welcome_worker_busy,
                             egui::Button::new("Publish to GitHub..."),
                         )
                         .on_hover_text("Create a GitHub repository for this folder and push it")
@@ -925,7 +980,10 @@ impl GitGuiApp {
 
                     if needs_github_sign_in
                         && ui
-                            .add_enabled(has_repo, egui::Button::new("Sign in to GitHub..."))
+                            .add_enabled(
+                                has_repo && !welcome_worker_busy,
+                                egui::Button::new("Sign in to GitHub..."),
+                            )
                             .on_hover_text(
                                 "Sign in so the app can check pull requests and reuse GitHub auth",
                             )
@@ -936,7 +994,10 @@ impl GitGuiApp {
                     }
 
                     if ui
-                        .add_enabled(can_create_tag, egui::Button::new("Create Tag..."))
+                        .add_enabled(
+                            can_create_tag && !repo_worker_busy,
+                            egui::Button::new("Create Tag..."),
+                        )
                         .on_hover_text(create_tag_tooltip)
                         .clicked()
                     {
@@ -945,7 +1006,7 @@ impl GitGuiApp {
                     }
 
                     if ui
-                        .add_enabled(has_repo, egui::Button::new("Cleanup..."))
+                        .add_enabled(has_repo && !repo_worker_busy, egui::Button::new("Cleanup..."))
                         .on_hover_text(
                             "Remove local branches whose remote branch was deleted\n(e.g. after a merged PR). Pull first to refresh.",
                         )
@@ -956,7 +1017,10 @@ impl GitGuiApp {
                     }
 
                     if ui
-                        .add_enabled(can_discard, egui::Button::new("Discard..."))
+                        .add_enabled(
+                            can_discard && !repo_worker_busy,
+                            egui::Button::new("Discard..."),
+                        )
                         .on_hover_text(discard_tooltip)
                         .clicked()
                     {
@@ -976,6 +1040,11 @@ impl GitGuiApp {
                         ui.close();
                     }
                 });
+                if !self.publish_dialog.show {
+                    if let Some(busy) = &welcome_busy {
+                        ui::show_inline_busy(ui, &busy.label);
+                    }
+                }
 
                 ui.separator();
 
@@ -1009,15 +1078,24 @@ impl GitGuiApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.button(push_label).on_hover_text(push_tooltip).clicked() {
+                                    if ui
+                                        .add_enabled(!repo_worker_busy, egui::Button::new(push_label))
+                                        .on_hover_text(push_tooltip)
+                                        .clicked()
+                                    {
                                         state.actions.push(UiAction::Push);
                                     }
                                     if ui
-                                        .button("Pull")
+                                        .add_enabled(!repo_worker_busy, egui::Button::new("Pull"))
                                         .on_hover_text("Pull from remote")
                                         .clicked()
                                     {
                                         state.actions.push(UiAction::Pull);
+                                    }
+                                    if let Some(busy) = repo_busy.as_ref().filter(|busy| {
+                                        matches!(busy.action, BusyAction::Push | BusyAction::Pull)
+                                    }) {
+                                        ui::show_inline_busy(ui, &busy.label);
                                     }
                                 },
                             );
@@ -1037,37 +1115,54 @@ impl GitGuiApp {
                         };
 
                         if ui
-                            .add_enabled(has_repo, egui::Button::new(label))
+                            .add_enabled(
+                                has_repo && !repo_worker_busy,
+                                egui::Button::new(label),
+                            )
                             .on_hover_text(hover)
                             .clicked()
                         {
                             state.actions.push(UiAction::LaunchPullRequest);
                         }
-                    }
-
-                    if ui
-                        .add_enabled(has_repo, egui::Button::new("New Branch..."))
-                        .on_hover_text("Create and switch to a new local branch")
-                        .clicked()
-                    {
-                        state.show_create_branch_dialog = true;
-                    }
-
-                    if !state.branch.is_empty() {
-                        let prev_branch = state.branch.clone();
-                        egui::ComboBox::from_id_salt("branch_selector")
-                            .selected_text(&state.branch)
-                            .show_ui(ui, |ui| {
-                                for branch in &state.branches {
-                                    ui.selectable_value(&mut state.branch, branch.clone(), branch);
-                                }
-                            });
-
-                        if state.branch != prev_branch {
-                            let new_branch = state.branch.clone();
-                            state.actions.push(UiAction::SwitchBranch(new_branch));
+                        if let Some(busy) = repo_busy.as_ref().filter(|busy| {
+                            matches!(
+                                busy.action,
+                                BusyAction::OpenPullRequest | BusyAction::CreatePullRequest
+                            )
+                        }) {
+                            ui::show_inline_busy(ui, &busy.label);
                         }
                     }
+
+                    ui.add_enabled_ui(!repo_worker_busy, |ui| {
+                        if ui
+                            .add_enabled(has_repo, egui::Button::new("New Branch..."))
+                            .on_hover_text("Create and switch to a new local branch")
+                            .clicked()
+                        {
+                            state.show_create_branch_dialog = true;
+                        }
+
+                        if !state.branch.is_empty() {
+                            let prev_branch = state.branch.clone();
+                            egui::ComboBox::from_id_salt("branch_selector")
+                                .selected_text(&state.branch)
+                                .show_ui(ui, |ui| {
+                                    for branch in &state.branches {
+                                        ui.selectable_value(
+                                            &mut state.branch,
+                                            branch.clone(),
+                                            branch,
+                                        );
+                                    }
+                                });
+
+                            if state.branch != prev_branch {
+                                let new_branch = state.branch.clone();
+                                state.actions.push(UiAction::SwitchBranch(new_branch));
+                            }
+                        }
+                    });
                 });
 
                 if publish_clicked {
@@ -1095,6 +1190,8 @@ impl GitGuiApp {
     }
 
     fn show_welcome(&mut self, ui: &mut egui::Ui) {
+        let welcome_busy = self.welcome_busy.clone();
+        let worker_busy = welcome_busy.is_some();
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() / 3.0);
             ui.heading("Just Another Git GUI");
@@ -1104,8 +1201,17 @@ impl GitGuiApp {
             if ui.button("Open Repository...").clicked() {
                 self.open_repo_dialog();
             }
-            if ui.button("Publish Folder to GitHub...").clicked() {
+            if ui
+                .add_enabled(
+                    !worker_busy,
+                    egui::Button::new("Publish Folder to GitHub..."),
+                )
+                .clicked()
+            {
                 self.open_publish_repo_dialog(None);
+            }
+            if let Some(busy) = &welcome_busy {
+                ui::show_inline_busy(ui, &busy.label);
             }
             if ui.button("Settings...").clicked() {
                 self.open_settings_dialog();
@@ -1239,7 +1345,8 @@ impl GitGuiApp {
             return;
         }
 
-        let worker_busy = self.welcome_worker.is_busy();
+        let welcome_busy = self.welcome_busy.clone();
+        let worker_busy = welcome_busy.is_some();
         let mut keep_open = self.publish_dialog.show;
         let mut close_requested = false;
         let mut choose_folder_clicked = false;
@@ -1253,43 +1360,45 @@ impl GitGuiApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .open(&mut keep_open)
             .show(ctx, |ui| {
-                ui.label("Folder");
-                ui.horizontal(|ui| {
+                ui.add_enabled_ui(!worker_busy, |ui| {
+                    ui.label("Folder");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.publish_dialog.folder_path)
+                                .desired_width(320.0),
+                        );
+                        if ui.button("Choose...").clicked() {
+                            choose_folder_clicked = true;
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.label("Repository name");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.publish_dialog.folder_path)
+                        egui::TextEdit::singleline(&mut self.publish_dialog.repo_name)
+                            .desired_width(320.0)
+                            .hint_text("owner/repository or repository"),
+                    );
+
+                    ui.add_space(8.0);
+                    ui.label("Initial commit message");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.publish_dialog.commit_message)
                             .desired_width(320.0),
                     );
-                    if ui.button("Choose...").clicked() {
-                        choose_folder_clicked = true;
-                    }
+                    let inferred_publish_scopes = commit_rules::infer_commit_scopes(
+                        folder_path_from_text(&self.publish_dialog.folder_path),
+                        std::iter::empty::<&str>(),
+                    );
+                    ui::commit_panel::show_prefix_suggestions(
+                        ui,
+                        &response,
+                        &mut self.publish_dialog.commit_message,
+                        self.settings.commit_message_ruleset,
+                        &inferred_publish_scopes,
+                        &self.settings.commit_message_custom_scopes,
+                    );
                 });
-
-                ui.add_space(8.0);
-                ui.label("Repository name");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.publish_dialog.repo_name)
-                        .desired_width(320.0)
-                        .hint_text("owner/repository or repository"),
-                );
-
-                ui.add_space(8.0);
-                ui.label("Initial commit message");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.publish_dialog.commit_message)
-                        .desired_width(320.0),
-                );
-                let inferred_publish_scopes = commit_rules::infer_commit_scopes(
-                    folder_path_from_text(&self.publish_dialog.folder_path),
-                    std::iter::empty::<&str>(),
-                );
-                ui::commit_panel::show_prefix_suggestions(
-                    ui,
-                    &response,
-                    &mut self.publish_dialog.commit_message,
-                    self.settings.commit_message_ruleset,
-                    &inferred_publish_scopes,
-                    &self.settings.commit_message_custom_scopes,
-                );
 
                 let commit_message_error = commit_rules::validation_error(
                     self.settings.commit_message_ruleset,
@@ -1305,18 +1414,20 @@ impl GitGuiApp {
                 }
 
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label("Visibility");
-                    ui.selectable_value(
-                        &mut self.publish_dialog.visibility,
-                        git_ops::GithubRepoVisibility::Private,
-                        "Private",
-                    );
-                    ui.selectable_value(
-                        &mut self.publish_dialog.visibility,
-                        git_ops::GithubRepoVisibility::Public,
-                        "Public",
-                    );
+                ui.add_enabled_ui(!worker_busy, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Visibility");
+                        ui.selectable_value(
+                            &mut self.publish_dialog.visibility,
+                            git_ops::GithubRepoVisibility::Private,
+                            "Private",
+                        );
+                        ui.selectable_value(
+                            &mut self.publish_dialog.visibility,
+                            git_ops::GithubRepoVisibility::Public,
+                            "Public",
+                        );
+                    });
                 });
 
                 ui.add_space(8.0);
@@ -1332,11 +1443,6 @@ impl GitGuiApp {
                     ui.weak(&self.publish_dialog.operation_status);
                 }
 
-                if worker_busy {
-                    ui.add_space(8.0);
-                    ui.weak("Working...");
-                }
-
                 let can_create = !worker_busy
                     && self.publish_dialog.github_authenticated
                     && !self.publish_dialog.folder_path.trim().is_empty()
@@ -1346,6 +1452,9 @@ impl GitGuiApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    if let Some(busy) = &welcome_busy {
+                        ui::show_inline_busy(ui, &busy.label);
+                    }
                     if ui
                         .add_enabled(!worker_busy, egui::Button::new("Sign In with GitHub"))
                         .clicked()
@@ -1368,6 +1477,11 @@ impl GitGuiApp {
                     }
                 });
             });
+
+        if worker_busy {
+            keep_open = true;
+            close_requested = false;
+        }
 
         if choose_folder_clicked {
             let mut dialog = rfd::FileDialog::new();
@@ -1395,6 +1509,10 @@ impl GitGuiApp {
                         let folder_path = PathBuf::from(self.publish_dialog.folder_path.trim());
                         self.publish_dialog.operation_status =
                             "Publishing folder to GitHub...".into();
+                        self.welcome_busy = Some(BusyState::new(
+                            BusyAction::PublishRepository,
+                            "Publishing repository...",
+                        ));
                         self.welcome_worker
                             .create_github_repo(git_ops::CreateGithubRepoRequest {
                                 folder_path,
@@ -1590,6 +1708,10 @@ impl GitGuiApp {
         let mut keep_open = state.show_create_tag_dialog;
         let mut close_requested = false;
         let mut submit_tag = None;
+        let create_tag_busy = state
+            .busy
+            .as_ref()
+            .is_some_and(|busy| busy.action == BusyAction::CreateTag);
         let can_create_tag = git_ops::can_create_tag_on_branch(&state.branch)
             && (!state.has_github_https_origin || self.github_auth_session.is_some());
 
@@ -1603,7 +1725,8 @@ impl GitGuiApp {
                 ui.label(format!("Current branch: {}", state.branch));
                 ui.add_space(6.0);
                 ui.label("Tag name");
-                let response = ui.add(
+                let response = ui.add_enabled(
+                    !create_tag_busy,
                     egui::TextEdit::singleline(&mut state.new_tag_name)
                         .desired_width(260.0)
                         .hint_text("v1.0.0"),
@@ -1632,20 +1755,38 @@ impl GitGuiApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    if let Some(busy) = state
+                        .busy
+                        .as_ref()
+                        .filter(|busy| busy.action == BusyAction::CreateTag)
+                    {
+                        ui::show_inline_busy(ui, &busy.label);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add_enabled(can_submit, egui::Button::new("Create"))
+                            .add_enabled(
+                                can_submit && !create_tag_busy,
+                                egui::Button::new("Create"),
+                            )
                             .clicked()
                         {
                             submit_tag = Some(state.new_tag_name.trim().to_string());
                         }
 
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .add_enabled(!create_tag_busy, egui::Button::new("Cancel"))
+                            .clicked()
+                        {
                             close_requested = true;
                         }
                     });
                 });
             });
+
+        if create_tag_busy {
+            keep_open = true;
+            close_requested = false;
+        }
 
         if let Some(tag_name) = submit_tag {
             state.actions.push(UiAction::CreateTag(tag_name));
@@ -1784,6 +1925,10 @@ impl GitGuiApp {
         let mut confirm_requested = false;
         let branch = state.branch.clone();
         let preview = state.discard_preview.clone().unwrap_or_default();
+        let discard_busy = state
+            .busy
+            .as_ref()
+            .is_some_and(|busy| busy.action == BusyAction::DiscardAndReset);
 
         egui::Window::new("Discard local changes")
             .id(egui::Id::new("discard_dialog"))
@@ -1824,16 +1969,26 @@ impl GitGuiApp {
                 });
 
                 ui.add_space(10.0);
-                ui.checkbox(
-                    &mut state.discard_clean_untracked,
-                    "Also delete untracked files",
-                );
+                ui.add_enabled_ui(!discard_busy, |ui| {
+                    ui.checkbox(
+                        &mut state.discard_clean_untracked,
+                        "Also delete untracked files",
+                    );
+                });
 
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
+                    if let Some(busy) = state
+                        .busy
+                        .as_ref()
+                        .filter(|busy| busy.action == BusyAction::DiscardAndReset)
+                    {
+                        ui::show_inline_busy(ui, &busy.label);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(
+                            .add_enabled(
+                                !discard_busy,
                                 egui::Button::new(
                                     egui::RichText::new("Discard")
                                         .color(egui::Color32::from_rgb(255, 255, 255)),
@@ -1845,12 +2000,20 @@ impl GitGuiApp {
                             confirm_requested = true;
                         }
 
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .add_enabled(!discard_busy, egui::Button::new("Cancel"))
+                            .clicked()
+                        {
                             close_requested = true;
                         }
                     });
                 });
             });
+
+        if discard_busy {
+            keep_open = true;
+            close_requested = false;
+        }
 
         if confirm_requested {
             let clean_untracked = state.discard_clean_untracked;
@@ -2042,6 +2205,7 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.pull_request_prompt = None;
     state.conflict_data = None;
     state.dragging = None;
+    state.busy = None;
 }
 
 fn folder_path_from_text(folder_path: &str) -> Option<&Path> {
