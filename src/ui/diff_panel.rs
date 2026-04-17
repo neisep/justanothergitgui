@@ -33,31 +33,69 @@ fn show_diff_or_conflict(ui: &mut egui::Ui, state: &mut AppState) {
     } else if state.selected_file.is_some() {
         show_diff_view(ui, state);
     } else {
-        ui.centered_and_justified(|ui| {
-            ui.weak("Select a file to view changes");
-        });
+        show_diff_empty_state(ui, state);
     }
 }
 
-fn show_diff_view(ui: &mut egui::Ui, state: &AppState) {
+fn show_diff_empty_state(ui: &mut egui::Ui, state: &AppState) {
+    let (title, hint) = if state.repo_path.is_none() {
+        (
+            "No repository open",
+            "Use the top bar to open, clone, or init a repository.",
+        )
+    } else if state.unstaged.is_empty() && state.staged.is_empty() {
+        (
+            "Nothing to show",
+            "Edit a file in your project — changes will appear on the left.",
+        )
+    } else {
+        (
+            "Pick a file to inspect",
+            "Click any file on the left to see what changed.",
+        )
+    };
+
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.35);
+        ui.weak(title);
+        ui.add_space(4.0);
+        let weak = ui.visuals().weak_text_color();
+        ui.label(egui::RichText::new(hint).small().color(weak));
+    });
+}
+
+fn show_diff_view(ui: &mut egui::Ui, state: &mut AppState) {
     if let Some(sel) = &state.selected_file {
+        let rows = parse_diff_rows(&state.diff_content);
+        let added_lines = rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::Added)
+            .count();
+        let removed_lines = rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::Removed)
+            .count();
+
         ui.horizontal(|ui| {
             ui.strong(&sel.path);
             ui.weak(if sel.staged { "(staged)" } else { "(unstaged)" });
+            ui.separator();
+            ui.weak(format!("+{} / -{}", added_lines, removed_lines));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut state.diff_wrap, "Wrap lines");
+            });
         });
         ui.separator();
 
         egui::ScrollArea::both()
             .id_salt("diff_scroll")
             .show(ui, |ui| {
-                for line in state.diff_content.lines() {
-                    let color = diff_line_color(line, ui);
-                    ui.label(egui::RichText::new(line).monospace().color(color));
-                }
-
                 if state.diff_content.is_empty() {
                     ui.weak("No diff available (file may be binary or new)");
+                    return;
                 }
+
+                show_diff_table(ui, &rows, state.diff_wrap);
             });
     }
 }
@@ -189,14 +227,279 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-fn diff_line_color(line: &str, ui: &egui::Ui) -> egui::Color32 {
-    if line.starts_with('+') {
-        egui::Color32::from_rgb(80, 200, 80)
-    } else if line.starts_with('-') {
-        egui::Color32::from_rgb(220, 80, 80)
-    } else if line.starts_with('@') {
-        egui::Color32::from_rgb(100, 160, 255)
+fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_lines: bool) {
+    egui::Grid::new("diff_grid")
+        .num_columns(4)
+        .spacing([8.0, 3.0])
+        .striped(true)
+        .show(ui, |ui| {
+            ui.weak(egui::RichText::new("old").monospace());
+            ui.weak(egui::RichText::new("new").monospace());
+            ui.weak(egui::RichText::new("chg").monospace());
+            ui.weak(egui::RichText::new("content").monospace());
+            ui.end_row();
+
+            for row in rows {
+                render_line_number(ui, row.old_line_number);
+                render_line_number(ui, row.new_line_number);
+                render_diff_badge(ui, row.kind);
+                render_diff_content(ui, row, wrap_lines);
+                ui.end_row();
+            }
+        });
+}
+
+fn render_line_number(ui: &mut egui::Ui, line_number: Option<usize>) {
+    let text = line_number.map(|line| line.to_string()).unwrap_or_default();
+    ui.label(
+        egui::RichText::new(text)
+            .monospace()
+            .color(egui::Color32::from_gray(140)),
+    );
+}
+
+fn render_diff_badge(ui: &mut egui::Ui, kind: DiffLineKind) {
+    let (fill, text_color, label) = match kind {
+        DiffLineKind::Added => (
+            egui::Color32::from_rgba_premultiplied(32, 110, 64, 72),
+            egui::Color32::from_rgb(120, 230, 160),
+            "ADD",
+        ),
+        DiffLineKind::Removed => (
+            egui::Color32::from_rgba_premultiplied(140, 48, 48, 72),
+            egui::Color32::from_rgb(255, 150, 150),
+            "DEL",
+        ),
+        DiffLineKind::HunkHeader => (
+            egui::Color32::from_rgba_premultiplied(52, 90, 140, 72),
+            egui::Color32::from_rgb(150, 200, 255),
+            "HUNK",
+        ),
+        DiffLineKind::FileHeader => (
+            egui::Color32::from_rgba_premultiplied(90, 90, 90, 56),
+            egui::Color32::from_gray(220),
+            "META",
+        ),
+        DiffLineKind::Note => (
+            egui::Color32::from_rgba_premultiplied(132, 100, 28, 72),
+            egui::Color32::from_rgb(255, 220, 120),
+            "NOTE",
+        ),
+        DiffLineKind::Context | DiffLineKind::Other => {
+            ui.weak(egui::RichText::new(" ").monospace());
+            return;
+        }
+    };
+
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .monospace()
+                    .small()
+                    .strong()
+                    .color(text_color),
+            );
+        });
+}
+
+fn render_diff_content(ui: &mut egui::Ui, row: &ParsedDiffLine, wrap_lines: bool) {
+    let content = if row.content.is_empty() {
+        " "
     } else {
-        ui.style().visuals.text_color()
+        &row.content
+    };
+    let mut label = egui::Label::new(
+        egui::RichText::new(content)
+            .monospace()
+            .color(diff_line_color(row.kind, ui)),
+    );
+    label = if wrap_lines {
+        label.wrap()
+    } else {
+        label.extend()
+    };
+    ui.add(label);
+}
+
+fn diff_line_color(kind: DiffLineKind, ui: &egui::Ui) -> egui::Color32 {
+    match kind {
+        DiffLineKind::Added => egui::Color32::from_rgb(120, 230, 160),
+        DiffLineKind::Removed => egui::Color32::from_rgb(255, 150, 150),
+        DiffLineKind::HunkHeader => egui::Color32::from_rgb(150, 200, 255),
+        DiffLineKind::FileHeader => egui::Color32::from_gray(210),
+        DiffLineKind::Note => egui::Color32::from_rgb(255, 220, 120),
+        DiffLineKind::Context | DiffLineKind::Other => ui.style().visuals.text_color(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffLineKind {
+    Context,
+    Added,
+    Removed,
+    HunkHeader,
+    FileHeader,
+    Note,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ParsedDiffLine {
+    old_line_number: Option<usize>,
+    new_line_number: Option<usize>,
+    kind: DiffLineKind,
+    content: String,
+}
+
+fn parse_diff_rows(diff_content: &str) -> Vec<ParsedDiffLine> {
+    let mut rows = Vec::new();
+    let mut old_line_number = None;
+    let mut new_line_number = None;
+
+    for line in diff_content.lines() {
+        let kind = classify_diff_line(line);
+
+        if kind == DiffLineKind::HunkHeader {
+            if let Some((old_start, new_start)) = parse_hunk_header(line) {
+                old_line_number = Some(old_start);
+                new_line_number = Some(new_start);
+            }
+        }
+
+        let row = match kind {
+            DiffLineKind::Context => {
+                let old = old_line_number;
+                let new = new_line_number;
+                old_line_number = old_line_number.map(|line| line + 1);
+                new_line_number = new_line_number.map(|line| line + 1);
+                ParsedDiffLine {
+                    old_line_number: old,
+                    new_line_number: new,
+                    kind,
+                    content: line[1..].to_string(),
+                }
+            }
+            DiffLineKind::Added => {
+                let new = new_line_number;
+                new_line_number = new_line_number.map(|line| line + 1);
+                ParsedDiffLine {
+                    old_line_number: None,
+                    new_line_number: new,
+                    kind,
+                    content: line[1..].to_string(),
+                }
+            }
+            DiffLineKind::Removed => {
+                let old = old_line_number;
+                old_line_number = old_line_number.map(|line| line + 1);
+                ParsedDiffLine {
+                    old_line_number: old,
+                    new_line_number: None,
+                    kind,
+                    content: line[1..].to_string(),
+                }
+            }
+            _ => ParsedDiffLine {
+                old_line_number: None,
+                new_line_number: None,
+                kind,
+                content: line.to_string(),
+            },
+        };
+
+        rows.push(row);
+    }
+
+    rows
+}
+
+fn classify_diff_line(line: &str) -> DiffLineKind {
+    if line.starts_with("@@") {
+        DiffLineKind::HunkHeader
+    } else if line.starts_with("diff --git")
+        || line.starts_with("index ")
+        || line.starts_with("--- ")
+        || line.starts_with("+++ ")
+        || line.starts_with("rename from ")
+        || line.starts_with("rename to ")
+        || line.starts_with("new file mode ")
+        || line.starts_with("deleted file mode ")
+        || line.starts_with("similarity index ")
+    {
+        DiffLineKind::FileHeader
+    } else if line.starts_with("\\ ") {
+        DiffLineKind::Note
+    } else if line.starts_with('+') {
+        DiffLineKind::Added
+    } else if line.starts_with('-') {
+        DiffLineKind::Removed
+    } else if line.starts_with(' ') {
+        DiffLineKind::Context
+    } else {
+        DiffLineKind::Other
+    }
+}
+
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    let mut parts = line.split_whitespace();
+    if parts.next()? != "@@" {
+        return None;
+    }
+
+    let old_range = parts.next()?;
+    let new_range = parts.next()?;
+    if parts.next()? != "@@" {
+        return None;
+    }
+
+    Some((
+        parse_hunk_range(old_range, '-')?,
+        parse_hunk_range(new_range, '+')?,
+    ))
+}
+
+fn parse_hunk_range(range: &str, expected_prefix: char) -> Option<usize> {
+    let trimmed = range.strip_prefix(expected_prefix)?;
+    trimmed.split(',').next()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DiffLineKind, parse_diff_rows, parse_hunk_header};
+
+    #[test]
+    fn parses_hunk_start_line_numbers() {
+        assert_eq!(
+            parse_hunk_header("@@ -14,3 +20,7 @@ fn render()"),
+            Some((14, 20))
+        );
+    }
+
+    #[test]
+    fn assigns_old_and_new_line_numbers_to_diff_rows() {
+        let rows = parse_diff_rows(concat!(
+            "diff --git a/src/app.rs b/src/app.rs\n",
+            "@@ -10,2 +10,3 @@\n",
+            " line one\n",
+            "-line removed\n",
+            "+line added\n",
+            "+line added too\n",
+        ));
+
+        assert_eq!(rows[0].kind, DiffLineKind::FileHeader);
+        assert_eq!(rows[1].kind, DiffLineKind::HunkHeader);
+        assert_eq!(rows[2].old_line_number, Some(10));
+        assert_eq!(rows[2].new_line_number, Some(10));
+        assert_eq!(rows[3].kind, DiffLineKind::Removed);
+        assert_eq!(rows[3].old_line_number, Some(11));
+        assert_eq!(rows[3].new_line_number, None);
+        assert_eq!(rows[4].kind, DiffLineKind::Added);
+        assert_eq!(rows[4].old_line_number, None);
+        assert_eq!(rows[4].new_line_number, Some(11));
+        assert_eq!(rows[5].new_line_number, Some(12));
     }
 }

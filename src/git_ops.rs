@@ -207,6 +207,45 @@ pub fn save_github_auth_session(session: &GithubAuthSession) -> Result<(), Strin
         .map_err(|e| format!("Could not save GitHub sign-in to system keychain: {}", e))
 }
 
+pub fn clear_github_auth_session() -> Result<(), String> {
+    let entry = github_auth_keyring_entry()?;
+    match entry.delete_credential() {
+        Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Could not clear saved GitHub sign-in: {}", e)),
+    }
+}
+
+pub enum GithubAuthCheck {
+    Valid,
+    Revoked,
+}
+
+pub fn verify_github_auth_session(
+    session: &GithubAuthSession,
+) -> Result<GithubAuthCheck, String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Could not create GitHub HTTP client: {}", e))?;
+
+    let response = client
+        .get("https://api.github.com/user")
+        .header(AUTHORIZATION, format!("Bearer {}", session.access_token))
+        .header(ACCEPT, "application/vnd.github+json")
+        .header(USER_AGENT, "justanothergitgui")
+        .send()
+        .map_err(|e| format!("GitHub token check failed: {}", e))?;
+
+    let status = response.status();
+    if status.is_success() {
+        Ok(GithubAuthCheck::Valid)
+    } else if status == reqwest::StatusCode::UNAUTHORIZED {
+        Ok(GithubAuthCheck::Revoked)
+    } else {
+        Err(format!("GitHub token check failed with status {}", status))
+    }
+}
+
 pub fn get_file_statuses(
     repo: &Repository,
 ) -> Result<(Vec<FileEntry>, Vec<FileEntry>), git2::Error> {
@@ -681,7 +720,7 @@ where
         .body(format!(
             "client_id={}&scope={}",
             urlencoding::encode(client_id),
-            urlencoding::encode("repo")
+            urlencoding::encode("repo workflow")
         ))
         .send()
         .map_err(|e| format!("GitHub device sign-in failed: {}", e))?;
@@ -871,10 +910,7 @@ pub fn validate_new_branch_name(repo: &Repository, name: &str) -> Option<String>
                 .into(),
         );
     }
-    if repo
-        .find_branch(name, git2::BranchType::Local)
-        .is_ok()
-    {
+    if repo.find_branch(name, git2::BranchType::Local).is_ok() {
         return Some(format!("A branch named '{}' already exists.", name));
     }
     None

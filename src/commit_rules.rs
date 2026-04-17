@@ -51,10 +51,22 @@ impl CommitMessageRuleSet {
     }
 }
 
-pub fn default_initial_commit_message(ruleset: CommitMessageRuleSet) -> &'static str {
+pub fn default_initial_commit_summary(ruleset: CommitMessageRuleSet) -> &'static str {
     match ruleset {
         CommitMessageRuleSet::Off => "Initial commit",
         CommitMessageRuleSet::ConventionalCommits => "chore: initial commit",
+    }
+}
+
+pub fn build_message(summary: &str, body: &str) -> String {
+    let summary = summary.trim();
+    let body = body.trim();
+
+    match (summary.is_empty(), body.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => summary.to_string(),
+        (true, false) => body.to_string(),
+        (false, false) => format!("{summary}\n\n{body}"),
     }
 }
 
@@ -474,5 +486,25 @@ mod tests {
         );
 
         assert_eq!(message, "fix(ui): preserve the summary");
+    }
+
+    #[test]
+    fn build_message_joins_summary_and_body_with_blank_line() {
+        let message = build_message(
+            "feat: add split commit UI",
+            "The body explains why.\n\nIt keeps details optional.",
+        );
+
+        assert_eq!(
+            message,
+            "feat: add split commit UI\n\nThe body explains why.\n\nIt keeps details optional."
+        );
+    }
+
+    #[test]
+    fn build_message_omits_body_separator_when_body_is_empty() {
+        let message = build_message("feat: add split commit UI", "   ");
+
+        assert_eq!(message, "feat: add split commit UI");
     }
 }

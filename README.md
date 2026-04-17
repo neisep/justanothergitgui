@@ -20,6 +20,12 @@ It focuses on the everyday local workflow first—review changes, stage files, c
 
 ---
 
+
+## 📸 Screenshot
+![vlc2chromecast Screenshot](software.png)
+
+---
+
 ## About
 
 This project aims to be a simple, fast, user-friendly Git desktop app without depending on the GitHub CLI.
@@ -39,10 +45,11 @@ The application combines:
 - **View unstaged and staged changes** in separate panes
 - **Stage / unstage individual files** or use **Stage All** / **Unstage All**
 - **Drag and drop files between staged and unstaged lists**
-- **Review diffs** in a built-in changes view
-- **Write commits** from the right-hand commit panel
+- **Review diffs** in a built-in changes view with line numbers and optional wrapping
+- **Write commits** from the right-hand commit panel with a **Summary** field and optional **Body**
 - **Optionally enforce Conventional Commits** from a settings dialog
 - **Autocomplete Conventional Commit prefixes** with inferred scopes from changed paths
+- **Use keyboard-friendly dialogs and shortcuts** for common actions
 - **Switch branches** from the toolbar
 - **Create a new branch** from inside the app
 - **Create and push tags** from `main` / `master`
@@ -123,17 +130,26 @@ target\release\justanothergitgui.exe
 1. **Launch the app**
 2. **Open a repository** or choose **Publish Folder to GitHub...**
 3. Review changes in the **unstaged** and **staged** panels
-4. **Stage files**, inspect diffs, and enter a commit message
+4. **Stage files**, inspect diffs, and enter a commit summary with an optional body
 5. **Commit** from the right-side panel
 6. **Switch branches** or create a new one from the toolbar
-7. Use **Pull** / **Push** from the top-right area
+7. Use **Pull** / **Push** and PR shortcuts from the top-right area
 8. When the current branch has local commits that are not on the remote yet, the app shows them as **Push(n)**
-9. On `main` or `master`, use **Create Tag...** to tag the current HEAD commit
-10. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
+9. Use **More** for secondary actions like settings, publishing, cleanup, tags, and logs
+10. On `main` or `master`, use **More > Create Tag...** to tag the current HEAD commit
+11. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
+
+### Keyboard Shortcuts
+
+- **Ctrl/Cmd+S** stages the selected file, or unstages it when the selected file is already staged
+- **Ctrl/Cmd+Enter** commits staged changes
+- **Ctrl/Cmd+R** or **F5** refreshes repository status
+- **Ctrl/Cmd+L** focuses the commit summary field
+- dialogs focus the first editable field when they open, and **Escape** closes the active dialog
 
 ### Commit Message Rules
 
-Use **Settings...** to leave commit message validation off or enable **Conventional Commits**.
+Use **More > Settings...** to leave commit message validation off or enable **Conventional Commits**.
 
 When Conventional Commits is enabled:
 
@@ -156,7 +172,7 @@ On restart, the saved GitHub session is loaded automatically if the system keych
 
 For GitHub repositories, the in-app push, pull, and tag flow expects `origin` to use an HTTPS GitHub URL so the saved device-flow session can be reused consistently.
 
-If an operation fails, the UI shows a short message and writes sanitized details to the application log. When logs exist, use the **Logs** / **View Logs** button in the app to inspect them.
+If an operation fails, the UI shows a short message and writes sanitized details to the application log. When logs exist, use **More > View Logs** in the app to inspect them.
 
 ---
 
