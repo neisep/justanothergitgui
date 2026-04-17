@@ -39,7 +39,7 @@ The application combines:
 - **View unstaged and staged changes** in separate panes
 - **Stage / unstage individual files** or use **Stage All** / **Unstage All**
 - **Drag and drop files between staged and unstaged lists**
-- **Review diffs** in a built-in changes view
+- **Review diffs** in a built-in changes view with line numbers and optional wrapping
 - **Write commits** from the right-hand commit panel
 - **Optionally enforce Conventional Commits** from a settings dialog
 - **Autocomplete Conventional Commit prefixes** with inferred scopes from changed paths
