@@ -170,6 +170,45 @@ pub fn can_create_tag_on_branch(branch_name: &str) -> bool {
     matches!(branch_name.trim(), "main" | "master")
 }
 
+pub fn suggest_next_tag(repo: &Repository) -> String {
+    let Ok(tag_names) = repo.tag_names(None) else {
+        return "v1.0.0".to_string();
+    };
+
+    let mut best: Option<([u32; 3], bool)> = None;
+    for name in tag_names.iter().flatten() {
+        if let Some((version, has_v_prefix)) = parse_semver_tag(name) {
+            match best {
+                Some((current, _)) if current >= version => {}
+                _ => best = Some((version, has_v_prefix)),
+            }
+        }
+    }
+
+    match best {
+        Some(([major, minor, patch], has_v_prefix)) => {
+            let prefix = if has_v_prefix { "v" } else { "" };
+            format!("{}{}.{}.{}", prefix, major, minor, patch + 1)
+        }
+        None => "v1.0.0".to_string(),
+    }
+}
+
+fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
+    let (rest, has_v_prefix) = match name.strip_prefix('v') {
+        Some(rest) => (rest, true),
+        None => (name, false),
+    };
+    let mut parts = rest.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    let patch = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(([major, minor, patch], has_v_prefix))
+}
+
 pub fn has_origin_remote(repo: &Repository) -> bool {
     repo.find_remote("origin").is_ok()
 }
@@ -1585,7 +1624,7 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_github_https_url, parse_github_remote_slug};
+    use super::{is_github_https_url, parse_github_remote_slug, parse_semver_tag, suggest_next_tag};
     use git2::Repository;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1664,6 +1703,76 @@ mod tests {
                 .expect("ssh GitHub remotes should stay on system auth"),
             None
         );
+    }
+
+    #[test]
+    fn parse_semver_tag_accepts_plain_and_v_prefixed() {
+        assert_eq!(parse_semver_tag("v1.2.3"), Some(([1, 2, 3], true)));
+        assert_eq!(parse_semver_tag("0.10.4"), Some(([0, 10, 4], false)));
+    }
+
+    #[test]
+    fn parse_semver_tag_rejects_non_semver() {
+        assert!(parse_semver_tag("v1.2").is_none());
+        assert!(parse_semver_tag("v1.2.3.4").is_none());
+        assert!(parse_semver_tag("release-5").is_none());
+        assert!(parse_semver_tag("v1.2.3-rc1").is_none());
+    }
+
+    #[test]
+    fn suggest_next_tag_bumps_patch_from_highest_existing_tag() {
+        let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
+        let repo = Repository::open(repo_dir.path()).expect("open repo");
+
+        // Create a commit so we have something to tag.
+        let sig = git2::Signature::now("tester", "tester@example.com").expect("sig");
+        let tree_id = {
+            let mut index = repo.index().expect("index");
+            index.write_tree().expect("write tree")
+        };
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let commit_id = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+        let commit = repo.find_commit(commit_id).expect("find commit");
+
+        for tag in ["v0.9.0", "v1.2.3", "v1.2.0", "nightly-2024", "v2.0.0-rc1"] {
+            repo.tag_lightweight(tag, commit.as_object(), false)
+                .expect("tag");
+        }
+
+        assert_eq!(suggest_next_tag(&repo), "v1.2.4");
+    }
+
+    #[test]
+    fn suggest_next_tag_defaults_when_no_tags_exist() {
+        let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
+        let repo = Repository::open(repo_dir.path()).expect("open repo");
+        assert_eq!(suggest_next_tag(&repo), "v1.0.0");
+    }
+
+    #[test]
+    fn suggest_next_tag_preserves_prefix_style_of_highest_tag() {
+        let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
+        let repo = Repository::open(repo_dir.path()).expect("open repo");
+
+        let sig = git2::Signature::now("tester", "tester@example.com").expect("sig");
+        let tree_id = {
+            let mut index = repo.index().expect("index");
+            index.write_tree().expect("write tree")
+        };
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let commit_id = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+        let commit = repo.find_commit(commit_id).expect("find commit");
+
+        for tag in ["v0.1.0", "3.4.5"] {
+            repo.tag_lightweight(tag, commit.as_object(), false)
+                .expect("tag");
+        }
+
+        assert_eq!(suggest_next_tag(&repo), "3.4.6");
     }
 }
 

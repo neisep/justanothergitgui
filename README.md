@@ -41,29 +41,46 @@ The application combines:
 
 ## Features
 
+### Repository and file handling
+
 - **Open an existing repository** from disk
-- **View unstaged and staged changes** in separate panes
+- **View unstaged and staged changes** in a compact table-based left panel
 - **Stage / unstage individual files** or use **Stage All** / **Unstage All**
 - **Drag and drop files between staged and unstaged lists**
 - **Review diffs** in a built-in changes view with line numbers and optional wrapping
+- **Resolve merge conflicts** with built-in “Accept Ours / Theirs / Both” actions
+- **See loading / busy indicators** while long-running Git and GitHub operations are in flight
+
+### Commits
+
 - **Write commits** from the right-hand commit panel with a **Summary** field and optional **Body**
 - **Optionally enforce Conventional Commits** from a settings dialog
 - **Autocomplete Conventional Commit prefixes** with inferred scopes from changed paths
-- **Use keyboard-friendly dialogs and shortcuts** for common actions
-- **Switch branches** from the toolbar
-- **Create a new branch** from inside the app
-- **Create and push tags** from `main` / `master`
 - **Browse commit history** with a visual graph lane
-- **Resolve merge conflicts** with built-in “Accept Ours / Theirs / Both” actions
+
+### Branches, tags, and sync
+
+- **Switch branches** from the toolbar
+- **Create a new branch** from inside the app, with **branch name validation** before it's created
+- **Carry uncommitted work onto a new branch** instead of leaving it behind on `main` / `master`
 - **Pull and push** directly from the main toolbar
+- **Prune deleted remote branches** automatically on fetch / pull
 - **See unpushed local commits** directly on the **Push(n)** button
 - **Automatically set upstream** on first push for a new branch
+- **Create and push tags** from `main` / `master`, with an **auto-suggested next semver tag** based on existing tags (e.g. `v1.2.3` → `v1.2.4`, prefix style preserved)
+
+### GitHub integration
+
 - **Publish a local folder to GitHub** as a new repository
 - **Sign in to GitHub with OAuth Device Flow**
 - **Persist GitHub sign-in securely** in the system keychain
-- **Detect existing pull requests after push**
-- **Open an existing PR or create a new one** in the browser
-- **View sanitized application logs** from inside the UI when an operation fails
+- **Detect existing pull requests after push** and open or create one in the browser
+- **Transport-aware auth** that picks the right credential path for HTTPS vs SSH remotes
+
+### Quality-of-life
+
+- **Keyboard-friendly dialogs and shortcuts** for common actions
+- **View sanitized application logs** from inside the UI when an operation fails, with a **Clear** action to reset them
 
 ---
 
@@ -228,12 +245,11 @@ cargo test
 
 Areas that would be valuable to improve next:
 
-- richer branch and remote management
+- richer remote management (multiple remotes, remote renaming)
 - stashes and cherry-pick support
 - better repository settings and preferences
 - improved history graph for more complex merge topologies
 - release packaging for Linux and Windows
-- screenshots and demo media for the GitHub project page
 
 ---
 
