@@ -172,10 +172,10 @@ pub fn can_create_tag_on_branch(branch_name: &str) -> bool {
 
 pub fn suggest_next_tag(repo: &Repository) -> String {
     let Ok(tag_names) = repo.tag_names(None) else {
-        return "v1.0.0".to_string();
+        return "v1.0.0.0".to_string();
     };
 
-    let mut best: Option<([u32; 3], bool)> = None;
+    let mut best: Option<([u32; 4], bool)> = None;
     for name in tag_names.iter().flatten() {
         if let Some((version, has_v_prefix)) = parse_semver_tag(name) {
             match best {
@@ -186,15 +186,15 @@ pub fn suggest_next_tag(repo: &Repository) -> String {
     }
 
     match best {
-        Some(([major, minor, patch], has_v_prefix)) => {
+        Some(([major, minor, patch, build], has_v_prefix)) => {
             let prefix = if has_v_prefix { "v" } else { "" };
-            format!("{}{}.{}.{}", prefix, major, minor, patch + 1)
+            format!("{}{}.{}.{}.{}", prefix, major, minor, patch, build + 1)
         }
-        None => "v1.0.0".to_string(),
+        None => "v1.0.0.0".to_string(),
     }
 }
 
-fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
+fn parse_semver_tag(name: &str) -> Option<([u32; 4], bool)> {
     let (rest, has_v_prefix) = match name.strip_prefix('v') {
         Some(rest) => (rest, true),
         None => (name, false),
@@ -203,10 +203,11 @@ fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;
     let patch = parts.next()?.parse::<u32>().ok()?;
+    let build = parts.next()?.parse::<u32>().ok()?;
     if parts.next().is_some() {
         return None;
     }
-    Some(([major, minor, patch], has_v_prefix))
+    Some(([major, minor, patch, build], has_v_prefix))
 }
 
 pub fn has_origin_remote(repo: &Repository) -> bool {
@@ -1707,16 +1708,17 @@ mod tests {
 
     #[test]
     fn parse_semver_tag_accepts_plain_and_v_prefixed() {
-        assert_eq!(parse_semver_tag("v1.2.3"), Some(([1, 2, 3], true)));
-        assert_eq!(parse_semver_tag("0.10.4"), Some(([0, 10, 4], false)));
+        assert_eq!(parse_semver_tag("v1.2.3.4"), Some(([1, 2, 3, 4], true)));
+        assert_eq!(parse_semver_tag("0.10.4.7"), Some(([0, 10, 4, 7], false)));
     }
 
     #[test]
     fn parse_semver_tag_rejects_non_semver() {
         assert!(parse_semver_tag("v1.2").is_none());
-        assert!(parse_semver_tag("v1.2.3.4").is_none());
+        assert!(parse_semver_tag("v1.2.3").is_none());
+        assert!(parse_semver_tag("v1.2.3.4.5").is_none());
         assert!(parse_semver_tag("release-5").is_none());
-        assert!(parse_semver_tag("v1.2.3-rc1").is_none());
+        assert!(parse_semver_tag("v1.2.3.4-rc1").is_none());
     }
 
     #[test]
@@ -1736,19 +1738,25 @@ mod tests {
             .expect("commit");
         let commit = repo.find_commit(commit_id).expect("find commit");
 
-        for tag in ["v0.9.0", "v1.2.3", "v1.2.0", "nightly-2024", "v2.0.0-rc1"] {
+        for tag in [
+            "v0.9.0.0",
+            "v1.2.3.5",
+            "v1.2.0.0",
+            "nightly-2024",
+            "v2.0.0.0-rc1",
+        ] {
             repo.tag_lightweight(tag, commit.as_object(), false)
                 .expect("tag");
         }
 
-        assert_eq!(suggest_next_tag(&repo), "v1.2.4");
+        assert_eq!(suggest_next_tag(&repo), "v1.2.3.6");
     }
 
     #[test]
     fn suggest_next_tag_defaults_when_no_tags_exist() {
         let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
         let repo = Repository::open(repo_dir.path()).expect("open repo");
-        assert_eq!(suggest_next_tag(&repo), "v1.0.0");
+        assert_eq!(suggest_next_tag(&repo), "v1.0.0.0");
     }
 
     #[test]
@@ -1767,12 +1775,12 @@ mod tests {
             .expect("commit");
         let commit = repo.find_commit(commit_id).expect("find commit");
 
-        for tag in ["v0.1.0", "3.4.5"] {
+        for tag in ["v0.1.0.0", "3.4.5.2"] {
             repo.tag_lightweight(tag, commit.as_object(), false)
                 .expect("tag");
         }
 
-        assert_eq!(suggest_next_tag(&repo), "3.4.6");
+        assert_eq!(suggest_next_tag(&repo), "3.4.5.3");
     }
 }
 

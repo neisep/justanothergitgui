@@ -2003,7 +2003,7 @@ impl GitGuiApp {
                     !create_tag_busy,
                     egui::TextEdit::singleline(&mut state.new_tag_name)
                         .desired_width(260.0)
-                        .hint_text("v1.0.0"),
+                        .hint_text("v1.0.0.0"),
                 );
                 if state.focus_new_tag_name_requested {
                     response.request_focus();
