@@ -681,7 +681,7 @@ where
         .body(format!(
             "client_id={}&scope={}",
             urlencoding::encode(client_id),
-            urlencoding::encode("repo")
+            urlencoding::encode("repo workflow")
         ))
         .send()
         .map_err(|e| format!("GitHub device sign-in failed: {}", e))?;
