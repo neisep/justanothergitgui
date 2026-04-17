@@ -1393,11 +1393,17 @@ impl GitGuiApp {
 
     fn show_create_branch_dialog(&mut self, ctx: &egui::Context) {
         let active_index = self.active_tab.min(self.tabs.len() - 1);
-        let state = &mut self.tabs[active_index].state;
 
-        if !state.show_create_branch_dialog {
+        if !self.tabs[active_index].state.show_create_branch_dialog {
             return;
         }
+
+        let validation_error = git_ops::validate_new_branch_name(
+            &self.tabs[active_index].repo,
+            &self.tabs[active_index].state.new_branch_name,
+        );
+
+        let state = &mut self.tabs[active_index].state;
 
         let mut keep_open = state.show_create_branch_dialog;
         let mut close_requested = false;
@@ -1416,7 +1422,14 @@ impl GitGuiApp {
                         .desired_width(260.0)
                         .hint_text("feature/my-branch"),
                 );
-                let can_create = !state.new_branch_name.trim().is_empty();
+
+                if let Some(error) = validation_error.as_ref() {
+                    ui.add_space(4.0);
+                    ui.colored_label(egui::Color32::from_rgb(220, 120, 120), error);
+                }
+
+                let can_create = !state.new_branch_name.trim().is_empty()
+                    && validation_error.is_none();
 
                 if response.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter))

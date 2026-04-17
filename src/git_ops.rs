@@ -858,6 +858,28 @@ pub fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::E
     Ok(())
 }
 
+pub fn validate_new_branch_name(repo: &Repository, name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let refname = format!("refs/heads/{}", name);
+    if !git2::Reference::is_valid_name(&refname) {
+        return Some(
+            "Invalid name. Avoid spaces, '..', '~', '^', ':', '?', '*', '[', '\\', \
+             and leading/trailing '/' or '.'."
+                .into(),
+        );
+    }
+    if repo
+        .find_branch(name, git2::BranchType::Local)
+        .is_ok()
+    {
+        return Some(format!("A branch named '{}' already exists.", name));
+    }
+    None
+}
+
 pub fn create_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::Error> {
     let branch_name = branch_name.trim();
     if branch_name.is_empty() {
