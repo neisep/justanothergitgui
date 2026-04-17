@@ -1194,6 +1194,7 @@ impl GitGuiApp {
                 let pull_request_prompt = state.pull_request_prompt.clone();
                 let mut publish_clicked = false;
                 let mut github_sign_in_clicked = false;
+                let mut create_tag_clicked = false;
 
                 ui.menu_button("More", |ui| {
                     if ui.button("Open Repository...").clicked() {
@@ -1238,8 +1239,7 @@ impl GitGuiApp {
                         .on_hover_text(create_tag_tooltip)
                         .clicked()
                     {
-                        state.show_create_tag_dialog = true;
-                        state.focus_new_tag_name_requested = true;
+                        create_tag_clicked = true;
                         ui.close();
                     }
 
@@ -1416,6 +1416,12 @@ impl GitGuiApp {
                 }
                 if github_sign_in_clicked {
                     self.begin_github_sign_in("Requesting GitHub sign-in code...");
+                }
+                if create_tag_clicked {
+                    let tab = &mut self.tabs[active_index];
+                    tab.state.new_tag_name = git_ops::suggest_next_tag(&tab.repo);
+                    tab.state.show_create_tag_dialog = true;
+                    tab.state.focus_new_tag_name_requested = true;
                 }
                 if show_logs_clicked {
                     self.show_log_viewer = true;
