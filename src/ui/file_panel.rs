@@ -258,6 +258,7 @@ fn render_status_badge(ui: &mut egui::Ui, file: &FileEntry) {
     } else {
         match file.display_status.as_str() {
             "new" => (egui::Color32::from_rgb(48, 128, 88), "NEW"),
+            "untracked" => (egui::Color32::from_rgb(48, 128, 88), "ADDED"),
             "modified" => (egui::Color32::from_rgb(52, 96, 160), "MODIFIED"),
             "deleted" => (egui::Color32::from_rgb(152, 64, 64), "DELETED"),
             "renamed" => (egui::Color32::from_rgb(108, 76, 156), "RENAMED"),

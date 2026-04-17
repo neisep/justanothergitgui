@@ -20,6 +20,12 @@ It focuses on the everyday local workflow first—review changes, stage files, c
 
 ---
 
+
+## 📸 Screenshot
+![vlc2chromecast Screenshot](software.png)
+
+---
+
 ## About
 
 This project aims to be a simple, fast, user-friendly Git desktop app without depending on the GitHub CLI.
