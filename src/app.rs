@@ -60,7 +60,7 @@ impl PublishRepoDialogState {
             show: false,
             folder_path: current_dir.display().to_string(),
             repo_name: default_repo_name_for_path(&current_dir),
-            commit_message: commit_rules::default_initial_commit_message(ruleset).into(),
+            commit_message: commit_rules::default_initial_commit_summary(ruleset).into(),
             visibility: git_ops::GithubRepoVisibility::Private,
             github_authenticated: false,
             github_status: String::new(),
@@ -74,7 +74,7 @@ impl PublishRepoDialogState {
         let path =
             path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         self.set_folder(path);
-        self.commit_message = commit_rules::default_initial_commit_message(ruleset).into();
+        self.commit_message = commit_rules::default_initial_commit_summary(ruleset).into();
         self.visibility = git_ops::GithubRepoVisibility::Private;
         self.operation_status.clear();
     }
@@ -360,7 +360,10 @@ impl GitGuiApp {
 
                 UiAction::Commit => {
                     let tab = &mut self.tabs[active_index];
-                    let msg = tab.state.commit_msg.trim().to_string();
+                    let msg = commit_rules::build_message(
+                        &tab.state.commit_summary,
+                        &tab.state.commit_body,
+                    );
                     match commit_rules::validate_for_submit(
                         self.settings.commit_message_ruleset,
                         &msg,
@@ -369,7 +372,8 @@ impl GitGuiApp {
                             Ok(oid) => {
                                 tab.state.status_msg =
                                     format!("Committed: {}", &oid.to_string()[..8]);
-                                tab.state.commit_msg.clear();
+                                tab.state.commit_summary.clear();
+                                tab.state.commit_body.clear();
                                 tab.state.selected_file = None;
                                 tab.state.diff_content.clear();
                                 tab.state.conflict_data = None;
@@ -2196,7 +2200,8 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.unstaged.clear();
     state.staged.clear();
     state.inferred_commit_scopes.clear();
-    state.commit_msg.clear();
+    state.commit_summary.clear();
+    state.commit_body.clear();
     state.selected_file = None;
     state.diff_content.clear();
     state.actions.clear();
