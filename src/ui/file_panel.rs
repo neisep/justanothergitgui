@@ -3,15 +3,15 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::state::{AppState, DragFile, FileEntry, UiAction};
 
-const STATUS_COL_WIDTH: f32 = 104.0;
-const ACTION_COL_WIDTH: f32 = 140.0;
+const STATUS_COL_WIDTH: f32 = 72.0;
+const ACTION_COL_WIDTH: f32 = 72.0;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     let mut unstaged_rect = egui::Rect::NOTHING;
     let mut staged_rect = egui::Rect::NOTHING;
 
     egui::Panel::left("file_panel")
-        .default_size(280.0)
+        .default_size(240.0)
         .min_size(200.0)
         .show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -83,7 +83,7 @@ fn render_file_table(
         .striped(true)
         .sense(egui::Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::remainder().at_least(120.0).clip(true))
+        .column(Column::remainder().at_least(100.0).clip(true))
         .column(Column::exact(STATUS_COL_WIDTH))
         .column(Column::exact(ACTION_COL_WIDTH))
         .min_scrolled_height(0.0)
@@ -133,6 +133,23 @@ fn render_file_table(
 
                 row.col(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let handle = drag_handle(ui);
+                        handle
+                            .clone()
+                            .on_hover_cursor(egui::CursorIcon::Grab)
+                            .on_hover_text(if staged {
+                                "Drag to move this file to unstaged"
+                            } else {
+                                "Drag to move this file to staged"
+                            });
+                        if handle.drag_started() {
+                            drag_started = true;
+                            state.dragging = Some(DragFile {
+                                path: file.path.clone(),
+                                from_staged: staged,
+                            });
+                        }
+
                         let (btn_label, btn_tooltip) = if staged {
                             (
                                 "Unstage",
@@ -155,23 +172,6 @@ fn render_file_table(
                             } else {
                                 state.actions.push(UiAction::StageFile(file.path.clone()));
                             }
-                        }
-
-                        let handle = drag_handle(ui);
-                        handle
-                            .clone()
-                            .on_hover_cursor(egui::CursorIcon::Grab)
-                            .on_hover_text(if staged {
-                                "Drag to move this file to unstaged"
-                            } else {
-                                "Drag to move this file to staged"
-                            });
-                        if handle.drag_started() {
-                            drag_started = true;
-                            state.dragging = Some(DragFile {
-                                path: file.path.clone(),
-                                from_staged: staged,
-                            });
                         }
                     });
                 });
