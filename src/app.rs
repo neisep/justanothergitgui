@@ -487,6 +487,48 @@ impl GitGuiApp {
                     self.tabs[active_index].state.center_view = CenterView::History;
                 }
 
+                UiAction::OpenCleanupBranches => {
+                    let tab = &mut self.tabs[active_index];
+                    match git_ops::list_stale_branches(&tab.repo) {
+                        Ok(stale) => {
+                            tab.state.stale_branches = stale;
+                            tab.state.show_cleanup_branches_dialog = true;
+                        }
+                        Err(e) => {
+                            let detail = e.to_string();
+                            tab.state.status_msg =
+                                status_message_for_error("Cleanup branches", &detail);
+                            log_entry = Some(("Cleanup branches", detail));
+                        }
+                    }
+                }
+
+                UiAction::DeleteStaleBranches(names) => {
+                    let tab = &mut self.tabs[active_index];
+                    let mut deleted: Vec<String> = Vec::new();
+                    let mut failures: Vec<String> = Vec::new();
+                    for name in &names {
+                        match git_ops::delete_local_branch(&tab.repo, name) {
+                            Ok(()) => deleted.push(name.clone()),
+                            Err(e) => failures.push(format!("{}: {}", name, e)),
+                        }
+                    }
+                    tab.state
+                        .stale_branches
+                        .retain(|branch| !deleted.contains(&branch.name));
+                    if failures.is_empty() {
+                        tab.state.status_msg =
+                            format!("Deleted {} branch(es)", deleted.len());
+                        tab.state.show_cleanup_branches_dialog = false;
+                    } else {
+                        let detail = failures.join("; ");
+                        tab.state.status_msg =
+                            status_message_for_error("Delete branch", &detail);
+                        log_entry = Some(("Delete branch", detail));
+                    }
+                    refresh_error = refresh_status(&mut tab.state, &tab.repo);
+                }
+
                 UiAction::SaveConflictResolution => {
                     let tab = &mut self.tabs[active_index];
                     if let Some(conflict_data) = tab.state.conflict_data.clone() {
@@ -845,6 +887,16 @@ impl GitGuiApp {
                         .clicked()
                     {
                         state.show_create_branch_dialog = true;
+                    }
+
+                    if ui
+                        .add_enabled(has_repo, egui::Button::new("Cleanup..."))
+                        .on_hover_text(
+                            "Remove local branches whose remote branch was deleted\n(e.g. after a merged PR). Pull first to refresh.",
+                        )
+                        .clicked()
+                    {
+                        state.actions.push(UiAction::OpenCleanupBranches);
                     }
 
                     let can_create_tag = has_repo
@@ -1382,6 +1434,115 @@ impl GitGuiApp {
         }
     }
 
+    fn show_cleanup_branches_dialog(&mut self, ctx: &egui::Context) {
+        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let state = &mut self.tabs[active_index].state;
+
+        if !state.show_cleanup_branches_dialog {
+            return;
+        }
+
+        let mut keep_open = state.show_cleanup_branches_dialog;
+        let mut close_requested = false;
+        let mut delete_requested = false;
+
+        egui::Window::new("Clean up branches")
+            .id(egui::Id::new("cleanup_branches_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                if state.stale_branches.is_empty() {
+                    ui.label("No stale branches to clean up.");
+                    ui.add_space(4.0);
+                    ui.weak(
+                        "A branch is listed here when its upstream has been deleted on the remote.\nPull first to refresh remote tracking.",
+                    );
+                } else {
+                    ui.label("These branches no longer exist on the remote:");
+                    ui.add_space(6.0);
+
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for branch in state.stale_branches.iter_mut() {
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut branch.selected, &branch.name);
+                                    if branch.merged_into_head {
+                                        ui.weak("merged");
+                                    } else {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(220, 180, 100),
+                                            "unmerged — commits may be lost",
+                                        );
+                                    }
+                                });
+                            }
+                        });
+
+                    ui.add_space(8.0);
+                    let any_selected =
+                        state.stale_branches.iter().any(|branch| branch.selected);
+                    let any_unmerged_selected = state
+                        .stale_branches
+                        .iter()
+                        .any(|branch| branch.selected && !branch.merged_into_head);
+
+                    if any_unmerged_selected {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 120, 120),
+                            "Warning: deleting an unmerged branch loses its local commits.",
+                        );
+                        ui.add_space(4.0);
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui
+                                    .add_enabled(
+                                        any_selected,
+                                        egui::Button::new("Delete Selected"),
+                                    )
+                                    .clicked()
+                                {
+                                    delete_requested = true;
+                                }
+
+                                if ui.button("Cancel").clicked() {
+                                    close_requested = true;
+                                }
+                            },
+                        );
+                    });
+                }
+            });
+
+        if delete_requested {
+            let names: Vec<String> = state
+                .stale_branches
+                .iter()
+                .filter(|branch| branch.selected)
+                .map(|branch| branch.name.clone())
+                .collect();
+            if !names.is_empty() {
+                state.actions.push(UiAction::DeleteStaleBranches(names));
+            }
+        }
+
+        if close_requested {
+            state.show_cleanup_branches_dialog = false;
+            state.stale_branches.clear();
+        } else {
+            state.show_cleanup_branches_dialog = keep_open;
+            if !keep_open {
+                state.stale_branches.clear();
+            }
+        }
+    }
+
     fn show_github_auth_dialog(&mut self, ctx: &egui::Context) {
         let Some(prompt) = self.github_auth_prompt.clone() else {
             return;
@@ -1469,6 +1630,7 @@ impl eframe::App for GitGuiApp {
         self.show_settings_dialog(&ctx);
         self.show_create_branch_dialog(&ctx);
         self.show_create_tag_dialog(&ctx);
+        self.show_cleanup_branches_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);
         self.show_log_viewer_dialog(&ctx);
 
@@ -1529,6 +1691,8 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.show_create_branch_dialog = false;
     state.new_tag_name.clear();
     state.show_create_tag_dialog = false;
+    state.stale_branches.clear();
+    state.show_cleanup_branches_dialog = false;
     state.unstaged.clear();
     state.staged.clear();
     state.inferred_commit_scopes.clear();
