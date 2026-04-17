@@ -3,8 +3,8 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::state::{AppState, DragFile, FileEntry, UiAction};
 
-const CONTROLS_COL_WIDTH: f32 = 64.0;
-const STATUS_COL_WIDTH: f32 = 96.0;
+const STATUS_COL_WIDTH: f32 = 104.0;
+const ACTION_COL_WIDTH: f32 = 140.0;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     let mut unstaged_rect = egui::Rect::NOTHING;
@@ -68,7 +68,7 @@ fn render_file_table(
     } else {
         state.unstaged.clone()
     };
-    let row_height = ui.spacing().interact_size.y.max(24.0);
+    let row_height = ui.spacing().interact_size.y.max(28.0);
     let empty_msg = if staged {
         "No staged changes"
     } else {
@@ -84,15 +84,12 @@ fn render_file_table(
         .striped(true)
         .sense(egui::Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(CONTROLS_COL_WIDTH))
         .column(Column::remainder().at_least(120.0).clip(true))
         .column(Column::exact(STATUS_COL_WIDTH))
+        .column(Column::exact(ACTION_COL_WIDTH))
         .min_scrolled_height(0.0)
         .max_scroll_height(max_height.max(row_height * 2.0))
         .header(row_height, |mut header| {
-            header.col(|ui| {
-                ui.weak("Action");
-            });
             header.col(|ui| {
                 ui.weak("File");
             });
@@ -101,14 +98,19 @@ fn render_file_table(
                     ui.weak("Status");
                 });
             });
+            header.col(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak("Quick action");
+                });
+            });
         })
         .body(|mut body| {
             if files.is_empty() {
                 body.row(row_height, |mut row| {
-                    row.col(|_ui| {});
                     row.col(|ui| {
                         ui.weak(empty_msg);
                     });
+                    row.col(|_ui| {});
                     row.col(|_ui| {});
                 });
                 return;
@@ -125,23 +127,28 @@ fn render_file_table(
                 let mut drag_started = false;
 
                 row.col(|ui| {
-                    ui.horizontal(|ui| {
-                        let handle = ui.add(
-                            egui::Label::new(egui::RichText::new("\u{2801}\u{2801}").weak())
-                                .sense(egui::Sense::drag()),
-                        );
-                        if handle.drag_started() {
-                            drag_started = true;
-                            state.dragging = Some(DragFile {
-                                path: file.path.clone(),
-                                from_staged: staged,
-                            });
-                        }
+                    let label = if file.is_conflicted {
+                        egui::RichText::new(&file.path).color(egui::Color32::from_rgb(255, 170, 80))
+                    } else if is_selected {
+                        egui::RichText::new(&file.path).strong()
+                    } else {
+                        egui::RichText::new(&file.path)
+                    };
+                    ui.add(egui::Label::new(label).truncate());
+                });
 
+                row.col(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        render_status_badge(ui, file);
+                    });
+                });
+
+                row.col(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (btn_label, btn_tooltip) = if staged {
-                            ("-", "Unstage this file")
+                            ("Unstage", "Unstage this file")
                         } else {
-                            ("+", "Stage this file")
+                            ("Stage", "Stage this file")
                         };
                         if ui
                             .small_button(btn_label)
@@ -155,25 +162,32 @@ fn render_file_table(
                                 state.actions.push(UiAction::StageFile(file.path.clone()));
                             }
                         }
+
+                        let handle = drag_handle(ui);
+                        handle
+                            .clone()
+                            .on_hover_cursor(egui::CursorIcon::Grab)
+                            .on_hover_text(if staged {
+                                "Drag to move this file to unstaged"
+                            } else {
+                                "Drag to move this file to staged"
+                            });
+                        if handle.drag_started() {
+                            drag_started = true;
+                            state.dragging = Some(DragFile {
+                                path: file.path.clone(),
+                                from_staged: staged,
+                            });
+                        }
                     });
                 });
 
-                row.col(|ui| {
-                    let label = if file.is_conflicted {
-                        egui::RichText::new(&file.path).color(egui::Color32::from_rgb(255, 170, 80))
-                    } else {
-                        egui::RichText::new(&file.path)
-                    };
-                    ui.add(egui::Label::new(label).truncate());
-                });
+                let row_response = row.response().clone();
+                row_response
+                    .clone()
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-                row.col(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        render_status_badge(ui, file);
-                    });
-                });
-
-                if row.response().clicked() && !action_clicked && !drag_started {
+                if row_response.clicked() && !action_clicked && !drag_started {
                     state.actions.push(UiAction::SelectFile {
                         path: file.path.clone(),
                         staged,
@@ -208,6 +222,32 @@ fn render_status_badge(ui: &mut egui::Ui, file: &FileEntry) {
                     .color(egui::Color32::WHITE),
             );
         });
+}
+
+fn drag_handle(ui: &mut egui::Ui) -> egui::Response {
+    let size = egui::vec2(16.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
+    let color = if response.dragged() {
+        ui.visuals().widgets.active.fg_stroke.color
+    } else if response.hovered() {
+        ui.visuals().widgets.hovered.fg_stroke.color
+    } else {
+        ui.visuals().widgets.noninteractive.fg_stroke.color
+    };
+
+    let painter = ui.painter();
+    let center = rect.center();
+    for offset_x in [-3.0, 3.0] {
+        for offset_y in [-4.0, 0.0, 4.0] {
+            painter.circle_filled(
+                egui::pos2(center.x + offset_x, center.y + offset_y),
+                1.2,
+                color,
+            );
+        }
+    }
+
+    response
 }
 
 fn handle_drop(
