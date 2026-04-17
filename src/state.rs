@@ -74,6 +74,13 @@ pub struct DragFile {
     pub from_staged: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct StaleBranch {
+    pub name: String,
+    pub merged_into_head: bool,
+    pub selected: bool,
+}
+
 pub enum UiAction {
     StageFile(String),
     UnstageFile(String),
@@ -90,6 +97,8 @@ pub enum UiAction {
     ShowDiff,
     ShowHistory,
     SaveConflictResolution,
+    OpenCleanupBranches,
+    DeleteStaleBranches(Vec<String>),
 }
 
 pub struct AppState {
@@ -104,6 +113,8 @@ pub struct AppState {
     pub show_create_branch_dialog: bool,
     pub new_tag_name: String,
     pub show_create_tag_dialog: bool,
+    pub stale_branches: Vec<StaleBranch>,
+    pub show_cleanup_branches_dialog: bool,
     pub unstaged: Vec<FileEntry>,
     pub staged: Vec<FileEntry>,
     pub inferred_commit_scopes: Vec<String>,
@@ -133,6 +144,8 @@ impl Default for AppState {
             show_create_branch_dialog: false,
             new_tag_name: String::new(),
             show_create_tag_dialog: false,
+            stale_branches: Vec::new(),
+            show_cleanup_branches_dialog: false,
             unstaged: Vec::new(),
             staged: Vec::new(),
             inferred_commit_scopes: Vec::new(),

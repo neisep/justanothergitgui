@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::state::{
     CommitEntry, ConflictChoice, ConflictData, ConflictPart, FileEntry, PullRequestPrompt,
+    StaleBranch,
 };
 
 const GITHUB_AUTH_KEYRING_SERVICE: &str = "justanothergitgui";
@@ -719,6 +720,63 @@ pub fn create_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::E
     switch_branch(repo, branch_name)
 }
 
+pub fn list_stale_branches(repo: &Repository) -> Result<Vec<StaleBranch>, git2::Error> {
+    let head_oid = repo.head().ok().and_then(|head| head.target());
+    let mut stale = Vec::new();
+
+    for entry in repo.branches(Some(git2::BranchType::Local))? {
+        let (branch, _) = entry?;
+        if branch.is_head() {
+            continue;
+        }
+        let Some(name) = branch.name()?.map(str::to_string) else {
+            continue;
+        };
+        if matches!(name.as_str(), "main" | "master") {
+            continue;
+        }
+
+        let refname = format!("refs/heads/{}", name);
+        let Ok(upstream_buf) = repo.branch_upstream_name(&refname) else {
+            continue;
+        };
+        let Some(upstream_name) = upstream_buf.as_str() else {
+            continue;
+        };
+        if repo.find_reference(upstream_name).is_ok() {
+            continue;
+        }
+
+        let merged_into_head = match (head_oid, branch.get().target()) {
+            (Some(head), Some(branch_oid)) => {
+                head == branch_oid
+                    || repo
+                        .graph_descendant_of(head, branch_oid)
+                        .unwrap_or(false)
+            }
+            _ => false,
+        };
+
+        stale.push(StaleBranch {
+            name,
+            merged_into_head,
+            selected: merged_into_head,
+        });
+    }
+
+    Ok(stale)
+}
+
+pub fn delete_local_branch(repo: &Repository, name: &str) -> Result<(), git2::Error> {
+    let mut branch = repo.find_branch(name, git2::BranchType::Local)?;
+    if branch.is_head() {
+        return Err(git2::Error::from_str(
+            "Cannot delete the currently checked-out branch",
+        ));
+    }
+    branch.delete()
+}
+
 fn open_or_init_repo(folder_path: &Path) -> Result<Repository, String> {
     if let Ok(repo) = Repository::open(folder_path) {
         return Ok(repo);
@@ -984,6 +1042,7 @@ fn pull_with_git2(
 
     let mut fetch_options = git2::FetchOptions::new();
     fetch_options.remote_callbacks(remote_callbacks(&repo, auth)?);
+    fetch_options.prune(git2::FetchPrune::On);
     remote
         .fetch(&[branch_name], Some(&mut fetch_options), None)
         .map_err(|e| format!("Pull fetch error: {}", e))?;
