@@ -40,9 +40,10 @@ The application combines:
 - **Stage / unstage individual files** or use **Stage All** / **Unstage All**
 - **Drag and drop files between staged and unstaged lists**
 - **Review diffs** in a built-in changes view with line numbers and optional wrapping
-- **Write commits** from the right-hand commit panel
+- **Write commits** from the right-hand commit panel with a **Summary** field and optional **Body**
 - **Optionally enforce Conventional Commits** from a settings dialog
 - **Autocomplete Conventional Commit prefixes** with inferred scopes from changed paths
+- **Use keyboard-friendly dialogs and shortcuts** for common actions
 - **Switch branches** from the toolbar
 - **Create a new branch** from inside the app
 - **Create and push tags** from `main` / `master`
@@ -123,7 +124,7 @@ target\release\justanothergitgui.exe
 1. **Launch the app**
 2. **Open a repository** or choose **Publish Folder to GitHub...**
 3. Review changes in the **unstaged** and **staged** panels
-4. **Stage files**, inspect diffs, and enter a commit message
+4. **Stage files**, inspect diffs, and enter a commit summary with an optional body
 5. **Commit** from the right-side panel
 6. **Switch branches** or create a new one from the toolbar
 7. Use **Pull** / **Push** and PR shortcuts from the top-right area
@@ -131,6 +132,14 @@ target\release\justanothergitgui.exe
 9. Use **More** for secondary actions like settings, publishing, cleanup, tags, and logs
 10. On `main` or `master`, use **More > Create Tag...** to tag the current HEAD commit
 11. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
+
+### Keyboard Shortcuts
+
+- **Ctrl/Cmd+S** stages the selected file, or unstages it when the selected file is already staged
+- **Ctrl/Cmd+Enter** commits staged changes
+- **Ctrl/Cmd+R** or **F5** refreshes repository status
+- **Ctrl/Cmd+L** focuses the commit summary field
+- dialogs focus the first editable field when they open, and **Escape** closes the active dialog
 
 ### Commit Message Rules
 

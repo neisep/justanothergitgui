@@ -146,9 +146,15 @@ fn render_file_table(
                 row.col(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (btn_label, btn_tooltip) = if staged {
-                            ("Unstage", "Unstage this file")
+                            (
+                                "Unstage",
+                                "Unstage this file\nShortcut: Ctrl/Cmd+S when selected",
+                            )
                         } else {
-                            ("Stage", "Stage this file")
+                            (
+                                "Stage",
+                                "Stage this file\nShortcut: Ctrl/Cmd+S when selected",
+                            )
                         };
                         if ui
                             .small_button(btn_label)

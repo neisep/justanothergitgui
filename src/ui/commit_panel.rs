@@ -23,6 +23,10 @@ pub fn show(
                     .desired_width(f32::INFINITY)
                     .hint_text("Describe your changes..."),
             );
+            if state.focus_commit_summary_requested {
+                response.request_focus();
+                state.focus_commit_summary_requested = false;
+            }
             show_prefix_suggestions(
                 ui,
                 &response,
@@ -62,7 +66,7 @@ pub fn show(
                 if ui
                     .button("Commit")
                     .on_hover_text(if can_commit {
-                        "Create a commit with staged changes"
+                        "Create a commit with staged changes\nShortcut: Ctrl/Cmd+Enter"
                     } else if validation_error.is_some() {
                         "Fix the commit message format first"
                     } else if state.staged.is_empty() {

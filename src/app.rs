@@ -14,6 +14,16 @@ use crate::ui;
 use crate::worker::{TaskResult, Worker};
 
 const GITHUB_OAUTH_CLIENT_ID: &str = "Ov23liRh81zsShRFaA4r";
+const SHORTCUT_STAGE_SELECTED_FILE: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+const SHORTCUT_COMMIT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Enter);
+const SHORTCUT_REFRESH: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::R);
+const SHORTCUT_REFRESH_F5: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::F5);
+const SHORTCUT_FOCUS_COMMIT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::L);
 
 struct RepoTab {
     state: AppState,
@@ -26,6 +36,7 @@ struct PublishRepoDialogState {
     folder_path: String,
     repo_name: String,
     commit_message: String,
+    focus_folder_requested: bool,
     visibility: git_ops::GithubRepoVisibility,
     github_authenticated: bool,
     github_status: String,
@@ -36,6 +47,7 @@ struct SettingsDialogState {
     show: bool,
     status: String,
     custom_scopes_input: String,
+    focus_custom_scopes_requested: bool,
 }
 
 pub struct GitGuiApp {
@@ -61,6 +73,7 @@ impl PublishRepoDialogState {
             folder_path: current_dir.display().to_string(),
             repo_name: default_repo_name_for_path(&current_dir),
             commit_message: commit_rules::default_initial_commit_summary(ruleset).into(),
+            focus_folder_requested: false,
             visibility: git_ops::GithubRepoVisibility::Private,
             github_authenticated: false,
             github_status: String::new(),
@@ -123,6 +136,7 @@ impl GitGuiApp {
                 show: false,
                 status: String::new(),
                 custom_scopes_input: settings_custom_scopes_input,
+                focus_custom_scopes_requested: false,
             },
             github_auth_session,
             github_auth_prompt: None,
@@ -206,11 +220,13 @@ impl GitGuiApp {
         self.publish_dialog
             .reset_for_path(path, self.settings.commit_message_ruleset);
         self.publish_dialog.show = true;
+        self.publish_dialog.focus_folder_requested = true;
         self.refresh_github_auth_status();
     }
 
     fn open_settings_dialog(&mut self) {
         self.settings_dialog.show = true;
+        self.settings_dialog.focus_custom_scopes_requested = true;
         self.settings_dialog.custom_scopes_input =
             self.settings.commit_message_custom_scopes.join(", ");
     }
@@ -242,6 +258,200 @@ impl GitGuiApp {
         self.set_status_message(start_message.into());
         self.welcome_worker
             .login_github(GITHUB_OAUTH_CLIENT_ID.into());
+    }
+
+    fn any_dialog_open(&self) -> bool {
+        if self.publish_dialog.show
+            || self.settings_dialog.show
+            || self.github_auth_prompt.is_some()
+            || self.show_log_viewer
+        {
+            return true;
+        }
+
+        if self.tabs.is_empty() {
+            return false;
+        }
+
+        let state = &self.tabs[self.active_tab.min(self.tabs.len() - 1)].state;
+        state.show_create_branch_dialog
+            || state.show_create_branch_confirm
+            || state.show_create_tag_dialog
+            || state.show_cleanup_branches_dialog
+            || state.show_discard_dialog
+    }
+
+    fn close_topmost_dialog(&mut self) -> bool {
+        if self.show_log_viewer {
+            self.show_log_viewer = false;
+            return true;
+        }
+
+        if self.github_auth_prompt.is_some() {
+            self.github_auth_prompt = None;
+            return true;
+        }
+
+        if !self.tabs.is_empty() {
+            let active_index = self.active_tab.min(self.tabs.len() - 1);
+            let state = &mut self.tabs[active_index].state;
+            let create_tag_busy = state
+                .busy
+                .as_ref()
+                .is_some_and(|busy| busy.action == BusyAction::CreateTag);
+            let discard_busy = state
+                .busy
+                .as_ref()
+                .is_some_and(|busy| busy.action == BusyAction::DiscardAndReset);
+
+            if state.show_cleanup_branches_dialog {
+                state.show_cleanup_branches_dialog = false;
+                state.stale_branches.clear();
+                return true;
+            }
+
+            if state.show_discard_dialog && !discard_busy {
+                state.show_discard_dialog = false;
+                state.discard_preview = None;
+                state.discard_clean_untracked = false;
+                return true;
+            }
+
+            if state.show_create_tag_dialog && !create_tag_busy {
+                state.show_create_tag_dialog = false;
+                state.new_tag_name.clear();
+                state.focus_new_tag_name_requested = false;
+                return true;
+            }
+
+            if state.show_create_branch_confirm {
+                state.show_create_branch_confirm = false;
+                state.create_branch_preview = None;
+                state.pending_new_branch_name = None;
+                state.new_branch_name.clear();
+                state.focus_new_branch_name_requested = false;
+                return true;
+            }
+
+            if state.show_create_branch_dialog {
+                state.show_create_branch_dialog = false;
+                state.new_branch_name.clear();
+                state.focus_new_branch_name_requested = false;
+                return true;
+            }
+        }
+
+        if self.settings_dialog.show {
+            self.settings_dialog.show = false;
+            self.settings_dialog.focus_custom_scopes_requested = false;
+            return true;
+        }
+
+        if self.publish_dialog.show && self.welcome_busy.is_none() {
+            self.publish_dialog.show = false;
+            self.publish_dialog.focus_folder_requested = false;
+            return true;
+        }
+
+        false
+    }
+
+    fn refresh_active_tab(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+
+        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let Some(path) = self.tabs[active_index].state.repo_path.clone() else {
+            return;
+        };
+
+        if self.tabs[active_index].worker.is_busy() {
+            self.tabs[active_index].state.status_msg = "Busy — please wait...".into();
+            return;
+        }
+
+        match git_ops::open_repo(&path) {
+            Ok(repo) => {
+                if let Some(detail) = refresh_status(&mut self.tabs[active_index].state, &repo) {
+                    self.tabs[active_index].state.status_msg =
+                        status_message_for_error("Refresh", &detail);
+                    self.logger.log_error("Refresh", &detail);
+                } else {
+                    self.tabs[active_index].state.status_msg = "Refreshed repository status".into();
+                }
+                self.tabs[active_index].repo = repo;
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                self.tabs[active_index].state.status_msg =
+                    status_message_for_error("Refresh", &detail);
+                self.logger.log_error("Refresh", &detail);
+            }
+        }
+    }
+
+    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.any_dialog_open() {
+            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.close_topmost_dialog();
+            }
+            return;
+        }
+
+        if self.tabs.is_empty() {
+            return;
+        }
+
+        let active_index = self.active_tab.min(self.tabs.len() - 1);
+
+        if ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_FOCUS_COMMIT)) {
+            self.tabs[active_index].state.focus_commit_summary_requested = true;
+        }
+
+        if ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_STAGE_SELECTED_FILE)) {
+            let selected_file = self.tabs[active_index].state.selected_file.clone();
+            match selected_file {
+                Some(selected) if selected.staged => self.tabs[active_index]
+                    .state
+                    .actions
+                    .push(UiAction::UnstageFile(selected.path)),
+                Some(selected) => self.tabs[active_index]
+                    .state
+                    .actions
+                    .push(UiAction::StageFile(selected.path)),
+                None => {
+                    self.tabs[active_index].state.status_msg =
+                        "Select a file to stage or unstage first".into();
+                }
+            }
+        }
+
+        if ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_COMMIT)) {
+            let tab = &mut self.tabs[active_index];
+            let message =
+                commit_rules::build_message(&tab.state.commit_summary, &tab.state.commit_body);
+            let validation_error =
+                commit_rules::validation_error(self.settings.commit_message_ruleset, &message);
+
+            if tab.state.staged.is_empty() {
+                tab.state.status_msg = "Stage files first".into();
+            } else if tab.state.commit_summary.trim().is_empty() {
+                tab.state.status_msg = "Enter a commit summary".into();
+                tab.state.focus_commit_summary_requested = true;
+            } else if let Some(error) = validation_error {
+                tab.state.status_msg = error;
+                tab.state.focus_commit_summary_requested = true;
+            } else {
+                tab.state.actions.push(UiAction::Commit);
+            }
+        }
+
+        if ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_REFRESH))
+            || ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_REFRESH_F5))
+        {
+            self.refresh_active_tab();
+        }
     }
 
     fn show_log_viewer_dialog(&mut self, ctx: &egui::Context) {
@@ -796,6 +1006,7 @@ impl GitGuiApp {
                         tab.state.busy = None;
                         tab.state.status_msg = msg;
                         tab.state.new_tag_name.clear();
+                        tab.state.focus_new_tag_name_requested = false;
                         tab.state.show_create_tag_dialog = false;
                         refresh_indices.push(index);
                     }
@@ -1006,6 +1217,7 @@ impl GitGuiApp {
                         .clicked()
                     {
                         state.show_create_tag_dialog = true;
+                        state.focus_new_tag_name_requested = true;
                         ui.close();
                     }
 
@@ -1145,6 +1357,7 @@ impl GitGuiApp {
                             .clicked()
                         {
                             state.show_create_branch_dialog = true;
+                            state.focus_new_branch_name_requested = true;
                         }
 
                         if !state.branch.is_empty() {
@@ -1272,11 +1485,15 @@ impl GitGuiApp {
 
                 ui.add_space(10.0);
                 ui.label("Custom commit scopes");
-                ui.add(
+                let response = ui.add(
                     egui::TextEdit::singleline(&mut self.settings_dialog.custom_scopes_input)
                         .desired_width(320.0)
                         .hint_text("ui, settings, worker"),
                 );
+                if self.settings_dialog.focus_custom_scopes_requested {
+                    response.request_focus();
+                    self.settings_dialog.focus_custom_scopes_requested = false;
+                }
 
                 match commit_rules::parse_custom_scopes(&self.settings_dialog.custom_scopes_input) {
                     Ok(scopes) => {
@@ -1341,6 +1558,10 @@ impl GitGuiApp {
             keep_open = false;
         }
 
+        if !keep_open {
+            self.settings_dialog.focus_custom_scopes_requested = false;
+        }
+
         self.settings_dialog.show = keep_open;
     }
 
@@ -1367,10 +1588,14 @@ impl GitGuiApp {
                 ui.add_enabled_ui(!worker_busy, |ui| {
                     ui.label("Folder");
                     ui.horizontal(|ui| {
-                        ui.add(
+                        let response = ui.add(
                             egui::TextEdit::singleline(&mut self.publish_dialog.folder_path)
                                 .desired_width(320.0),
                         );
+                        if self.publish_dialog.focus_folder_requested {
+                            response.request_focus();
+                            self.publish_dialog.focus_folder_requested = false;
+                        }
                         if ui.button("Choose...").clicked() {
                             choose_folder_clicked = true;
                         }
@@ -1540,6 +1765,10 @@ impl GitGuiApp {
             keep_open = false;
         }
 
+        if !keep_open {
+            self.publish_dialog.focus_folder_requested = false;
+        }
+
         self.publish_dialog.show = keep_open;
     }
 
@@ -1574,6 +1803,10 @@ impl GitGuiApp {
                         .desired_width(260.0)
                         .hint_text("feature/my-branch"),
                 );
+                if state.focus_new_branch_name_requested {
+                    response.request_focus();
+                    state.focus_new_branch_name_requested = false;
+                }
 
                 if let Some(error) = validation_error.as_ref() {
                     ui.add_space(4.0);
@@ -1615,11 +1848,13 @@ impl GitGuiApp {
 
         if close_requested {
             state.new_branch_name.clear();
+            state.focus_new_branch_name_requested = false;
             state.show_create_branch_dialog = false;
         } else {
             state.show_create_branch_dialog = keep_open;
             if !keep_open {
                 state.new_branch_name.clear();
+                state.focus_new_branch_name_requested = false;
             }
         }
     }
@@ -1735,6 +1970,10 @@ impl GitGuiApp {
                         .desired_width(260.0)
                         .hint_text("v1.0.0"),
                 );
+                if state.focus_new_tag_name_requested {
+                    response.request_focus();
+                    state.focus_new_tag_name_requested = false;
+                }
                 let can_submit = can_create_tag && !state.new_tag_name.trim().is_empty();
 
                 if response.lost_focus()
@@ -1798,11 +2037,13 @@ impl GitGuiApp {
 
         if close_requested {
             state.new_tag_name.clear();
+            state.focus_new_tag_name_requested = false;
             state.show_create_tag_dialog = false;
         } else {
             state.show_create_tag_dialog = keep_open;
             if !keep_open {
                 state.new_tag_name.clear();
+                state.focus_new_tag_name_requested = false;
             }
         }
     }
@@ -2086,6 +2327,8 @@ impl eframe::App for GitGuiApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
+        self.handle_keyboard_shortcuts(&ctx);
+
         if self.tabs.is_empty() {
             self.show_welcome(ui);
             self.show_settings_dialog(&ctx);
@@ -2186,11 +2429,13 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.outgoing_commit_count = 0;
     state.branches.clear();
     state.new_branch_name.clear();
+    state.focus_new_branch_name_requested = false;
     state.show_create_branch_dialog = false;
     state.show_create_branch_confirm = false;
     state.create_branch_preview = None;
     state.pending_new_branch_name = None;
     state.new_tag_name.clear();
+    state.focus_new_tag_name_requested = false;
     state.show_create_tag_dialog = false;
     state.stale_branches.clear();
     state.show_cleanup_branches_dialog = false;
@@ -2202,6 +2447,7 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.inferred_commit_scopes.clear();
     state.commit_summary.clear();
     state.commit_body.clear();
+    state.focus_commit_summary_requested = false;
     state.selected_file = None;
     state.diff_content.clear();
     state.actions.clear();
