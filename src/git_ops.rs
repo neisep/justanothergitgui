@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::state::{
-    CommitEntry, ConflictChoice, ConflictData, ConflictPart, FileEntry, PullRequestPrompt,
-    StaleBranch,
+    CommitEntry, ConflictChoice, ConflictData, ConflictPart, CreateBranchPreview, DiscardPreview,
+    FileEntry, PullRequestPrompt, StaleBranch,
 };
 
 const GITHUB_AUTH_KEYRING_SERVICE: &str = "justanothergitgui";
@@ -450,6 +450,173 @@ pub fn pull(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<String
     let branch_name = current_branch_name(repo_path)?
         .ok_or_else(|| "Pull requires a checked-out branch.".to_string())?;
     pull_with_git2(repo_path, &branch_name, RemoteAuth::System)
+}
+
+pub fn preview_discard_damage(repo: &Repository) -> DiscardPreview {
+    let mut dirty_files = 0usize;
+    let mut untracked_files = 0usize;
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+    if let Ok(statuses) = repo.statuses(Some(&mut opts)) {
+        for entry in statuses.iter() {
+            let status = entry.status();
+            if status == Status::WT_NEW {
+                untracked_files += 1;
+            } else if status.intersects(
+                Status::WT_MODIFIED
+                    | Status::WT_DELETED
+                    | Status::WT_TYPECHANGE
+                    | Status::WT_RENAMED
+                    | Status::INDEX_NEW
+                    | Status::INDEX_MODIFIED
+                    | Status::INDEX_DELETED
+                    | Status::INDEX_RENAMED
+                    | Status::INDEX_TYPECHANGE
+                    | Status::CONFLICTED,
+            ) {
+                dirty_files += 1;
+            }
+        }
+    }
+
+    let local_only_commits = get_outgoing_commit_count(repo).unwrap_or(0);
+
+    DiscardPreview {
+        dirty_files,
+        untracked_files,
+        local_only_commits,
+    }
+}
+
+pub fn preview_create_branch(repo: &Repository, branch_name: &str) -> CreateBranchPreview {
+    let mut dirty_files = 0usize;
+    let mut untracked_files = 0usize;
+    let mut staged_files = 0usize;
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+    if let Ok(statuses) = repo.statuses(Some(&mut opts)) {
+        for entry in statuses.iter() {
+            let status = entry.status();
+            if status.intersects(
+                Status::INDEX_NEW
+                    | Status::INDEX_MODIFIED
+                    | Status::INDEX_DELETED
+                    | Status::INDEX_RENAMED
+                    | Status::INDEX_TYPECHANGE,
+            ) {
+                staged_files += 1;
+            }
+            if status.contains(Status::WT_NEW) {
+                untracked_files += 1;
+            } else if status.intersects(
+                Status::WT_MODIFIED
+                    | Status::WT_DELETED
+                    | Status::WT_TYPECHANGE
+                    | Status::WT_RENAMED
+                    | Status::CONFLICTED,
+            ) {
+                dirty_files += 1;
+            }
+        }
+    }
+
+    CreateBranchPreview {
+        branch_name: branch_name.to_string(),
+        dirty_files,
+        untracked_files,
+        staged_files,
+    }
+}
+
+pub fn discard_and_reset_to_remote(
+    repo_path: &Path,
+    auth: Option<&GithubAuthSession>,
+    clean_untracked: bool,
+) -> Result<String, String> {
+    let branch_name = current_branch_name(repo_path)?
+        .ok_or_else(|| "Reset requires a checked-out branch.".to_string())?;
+
+    let remote_auth = if is_github_https_origin(repo_path) {
+        let auth = auth.ok_or_else(|| {
+            "Reset requires the app's GitHub sign-in. Use 'Sign in to GitHub...' and try again."
+                .to_string()
+        })?;
+        RemoteAuth::GitHub(auth)
+    } else {
+        RemoteAuth::System
+    };
+
+    let repo = Repository::open(repo_path).map_err(|e| format!("Open repo error: {}", e))?;
+    let mut remote = repo
+        .find_remote("origin")
+        .map_err(|e| format!("Remote error: {}", e))?;
+
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(remote_callbacks(&repo, remote_auth)?);
+    fetch_options.prune(git2::FetchPrune::On);
+    remote
+        .fetch(&[&branch_name], Some(&mut fetch_options), None)
+        .map_err(|e| format!("Fetch error: {}", e))?;
+
+    let fetch_ref_name = format!("refs/remotes/origin/{}", branch_name);
+    let fetch_ref = repo
+        .find_reference(&fetch_ref_name)
+        .map_err(|e| format!("Remote branch {} not found: {}", branch_name, e))?;
+    let target_oid = fetch_ref
+        .target()
+        .ok_or_else(|| format!("Remote branch {} has no target commit", branch_name))?;
+    let target_commit = repo
+        .find_commit(target_oid)
+        .map_err(|e| format!("Find commit error: {}", e))?;
+
+    repo.reset(target_commit.as_object(), git2::ResetType::Hard, None)
+        .map_err(|e| format!("Reset error: {}", e))?;
+
+    let mut cleaned = 0usize;
+    if clean_untracked {
+        cleaned = clean_untracked_files(&repo)
+            .map_err(|e| format!("Clean untracked error: {}", e))?;
+    }
+
+    let mut message = format!("Reset to origin/{}", branch_name);
+    if cleaned > 0 {
+        message.push_str(&format!(", removed {} untracked entry(ies)", cleaned));
+    }
+    Ok(message)
+}
+
+fn clean_untracked_files(repo: &Repository) -> Result<usize, git2::Error> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| git2::Error::from_str("Repository has no workdir"))?
+        .to_path_buf();
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(false);
+    let statuses = repo.statuses(Some(&mut opts))?;
+
+    let mut count = 0usize;
+    for entry in statuses.iter() {
+        if entry.status() != Status::WT_NEW {
+            continue;
+        }
+        let Some(path) = entry.path() else { continue };
+        let full_path = workdir.join(path);
+        let removed = if full_path.is_dir() {
+            std::fs::remove_dir_all(&full_path).is_ok()
+        } else if full_path.exists() {
+            std::fs::remove_file(&full_path).is_ok()
+        } else {
+            false
+        };
+        if removed {
+            count += 1;
+        }
+    }
+
+    Ok(count)
 }
 
 pub fn create_tag(

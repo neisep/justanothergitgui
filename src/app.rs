@@ -419,6 +419,9 @@ impl GitGuiApp {
                             tab.state.conflict_data = None;
                             tab.state.new_branch_name.clear();
                             tab.state.show_create_branch_dialog = false;
+                            tab.state.show_create_branch_confirm = false;
+                            tab.state.create_branch_preview = None;
+                            tab.state.pending_new_branch_name = None;
                         }
                         Err(e) => {
                             let detail = e.to_string();
@@ -428,6 +431,31 @@ impl GitGuiApp {
                         }
                     }
                     refresh_error = refresh_status(&mut tab.state, &tab.repo);
+                }
+
+                UiAction::OpenCreateBranchConfirm(branch) => {
+                    let tab = &mut self.tabs[active_index];
+                    let preview = git_ops::preview_create_branch(&tab.repo, &branch);
+                    let clean = preview.dirty_files == 0
+                        && preview.untracked_files == 0
+                        && preview.staged_files == 0;
+                    if clean {
+                        tab.state.actions.push(UiAction::CreateBranch(branch));
+                    } else {
+                        tab.state.pending_new_branch_name = Some(branch);
+                        tab.state.create_branch_preview = Some(preview);
+                        tab.state.show_create_branch_dialog = false;
+                        tab.state.show_create_branch_confirm = true;
+                    }
+                }
+
+                UiAction::ConfirmCreateBranch => {
+                    let tab = &mut self.tabs[active_index];
+                    if let Some(name) = tab.state.pending_new_branch_name.take() {
+                        tab.state.actions.push(UiAction::CreateBranch(name));
+                    }
+                    tab.state.show_create_branch_confirm = false;
+                    tab.state.create_branch_preview = None;
                 }
 
                 UiAction::CreateTag(tag_name) => {
@@ -527,6 +555,32 @@ impl GitGuiApp {
                         log_entry = Some(("Delete branch", detail));
                     }
                     refresh_error = refresh_status(&mut tab.state, &tab.repo);
+                }
+
+                UiAction::OpenDiscardDialog => {
+                    let tab = &mut self.tabs[active_index];
+                    let preview = git_ops::preview_discard_damage(&tab.repo);
+                    tab.state.discard_preview = Some(preview);
+                    tab.state.discard_clean_untracked = false;
+                    tab.state.show_discard_dialog = true;
+                }
+
+                UiAction::DiscardAndReset { clean_untracked } => {
+                    let tab = &mut self.tabs[active_index];
+                    if let Some(path) = tab.state.repo_path.clone() {
+                        if tab.worker.is_busy() {
+                            tab.state.status_msg = "Busy — please wait...".into();
+                        } else {
+                            tab.state.status_msg = "Resetting to remote...".into();
+                            tab.state.show_discard_dialog = false;
+                            tab.state.discard_preview = None;
+                            tab.worker.discard_and_reset(
+                                path,
+                                self.github_auth_session.clone(),
+                                clean_untracked,
+                            );
+                        }
+                    }
                 }
 
                 UiAction::SaveConflictResolution => {
@@ -640,7 +694,8 @@ impl GitGuiApp {
                 | TaskResult::Pull(_)
                 | TaskResult::CreateTag(_)
                 | TaskResult::OpenPullRequest(_)
-                | TaskResult::CreatePullRequest(_) => {}
+                | TaskResult::CreatePullRequest(_)
+                | TaskResult::DiscardAndReset(_) => {}
             }
         }
 
@@ -700,6 +755,16 @@ impl GitGuiApp {
                     TaskResult::CreatePullRequest(Err(msg)) => {
                         tab.state.status_msg = status_message_for_error("Create PR", &msg);
                         tab_logs.push(("Create PR".into(), msg));
+                    }
+                    TaskResult::DiscardAndReset(Ok(msg)) => {
+                        tab.state.status_msg = format!("Discard: {}", msg);
+                        refresh_indices.push(index);
+                    }
+                    TaskResult::DiscardAndReset(Err(msg)) => {
+                        tab.state.status_msg =
+                            status_message_for_error("Discard & reset", &msg);
+                        tab_logs.push(("Discard & reset".into(), msg));
+                        refresh_indices.push(index);
                     }
                     TaskResult::GithubAuthPrompt(_)
                     | TaskResult::GithubAuth(_)
@@ -839,6 +904,31 @@ impl GitGuiApp {
                                         .clicked()
                                     {
                                         state.actions.push(UiAction::Pull);
+                                    }
+
+                                    let has_branch = !state.branch.is_empty();
+                                    let github_auth_ok = !has_github_https_origin
+                                        || self.github_auth_session.is_some();
+                                    let can_discard = has_branch && github_auth_ok;
+                                    let discard_tooltip = if !has_branch {
+                                        "Check out a branch to reset it to origin".to_string()
+                                    } else if !github_auth_ok {
+                                        "Sign in to GitHub to reset to origin".to_string()
+                                    } else {
+                                        format!(
+                                            "Discard local changes and reset '{}' to origin/{}",
+                                            state.branch, state.branch
+                                        )
+                                    };
+                                    if ui
+                                        .add_enabled(
+                                            can_discard,
+                                            egui::Button::new("Discard..."),
+                                        )
+                                        .on_hover_text(discard_tooltip)
+                                        .clicked()
+                                    {
+                                        state.actions.push(UiAction::OpenDiscardDialog);
                                     }
                                 },
                             );
@@ -1337,7 +1427,9 @@ impl GitGuiApp {
             });
 
         if let Some(branch_name) = submit_branch {
-            state.actions.push(UiAction::CreateBranch(branch_name));
+            state
+                .actions
+                .push(UiAction::OpenCreateBranchConfirm(branch_name));
         }
 
         if close_requested {
@@ -1346,6 +1438,83 @@ impl GitGuiApp {
         } else {
             state.show_create_branch_dialog = keep_open;
             if !keep_open {
+                state.new_branch_name.clear();
+            }
+        }
+    }
+
+    fn show_create_branch_confirm_dialog(&mut self, ctx: &egui::Context) {
+        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let state = &mut self.tabs[active_index].state;
+
+        if !state.show_create_branch_confirm {
+            return;
+        }
+
+        let mut keep_open = state.show_create_branch_confirm;
+        let mut close_requested = false;
+        let mut confirm_requested = false;
+        let current_branch = state.branch.clone();
+        let preview = state.create_branch_preview.clone().unwrap_or_default();
+
+        egui::Window::new("Create branch with uncommitted changes?")
+            .id(egui::Id::new("create_branch_confirm_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("New branch: {}", preview.branch_name)).strong(),
+                );
+                ui.add_space(8.0);
+                ui.label(format!(
+                    "Your uncommitted changes will come with you to the new branch. \
+                     Nothing is lost on '{}' — the changes simply ride along.",
+                    current_branch
+                ));
+                ui.add_space(10.0);
+
+                ui.label("Changes traveling with you:");
+                ui.indent("create_branch_preview", |ui| {
+                    if preview.dirty_files > 0 {
+                        ui.label(format!("• {} modified file(s)", preview.dirty_files));
+                    }
+                    if preview.staged_files > 0 {
+                        ui.label(format!("• {} staged file(s)", preview.staged_files));
+                    }
+                    if preview.untracked_files > 0 {
+                        ui.label(format!("• {} untracked file(s)", preview.untracked_files));
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Create branch").clicked() {
+                            confirm_requested = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+            });
+
+        if confirm_requested {
+            state.actions.push(UiAction::ConfirmCreateBranch);
+        }
+
+        if close_requested {
+            state.show_create_branch_confirm = false;
+            state.create_branch_preview = None;
+            state.pending_new_branch_name = None;
+            state.new_branch_name.clear();
+        } else {
+            state.show_create_branch_confirm = keep_open;
+            if !keep_open {
+                state.create_branch_preview = None;
+                state.pending_new_branch_name = None;
                 state.new_branch_name.clear();
             }
         }
@@ -1543,6 +1712,107 @@ impl GitGuiApp {
         }
     }
 
+    fn show_discard_dialog(&mut self, ctx: &egui::Context) {
+        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let state = &mut self.tabs[active_index].state;
+
+        if !state.show_discard_dialog {
+            return;
+        }
+
+        let mut keep_open = state.show_discard_dialog;
+        let mut close_requested = false;
+        let mut confirm_requested = false;
+        let branch = state.branch.clone();
+        let preview = state.discard_preview.clone().unwrap_or_default();
+
+        egui::Window::new("Discard local changes")
+            .id(egui::Id::new("discard_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "This will hard-reset '{}' to origin/{}.",
+                    branch, branch
+                ));
+                ui.add_space(6.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 120, 120),
+                    "This cannot be undone.",
+                );
+                ui.add_space(10.0);
+
+                ui.label("You will lose:");
+                ui.indent("discard_damage", |ui| {
+                    ui.label(format!("• {} modified/staged file(s)", preview.dirty_files));
+                    ui.label(format!(
+                        "• {} local commit(s) not on origin",
+                        preview.local_only_commits
+                    ));
+                    if state.discard_clean_untracked {
+                        ui.label(format!(
+                            "• {} untracked file(s)/dir(s)",
+                            preview.untracked_files
+                        ));
+                    } else {
+                        ui.weak(format!(
+                            "  ({} untracked file(s)/dir(s) will be kept)",
+                            preview.untracked_files
+                        ));
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.checkbox(
+                    &mut state.discard_clean_untracked,
+                    "Also delete untracked files",
+                );
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Discard")
+                                        .color(egui::Color32::from_rgb(255, 255, 255)),
+                                )
+                                .fill(egui::Color32::from_rgb(160, 60, 60)),
+                            )
+                            .clicked()
+                        {
+                            confirm_requested = true;
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+            });
+
+        if confirm_requested {
+            let clean_untracked = state.discard_clean_untracked;
+            state
+                .actions
+                .push(UiAction::DiscardAndReset { clean_untracked });
+        }
+
+        if close_requested {
+            state.show_discard_dialog = false;
+            state.discard_preview = None;
+            state.discard_clean_untracked = false;
+        } else {
+            state.show_discard_dialog = keep_open;
+            if !keep_open {
+                state.discard_preview = None;
+                state.discard_clean_untracked = false;
+            }
+        }
+    }
+
     fn show_github_auth_dialog(&mut self, ctx: &egui::Context) {
         let Some(prompt) = self.github_auth_prompt.clone() else {
             return;
@@ -1629,7 +1899,9 @@ impl eframe::App for GitGuiApp {
         self.show_publish_repo_dialog(&ctx);
         self.show_settings_dialog(&ctx);
         self.show_create_branch_dialog(&ctx);
+        self.show_create_branch_confirm_dialog(&ctx);
         self.show_create_tag_dialog(&ctx);
+        self.show_discard_dialog(&ctx);
         self.show_cleanup_branches_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);
         self.show_log_viewer_dialog(&ctx);
@@ -1689,10 +1961,16 @@ fn reset_repo_view_state(state: &mut AppState) {
     state.branches.clear();
     state.new_branch_name.clear();
     state.show_create_branch_dialog = false;
+    state.show_create_branch_confirm = false;
+    state.create_branch_preview = None;
+    state.pending_new_branch_name = None;
     state.new_tag_name.clear();
     state.show_create_tag_dialog = false;
     state.stale_branches.clear();
     state.show_cleanup_branches_dialog = false;
+    state.show_discard_dialog = false;
+    state.discard_preview = None;
+    state.discard_clean_untracked = false;
     state.unstaged.clear();
     state.staged.clear();
     state.inferred_commit_scopes.clear();

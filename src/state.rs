@@ -81,6 +81,21 @@ pub struct StaleBranch {
     pub selected: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct DiscardPreview {
+    pub dirty_files: usize,
+    pub untracked_files: usize,
+    pub local_only_commits: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CreateBranchPreview {
+    pub branch_name: String,
+    pub dirty_files: usize,
+    pub untracked_files: usize,
+    pub staged_files: usize,
+}
+
 pub enum UiAction {
     StageFile(String),
     UnstageFile(String),
@@ -92,6 +107,8 @@ pub enum UiAction {
     SelectFile { path: String, staged: bool },
     SwitchBranch(String),
     CreateBranch(String),
+    OpenCreateBranchConfirm(String),
+    ConfirmCreateBranch,
     CreateTag(String),
     LaunchPullRequest,
     ShowDiff,
@@ -99,6 +116,8 @@ pub enum UiAction {
     SaveConflictResolution,
     OpenCleanupBranches,
     DeleteStaleBranches(Vec<String>),
+    OpenDiscardDialog,
+    DiscardAndReset { clean_untracked: bool },
 }
 
 pub struct AppState {
@@ -111,10 +130,16 @@ pub struct AppState {
     pub branches: Vec<String>,
     pub new_branch_name: String,
     pub show_create_branch_dialog: bool,
+    pub show_create_branch_confirm: bool,
+    pub create_branch_preview: Option<CreateBranchPreview>,
+    pub pending_new_branch_name: Option<String>,
     pub new_tag_name: String,
     pub show_create_tag_dialog: bool,
     pub stale_branches: Vec<StaleBranch>,
     pub show_cleanup_branches_dialog: bool,
+    pub show_discard_dialog: bool,
+    pub discard_preview: Option<DiscardPreview>,
+    pub discard_clean_untracked: bool,
     pub unstaged: Vec<FileEntry>,
     pub staged: Vec<FileEntry>,
     pub inferred_commit_scopes: Vec<String>,
@@ -142,10 +167,16 @@ impl Default for AppState {
             branches: Vec::new(),
             new_branch_name: String::new(),
             show_create_branch_dialog: false,
+            show_create_branch_confirm: false,
+            create_branch_preview: None,
+            pending_new_branch_name: None,
             new_tag_name: String::new(),
             show_create_tag_dialog: false,
             stale_branches: Vec::new(),
             show_cleanup_branches_dialog: false,
+            show_discard_dialog: false,
+            discard_preview: None,
+            discard_clean_untracked: false,
             unstaged: Vec::new(),
             staged: Vec::new(),
             inferred_commit_scopes: Vec::new(),

@@ -12,6 +12,7 @@ pub enum TaskResult {
     CreateGithubRepo(Result<crate::git_ops::CreateGithubRepoSuccess, String>),
     OpenPullRequest(Result<String, String>),
     CreatePullRequest(Result<String, String>),
+    DiscardAndReset(Result<String, String>),
 }
 
 enum WorkerTask {
@@ -22,6 +23,11 @@ enum WorkerTask {
     CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
     OpenPullRequest(String),
     CreatePullRequest(String),
+    DiscardAndReset {
+        path: PathBuf,
+        auth: Option<crate::git_ops::GithubAuthSession>,
+        clean_untracked: bool,
+    },
 }
 
 pub struct Worker {
@@ -68,6 +74,17 @@ impl Worker {
                     WorkerTask::CreatePullRequest(url) => {
                         TaskResult::CreatePullRequest(crate::git_ops::create_pull_request(&url))
                     }
+                    WorkerTask::DiscardAndReset {
+                        path,
+                        auth,
+                        clean_untracked,
+                    } => TaskResult::DiscardAndReset(
+                        crate::git_ops::discard_and_reset_to_remote(
+                            &path,
+                            auth.as_ref(),
+                            clean_untracked,
+                        ),
+                    ),
                 };
                 let _ = result_tx.send(result);
                 busy_clone.store(false, Ordering::SeqCst);
@@ -127,6 +144,21 @@ impl Worker {
     pub fn create_pull_request(&self, url: String) {
         if !self.is_busy() {
             let _ = self.tx.send(WorkerTask::CreatePullRequest(url));
+        }
+    }
+
+    pub fn discard_and_reset(
+        &self,
+        repo_path: PathBuf,
+        auth: Option<crate::git_ops::GithubAuthSession>,
+        clean_untracked: bool,
+    ) {
+        if !self.is_busy() {
+            let _ = self.tx.send(WorkerTask::DiscardAndReset {
+                path: repo_path,
+                auth,
+                clean_untracked,
+            });
         }
     }
 
