@@ -871,10 +871,7 @@ pub fn validate_new_branch_name(repo: &Repository, name: &str) -> Option<String>
                 .into(),
         );
     }
-    if repo
-        .find_branch(name, git2::BranchType::Local)
-        .is_ok()
-    {
+    if repo.find_branch(name, git2::BranchType::Local).is_ok() {
         return Some(format!("A branch named '{}' already exists.", name));
     }
     None

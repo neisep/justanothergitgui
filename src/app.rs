@@ -825,7 +825,9 @@ impl GitGuiApp {
         let mut next_active = None;
         let mut open_clicked = false;
         let mut settings_clicked = false;
+        let mut show_logs_clicked = false;
         let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let has_logs = self.logger.has_entries();
         let tab_labels: Vec<(String, Option<String>)> = self
             .tabs
             .iter()
@@ -844,18 +846,136 @@ impl GitGuiApp {
             ui.horizontal(|ui| {
                 let state = &mut self.tabs[active_index].state;
                 let controls_width = if state.branch.is_empty() {
-                    520.0
+                    380.0
                 } else {
-                    720.0
+                    560.0
                 };
+                let has_repo = state.repo_path.is_some();
+                let repo_path = state.repo_path.clone();
+                let has_origin_remote = state.has_origin_remote;
+                let has_github_origin = state.has_github_origin;
+                let has_github_https_origin = state.has_github_https_origin;
+                let needs_github_sign_in = has_github_origin && self.github_auth_session.is_none();
+                let has_branch = !state.branch.is_empty();
+                let github_auth_ok =
+                    !has_github_https_origin || self.github_auth_session.is_some();
+                let can_discard = has_origin_remote && has_branch && github_auth_ok;
+                let discard_tooltip = if !has_origin_remote {
+                    "Add or fetch an origin remote before resetting to origin".to_string()
+                } else if !has_branch {
+                    "Check out a branch to reset it to origin".to_string()
+                } else if !github_auth_ok {
+                    "Sign in to GitHub to reset to origin".to_string()
+                } else {
+                    format!(
+                        "Discard local changes and reset '{}' to origin/{}",
+                        state.branch, state.branch
+                    )
+                };
+                let can_create_tag = has_repo
+                    && git_ops::can_create_tag_on_branch(&state.branch)
+                    && (!has_github_https_origin || self.github_auth_session.is_some());
+                let create_tag_tooltip = if can_create_tag {
+                    if state.has_origin_remote {
+                        "Create a tag from the current HEAD commit and push it to origin"
+                    } else {
+                        "Create a local tag from the current HEAD commit"
+                    }
+                } else if has_github_https_origin && self.github_auth_session.is_none() {
+                    "Sign in to GitHub to create and push tags for this repository"
+                } else {
+                    "Switch to main or master to create a tag"
+                };
+                let push_label = if state.outgoing_commit_count > 0 {
+                    format!("Push({})", state.outgoing_commit_count)
+                } else {
+                    "Push".into()
+                };
+                let push_tooltip = if state.outgoing_commit_count > 0 {
+                    format!(
+                        "Push {} local commit(s) to remote",
+                        state.outgoing_commit_count
+                    )
+                } else {
+                    "Push to remote".into()
+                };
+                let pull_request_prompt = state.pull_request_prompt.clone();
+                let mut publish_clicked = false;
+                let mut github_sign_in_clicked = false;
 
-                if ui.button("Open...").clicked() {
-                    open_clicked = true;
-                }
+                ui.menu_button("More", |ui| {
+                    if ui.button("Open Repository...").clicked() {
+                        open_clicked = true;
+                        ui.close();
+                    }
 
-                if ui.button("Settings...").clicked() {
-                    settings_clicked = true;
-                }
+                    ui.separator();
+
+                    if ui
+                        .add_enabled(
+                            has_repo && !has_origin_remote,
+                            egui::Button::new("Publish to GitHub..."),
+                        )
+                        .on_hover_text("Create a GitHub repository for this folder and push it")
+                        .clicked()
+                    {
+                        publish_clicked = true;
+                        ui.close();
+                    }
+
+                    if needs_github_sign_in
+                        && ui
+                            .add_enabled(has_repo, egui::Button::new("Sign in to GitHub..."))
+                            .on_hover_text(
+                                "Sign in so the app can check pull requests and reuse GitHub auth",
+                            )
+                            .clicked()
+                    {
+                        github_sign_in_clicked = true;
+                        ui.close();
+                    }
+
+                    if ui
+                        .add_enabled(can_create_tag, egui::Button::new("Create Tag..."))
+                        .on_hover_text(create_tag_tooltip)
+                        .clicked()
+                    {
+                        state.show_create_tag_dialog = true;
+                        ui.close();
+                    }
+
+                    if ui
+                        .add_enabled(has_repo, egui::Button::new("Cleanup..."))
+                        .on_hover_text(
+                            "Remove local branches whose remote branch was deleted\n(e.g. after a merged PR). Pull first to refresh.",
+                        )
+                        .clicked()
+                    {
+                        state.actions.push(UiAction::OpenCleanupBranches);
+                        ui.close();
+                    }
+
+                    if ui
+                        .add_enabled(can_discard, egui::Button::new("Discard..."))
+                        .on_hover_text(discard_tooltip)
+                        .clicked()
+                    {
+                        state.actions.push(UiAction::OpenDiscardDialog);
+                        ui.close();
+                    }
+
+                    ui.separator();
+
+                    if ui.button("Settings...").clicked() {
+                        settings_clicked = true;
+                        ui.close();
+                    }
+
+                    if has_logs && ui.button("View Logs").clicked() {
+                        show_logs_clicked = true;
+                        ui.close();
+                    }
+                });
 
                 ui.separator();
 
@@ -883,28 +1003,6 @@ impl GitGuiApp {
 
                 ui.separator();
 
-                let has_repo = state.repo_path.is_some();
-                let repo_path = state.repo_path.clone();
-                let has_origin_remote = state.has_origin_remote;
-                let has_github_origin = state.has_github_origin;
-                let has_github_https_origin = state.has_github_https_origin;
-                let needs_github_sign_in = has_github_origin && self.github_auth_session.is_none();
-                let push_label = if state.outgoing_commit_count > 0 {
-                    format!("Push({})", state.outgoing_commit_count)
-                } else {
-                    "Push".into()
-                };
-                let push_tooltip = if state.outgoing_commit_count > 0 {
-                    format!(
-                        "Push {} local commit(s) to remote",
-                        state.outgoing_commit_count
-                    )
-                } else {
-                    "Push to remote".into()
-                };
-                let pull_request_prompt = state.pull_request_prompt.clone();
-                let mut publish_clicked = false;
-                let mut github_sign_in_clicked = false;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if has_origin_remote {
                         ui.add_enabled_ui(has_repo, |ui| {
@@ -921,49 +1019,9 @@ impl GitGuiApp {
                                     {
                                         state.actions.push(UiAction::Pull);
                                     }
-
-                                    let has_branch = !state.branch.is_empty();
-                                    let github_auth_ok = !has_github_https_origin
-                                        || self.github_auth_session.is_some();
-                                    let can_discard = has_branch && github_auth_ok;
-                                    let discard_tooltip = if !has_branch {
-                                        "Check out a branch to reset it to origin".to_string()
-                                    } else if !github_auth_ok {
-                                        "Sign in to GitHub to reset to origin".to_string()
-                                    } else {
-                                        format!(
-                                            "Discard local changes and reset '{}' to origin/{}",
-                                            state.branch, state.branch
-                                        )
-                                    };
-                                    if ui
-                                        .add_enabled(
-                                            can_discard,
-                                            egui::Button::new("Discard..."),
-                                        )
-                                        .on_hover_text(discard_tooltip)
-                                        .clicked()
-                                    {
-                                        state.actions.push(UiAction::OpenDiscardDialog);
-                                    }
                                 },
                             );
                         });
-                    } else if ui
-                        .add_enabled(has_repo, egui::Button::new("Publish to GitHub..."))
-                        .on_hover_text("Create a GitHub repository for this folder and push it")
-                        .clicked()
-                    {
-                        publish_clicked = true;
-                    }
-
-                    if needs_github_sign_in
-                        && ui
-                            .add_enabled(has_repo, egui::Button::new("Sign in to GitHub..."))
-                            .on_hover_text("Sign in so the app can check and open pull requests")
-                            .clicked()
-                    {
-                        github_sign_in_clicked = true;
                     }
 
                     if let Some(prompt) = &pull_request_prompt {
@@ -995,37 +1053,6 @@ impl GitGuiApp {
                         state.show_create_branch_dialog = true;
                     }
 
-                    if ui
-                        .add_enabled(has_repo, egui::Button::new("Cleanup..."))
-                        .on_hover_text(
-                            "Remove local branches whose remote branch was deleted\n(e.g. after a merged PR). Pull first to refresh.",
-                        )
-                        .clicked()
-                    {
-                        state.actions.push(UiAction::OpenCleanupBranches);
-                    }
-
-                    let can_create_tag = has_repo
-                        && git_ops::can_create_tag_on_branch(&state.branch)
-                        && (!has_github_https_origin || self.github_auth_session.is_some());
-                    if ui
-                        .add_enabled(can_create_tag, egui::Button::new("Create Tag..."))
-                        .on_hover_text(if can_create_tag {
-                            if state.has_origin_remote {
-                                "Create a tag from the current HEAD commit and push it to origin"
-                            } else {
-                                "Create a local tag from the current HEAD commit"
-                            }
-                        } else if has_github_https_origin && self.github_auth_session.is_none() {
-                            "Sign in to GitHub to create and push tags for this repository"
-                        } else {
-                            "Switch to main or master to create a tag"
-                        })
-                        .clicked()
-                    {
-                        state.show_create_tag_dialog = true;
-                    }
-
                     if !state.branch.is_empty() {
                         let prev_branch = state.branch.clone();
                         egui::ComboBox::from_id_salt("branch_selector")
@@ -1048,6 +1075,9 @@ impl GitGuiApp {
                 }
                 if github_sign_in_clicked {
                     self.begin_github_sign_in("Requesting GitHub sign-in code...");
+                }
+                if show_logs_clicked {
+                    self.show_log_viewer = true;
                 }
             });
         });
@@ -1428,8 +1458,8 @@ impl GitGuiApp {
                     ui.colored_label(egui::Color32::from_rgb(220, 120, 120), error);
                 }
 
-                let can_create = !state.new_branch_name.trim().is_empty()
-                    && validation_error.is_none();
+                let can_create =
+                    !state.new_branch_name.trim().is_empty() && validation_error.is_none();
 
                 if response.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter))
