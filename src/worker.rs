@@ -19,7 +19,9 @@ enum WorkerTask {
     Push(PathBuf, Option<crate::git_ops::GithubAuthSession>),
     Pull(PathBuf, Option<crate::git_ops::GithubAuthSession>),
     CreateTag(PathBuf, String, Option<crate::git_ops::GithubAuthSession>),
-    GithubAuth { client_id: String },
+    GithubAuth {
+        client_id: String,
+    },
     CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
     OpenPullRequest(String),
     CreatePullRequest(String),
@@ -78,13 +80,11 @@ impl Worker {
                         path,
                         auth,
                         clean_untracked,
-                    } => TaskResult::DiscardAndReset(
-                        crate::git_ops::discard_and_reset_to_remote(
-                            &path,
-                            auth.as_ref(),
-                            clean_untracked,
-                        ),
-                    ),
+                    } => TaskResult::DiscardAndReset(crate::git_ops::discard_and_reset_to_remote(
+                        &path,
+                        auth.as_ref(),
+                        clean_untracked,
+                    )),
                 };
                 let _ = result_tx.send(result);
                 busy_clone.store(false, Ordering::SeqCst);

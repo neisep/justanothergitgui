@@ -576,8 +576,8 @@ pub fn discard_and_reset_to_remote(
 
     let mut cleaned = 0usize;
     if clean_untracked {
-        cleaned = clean_untracked_files(&repo)
-            .map_err(|e| format!("Clean untracked error: {}", e))?;
+        cleaned =
+            clean_untracked_files(&repo).map_err(|e| format!("Clean untracked error: {}", e))?;
     }
 
     let mut message = format!("Reset to origin/{}", branch_name);
@@ -916,10 +916,7 @@ pub fn list_stale_branches(repo: &Repository) -> Result<Vec<StaleBranch>, git2::
 
         let merged_into_head = match (head_oid, branch.get().target()) {
             (Some(head), Some(branch_oid)) => {
-                head == branch_oid
-                    || repo
-                        .graph_descendant_of(head, branch_oid)
-                        .unwrap_or(false)
+                head == branch_oid || repo.graph_descendant_of(head, branch_oid).unwrap_or(false)
             }
             _ => false,
         };
@@ -1447,8 +1444,11 @@ fn fast_forward_branch(
     let target_obj = repo
         .find_object(fetch_commit.id(), None)
         .map_err(|e| format!("Pull fast-forward error: {}", e))?;
-    repo.checkout_tree(&target_obj, Some(git2::build::CheckoutBuilder::new().safe()))
-        .map_err(|e| format!("Pull checkout error: {}", e))?;
+    repo.checkout_tree(
+        &target_obj,
+        Some(git2::build::CheckoutBuilder::new().safe()),
+    )
+    .map_err(|e| format!("Pull checkout error: {}", e))?;
 
     let mut branch_ref = repo
         .find_reference(&refname)

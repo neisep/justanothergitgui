@@ -32,8 +32,19 @@ impl AppLogger {
             return "No logs written yet.".into();
         }
 
-        fs::read_to_string(&self.path)
-            .unwrap_or_else(|error| format!("Could not read log file: {}", error))
+        match fs::read_to_string(&self.path) {
+            Ok(contents) if contents.trim().is_empty() => "No logs written yet.".into(),
+            Ok(contents) => contents,
+            Err(error) => format!("Could not read log file: {}", error),
+        }
+    }
+
+    pub fn clear_entries(&self) -> Result<(), String> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+
+        fs::remove_file(&self.path).map_err(|error| format!("Could not clear log file: {}", error))
     }
 
     pub fn log_error(&self, context: &str, detail: &str) {
@@ -201,4 +212,47 @@ fn log_dir() -> PathBuf {
     }
 
     env::temp_dir().join("justanothergitgui")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppLogger;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn clear_entries_removes_log_file() {
+        let path = unique_test_path("clear");
+        let logger = AppLogger { path: path.clone() };
+
+        fs::write(&path, "test log entry\n").unwrap();
+        assert!(logger.has_entries());
+
+        logger.clear_entries().unwrap();
+
+        assert!(!path.exists());
+        assert!(!logger.has_entries());
+        assert_eq!(logger.read_entries(), "No logs written yet.");
+    }
+
+    #[test]
+    fn read_entries_treats_empty_file_as_no_logs() {
+        let path = unique_test_path("empty");
+        let logger = AppLogger { path: path.clone() };
+
+        fs::write(&path, "").unwrap();
+
+        assert_eq!(logger.read_entries(), "No logs written yet.");
+
+        let _ = fs::remove_file(path);
+    }
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("justanothergitgui-{name}-{nanos}.log"))
+    }
 }

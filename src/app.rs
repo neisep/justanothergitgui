@@ -241,13 +241,23 @@ impl GitGuiApp {
         let mut keep_open = self.show_log_viewer;
         let log_path = self.logger.path().display().to_string();
         let mut contents = self.logger.read_entries();
+        let mut clear_result = None;
 
         egui::Window::new("Application Logs")
             .id(egui::Id::new("app_logs_dialog"))
             .default_size(egui::vec2(720.0, 420.0))
             .open(&mut keep_open)
             .show(ctx, |ui| {
-                ui.label(format!("Log file: {}", log_path));
+                ui.horizontal(|ui| {
+                    ui.label(format!("Log file: {}", log_path));
+                    if ui.button("Clear").clicked() {
+                        let result = self.logger.clear_entries();
+                        if result.is_ok() {
+                            contents = self.logger.read_entries();
+                        }
+                        clear_result = Some(result);
+                    }
+                });
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add(
@@ -259,6 +269,15 @@ impl GitGuiApp {
                     );
                 });
             });
+
+        if let Some(result) = clear_result {
+            match result {
+                Ok(()) => self.set_status_message("Logs cleared.".into()),
+                Err(error) => {
+                    self.set_status_message(status_message_for_error("Clear logs", &error))
+                }
+            }
+        }
 
         self.show_log_viewer = keep_open;
     }
@@ -545,13 +564,11 @@ impl GitGuiApp {
                         .stale_branches
                         .retain(|branch| !deleted.contains(&branch.name));
                     if failures.is_empty() {
-                        tab.state.status_msg =
-                            format!("Deleted {} branch(es)", deleted.len());
+                        tab.state.status_msg = format!("Deleted {} branch(es)", deleted.len());
                         tab.state.show_cleanup_branches_dialog = false;
                     } else {
                         let detail = failures.join("; ");
-                        tab.state.status_msg =
-                            status_message_for_error("Delete branch", &detail);
+                        tab.state.status_msg = status_message_for_error("Delete branch", &detail);
                         log_entry = Some(("Delete branch", detail));
                     }
                     refresh_error = refresh_status(&mut tab.state, &tab.repo);
@@ -761,8 +778,7 @@ impl GitGuiApp {
                         refresh_indices.push(index);
                     }
                     TaskResult::DiscardAndReset(Err(msg)) => {
-                        tab.state.status_msg =
-                            status_message_for_error("Discard & reset", &msg);
+                        tab.state.status_msg = status_message_for_error("Discard & reset", &msg);
                         tab_logs.push(("Discard & reset".into(), msg));
                         refresh_indices.push(index);
                     }
