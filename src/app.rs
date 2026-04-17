@@ -112,7 +112,29 @@ impl GitGuiApp {
             }
         };
         let github_auth_session = match git_ops::load_github_auth_session() {
-            Ok(Some(session)) => Some(session),
+            Ok(Some(session)) => match git_ops::verify_github_auth_session(&session) {
+                Ok(git_ops::GithubAuthCheck::Valid) => Some(session),
+                Ok(git_ops::GithubAuthCheck::Revoked) => {
+                    if let Err(clear_err) = git_ops::clear_github_auth_session() {
+                        logger.log_error("GitHub sign-in", &clear_err);
+                    }
+                    logger.log_error(
+                        "GitHub sign-in",
+                        "Saved GitHub token was revoked or expired; please sign in again.",
+                    );
+                    if startup_status.is_none() {
+                        startup_status = Some(
+                            "GitHub sign-in expired. Use 'Sign in to GitHub...' to reconnect."
+                                .into(),
+                        );
+                    }
+                    None
+                }
+                Err(check_err) => {
+                    logger.log_error("GitHub sign-in", &check_err);
+                    Some(session)
+                }
+            },
             Ok(None) => None,
             Err(msg) => {
                 logger.log_error("GitHub sign-in", &msg);
