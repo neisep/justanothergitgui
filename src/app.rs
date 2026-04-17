@@ -1232,10 +1232,16 @@ impl GitGuiApp {
                         ui.close();
                     }
 
+                    ui.separator();
+                    ui.add_space(4.0);
+
                     if ui
                         .add_enabled(
                             can_discard && !repo_worker_busy,
-                            egui::Button::new("Discard..."),
+                            egui::Button::new(
+                                egui::RichText::new("Discard...")
+                                    .color(egui::Color32::from_rgb(200, 80, 80)),
+                            ),
                         )
                         .on_hover_text(discard_tooltip)
                         .clicked()
@@ -1244,6 +1250,7 @@ impl GitGuiApp {
                         ui.close();
                     }
 
+                    ui.add_space(4.0);
                     ui.separator();
 
                     if ui.button("Settings...").clicked() {
