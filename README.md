@@ -22,7 +22,7 @@ It focuses on the everyday local workflow first—review changes, stage files, c
 
 
 ## 📸 Screenshot
-![vlc2chromecast Screenshot](software.png)
+![Justanothergitgui](software.png)
 
 ---
 
