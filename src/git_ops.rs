@@ -1210,8 +1210,9 @@ fn pull_with_git2(
     let mut fetch_options = git2::FetchOptions::new();
     fetch_options.remote_callbacks(remote_callbacks(&repo, auth)?);
     fetch_options.prune(git2::FetchPrune::On);
+    let refspecs: [&str; 0] = [];
     remote
-        .fetch(&[branch_name], Some(&mut fetch_options), None)
+        .fetch(&refspecs, Some(&mut fetch_options), None)
         .map_err(|e| format!("Pull fetch error: {}", e))?;
 
     let fetch_ref_name = format!("refs/remotes/origin/{}", branch_name);
