@@ -1443,6 +1443,13 @@ fn fast_forward_branch(
     fetch_commit: &git2::AnnotatedCommit<'_>,
 ) -> Result<(), String> {
     let refname = format!("refs/heads/{}", branch_name);
+
+    let target_obj = repo
+        .find_object(fetch_commit.id(), None)
+        .map_err(|e| format!("Pull fast-forward error: {}", e))?;
+    repo.checkout_tree(&target_obj, Some(git2::build::CheckoutBuilder::new().safe()))
+        .map_err(|e| format!("Pull checkout error: {}", e))?;
+
     let mut branch_ref = repo
         .find_reference(&refname)
         .map_err(|e| format!("Pull fast-forward error: {}", e))?;
@@ -1451,8 +1458,6 @@ fn fast_forward_branch(
         .map_err(|e| format!("Pull fast-forward error: {}", e))?;
     repo.set_head(&refname)
         .map_err(|e| format!("Pull head update error: {}", e))?;
-    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().safe()))
-        .map_err(|e| format!("Pull checkout error: {}", e))?;
     Ok(())
 }
 
