@@ -628,6 +628,14 @@ impl GitGuiApp {
             {
                 self.open_publish_repo_dialog(None);
             }
+            if let Some(session) = &self.github_auth_session {
+                ui.weak(format!("Signed in to GitHub as @{}", session.login));
+            } else if ui
+                .add_enabled(!worker_busy, egui::Button::new("Sign in to GitHub..."))
+                .clicked()
+            {
+                self.begin_github_sign_in("Requesting GitHub sign-in code...");
+            }
             if let Some(busy) = &welcome_busy {
                 ui::show_inline_busy(ui, &busy.label);
             }

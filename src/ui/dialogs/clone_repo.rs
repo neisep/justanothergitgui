@@ -9,6 +9,7 @@ use crate::ui;
 pub struct CloneRepoDialogOutput {
     pub keep_open: bool,
     pub choose_folder_clicked: bool,
+    pub sign_in_clicked: bool,
     pub clone_clicked: bool,
 }
 
@@ -23,6 +24,7 @@ pub fn show(
 ) -> CloneRepoDialogOutput {
     let mut keep_open = dialog.show;
     let mut choose_folder_clicked = false;
+    let mut sign_in_clicked = false;
     let mut clone_clicked = false;
     let mut cancel_clicked = false;
 
@@ -129,9 +131,17 @@ pub fn show(
                 }
             } else {
                 ui.add_space(8.0);
-                ui.weak(
-                    "Tip: sign in to GitHub from the welcome screen to browse your repositories here.",
-                );
+                ui.weak("Sign in to GitHub to browse your repositories here.");
+                ui.add_space(6.0);
+                if ui
+                    .add_enabled(
+                        !worker_dispatch_busy,
+                        egui::Button::new("Sign in to GitHub..."),
+                    )
+                    .clicked()
+                {
+                    sign_in_clicked = true;
+                }
             }
 
             ui.add_space(12.0);
@@ -169,6 +179,7 @@ pub fn show(
     CloneRepoDialogOutput {
         keep_open,
         choose_folder_clicked,
+        sign_in_clicked,
         clone_clicked,
     }
 }
