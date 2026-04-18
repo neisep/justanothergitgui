@@ -14,11 +14,16 @@ pub fn show(
     discard_busy: bool,
     busy_label: Option<&str>,
 ) -> DiscardDialogOutput {
-    let mut keep_open = state.show_discard_dialog;
+    let mut keep_open = state.dialogs.discard.show_discard_dialog;
     let mut close_requested = false;
     let mut confirm_requested = false;
-    let branch = state.branch.clone();
-    let preview = state.discard_preview.clone().unwrap_or_default();
+    let branch = state.repo.branch.clone();
+    let preview = state
+        .dialogs
+        .discard
+        .discard_preview
+        .clone()
+        .unwrap_or_default();
 
     egui::Window::new("Discard local changes")
         .id(egui::Id::new("discard_dialog"))
@@ -45,7 +50,7 @@ pub fn show(
                     "• {} local commit(s) not on origin",
                     preview.local_only_commits
                 ));
-                if state.discard_clean_untracked {
+                if state.dialogs.discard.discard_clean_untracked {
                     ui.label(format!(
                         "• {} untracked file(s)/dir(s)",
                         preview.untracked_files
@@ -61,7 +66,7 @@ pub fn show(
             ui.add_space(10.0);
             ui.add_enabled_ui(!discard_busy, |ui| {
                 ui.checkbox(
-                    &mut state.discard_clean_untracked,
+                    &mut state.dialogs.discard.discard_clean_untracked,
                     "Also delete untracked files",
                 );
             });

@@ -17,7 +17,7 @@ pub fn show_create_dialog(
     state: &mut AppState,
     validation_error: Option<&str>,
 ) -> CreateBranchDialogOutput {
-    let mut keep_open = state.show_create_branch_dialog;
+    let mut keep_open = state.dialogs.branch.show_create_branch_dialog;
     let mut close_requested = false;
     let mut submit_branch = None;
 
@@ -30,13 +30,13 @@ pub fn show_create_dialog(
         .show(ctx, |ui| {
             ui.label("Branch name");
             let response = ui.add(
-                egui::TextEdit::singleline(&mut state.new_branch_name)
+                egui::TextEdit::singleline(&mut state.dialogs.branch.new_branch_name)
                     .desired_width(260.0)
                     .hint_text("feature/my-branch"),
             );
-            if state.focus_new_branch_name_requested {
+            if state.dialogs.branch.focus_new_branch_name_requested {
                 response.request_focus();
-                state.focus_new_branch_name_requested = false;
+                state.dialogs.branch.focus_new_branch_name_requested = false;
             }
 
             if let Some(error) = validation_error {
@@ -44,13 +44,14 @@ pub fn show_create_dialog(
                 ui.colored_label(egui::Color32::from_rgb(220, 120, 120), error);
             }
 
-            let can_create = !state.new_branch_name.trim().is_empty() && validation_error.is_none();
+            let can_create = !state.dialogs.branch.new_branch_name.trim().is_empty()
+                && validation_error.is_none();
 
             if response.lost_focus()
                 && ui.input(|input| input.key_pressed(egui::Key::Enter))
                 && can_create
             {
-                submit_branch = Some(state.new_branch_name.trim().to_string());
+                submit_branch = Some(state.dialogs.branch.new_branch_name.trim().to_string());
             }
 
             ui.add_space(8.0);
@@ -60,7 +61,8 @@ pub fn show_create_dialog(
                         .add_enabled(can_create, egui::Button::new("Create"))
                         .clicked()
                     {
-                        submit_branch = Some(state.new_branch_name.trim().to_string());
+                        submit_branch =
+                            Some(state.dialogs.branch.new_branch_name.trim().to_string());
                     }
 
                     if ui.button("Cancel").clicked() {
@@ -84,11 +86,16 @@ pub fn show_confirm_dialog(
     ctx: &egui::Context,
     state: &mut AppState,
 ) -> ConfirmCreateBranchDialogOutput {
-    let mut keep_open = state.show_create_branch_confirm;
+    let mut keep_open = state.dialogs.branch.show_create_branch_confirm;
     let mut close_requested = false;
     let mut confirm_requested = false;
-    let current_branch = state.branch.clone();
-    let preview = state.create_branch_preview.clone().unwrap_or_default();
+    let current_branch = state.repo.branch.clone();
+    let preview = state
+        .dialogs
+        .branch
+        .create_branch_preview
+        .clone()
+        .unwrap_or_default();
 
     egui::Window::new("Create branch with uncommitted changes?")
         .id(egui::Id::new("create_branch_confirm_dialog"))

@@ -1,148 +1,192 @@
 use super::*;
-use crate::state::{CenterView, SelectedFile};
+use crate::state::{
+    BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
+    DiscardDialogState, InspectorState, RepoState, SelectedFile, TagDialogState, UiState,
+    WorktreeState,
+};
 
-pub(super) fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<String> {
+pub(super) fn refresh_status(
+    repo_state: &mut RepoState,
+    worktree_state: &mut WorktreeState,
+    commit_state: &mut CommitState,
+    inspector_state: &mut InspectorState,
+    ui_state: &mut UiState,
+    repo: &Repository,
+) -> Option<String> {
     let mut errors: Vec<String> = Vec::new();
-    state.has_origin_remote = git_ops::has_origin_remote(repo);
-    state.has_github_origin = git_ops::has_github_origin(repo);
-    state.has_github_https_origin = git_ops::has_github_https_origin(repo);
-    match git_ops::get_outgoing_commit_count(repo) {
-        Ok(count) => state.outgoing_commit_count = count,
+    repo_state.has_origin_remote = AppRepoRead::has_origin_remote(repo);
+    repo_state.has_github_origin = AppRepoRead::has_github_origin(repo);
+    repo_state.has_github_https_origin = AppRepoRead::has_github_https_origin(repo);
+    match AppRepoRead::outgoing_commit_count(repo) {
+        Ok(count) => repo_state.outgoing_commit_count = count,
         Err(error) => {
             errors.push(format!("outgoing commit count: {error}"));
-            state.outgoing_commit_count = 0;
+            repo_state.outgoing_commit_count = 0;
         }
     }
-    match git_ops::get_file_statuses(repo) {
+    match AppRepoRead::file_statuses(repo) {
         Ok((unstaged, staged)) => {
-            state.unstaged = unstaged;
-            state.staged = staged;
-            let changed_paths = if state.staged.is_empty() {
-                state
+            worktree_state.unstaged = unstaged;
+            worktree_state.staged = staged;
+            let changed_paths = if worktree_state.staged.is_empty() {
+                worktree_state
                     .unstaged
                     .iter()
                     .map(|file| file.path.as_str())
                     .collect::<Vec<_>>()
             } else {
-                state
+                worktree_state
                     .staged
                     .iter()
                     .map(|file| file.path.as_str())
                     .collect::<Vec<_>>()
             };
-            state.inferred_commit_scopes =
-                commit_rules::infer_commit_scopes(state.repo_path.as_deref(), changed_paths);
+            commit_state.inferred_commit_scopes =
+                commit_rules::infer_commit_scopes(repo_state.path.as_deref(), changed_paths);
         }
         Err(error) => {
             errors.push(format!("file statuses: {error}"));
-            state.inferred_commit_scopes.clear();
+            commit_state.inferred_commit_scopes.clear();
         }
     }
-    match git_ops::get_current_branch(repo) {
-        Ok(branch) => state.branch = branch,
+    match AppRepoRead::current_branch(repo) {
+        Ok(branch) => repo_state.branch = branch,
         Err(error) => {
             errors.push(format!("current branch: {error}"));
-            state.branch = String::new();
+            repo_state.branch = String::new();
         }
     }
-    match git_ops::get_branches(repo) {
-        Ok(branches) => state.branches = branches,
+    match AppRepoRead::branches(repo) {
+        Ok(branches) => repo_state.branches = branches,
         Err(error) => {
             errors.push(format!("branches: {error}"));
-            state.branches = Vec::new();
+            repo_state.branches = Vec::new();
         }
     }
-    match git_ops::get_commit_history(repo, 200) {
-        Ok(history) => state.commit_history = history,
+    match AppRepoRead::commit_history(repo, 200) {
+        Ok(history) => repo_state.commit_history = history,
         Err(error) => {
             errors.push(format!("commit history: {error}"));
-            state.commit_history = Vec::new();
+            repo_state.commit_history = Vec::new();
         }
     }
-    sync_pull_request_prompt(state);
-    sync_selected_file(state, repo);
+    sync_pull_request_prompt(repo_state);
+    sync_selected_file(worktree_state, inspector_state, repo);
     if errors.is_empty() {
         None
     } else {
         let detail = errors.join("; ");
-        state.status_msg = status_message_for_error("Refresh", &detail);
+        ui_state.status_msg = status_message_for_error("Refresh", &detail);
         Some(detail)
     }
 }
 
-pub(super) fn reset_repo_view_state(state: &mut AppState) {
-    state.has_origin_remote = false;
-    state.has_github_origin = false;
-    state.has_github_https_origin = false;
-    state.branch.clear();
-    state.outgoing_commit_count = 0;
-    state.branches.clear();
-    state.new_branch_name.clear();
-    state.focus_new_branch_name_requested = false;
-    state.show_create_branch_dialog = false;
-    state.show_create_branch_confirm = false;
-    state.create_branch_preview = None;
-    state.pending_new_branch_name = None;
-    state.new_tag_name.clear();
-    state.focus_new_tag_name_requested = false;
-    state.show_create_tag_dialog = false;
-    state.stale_branches.clear();
-    state.show_cleanup_branches_dialog = false;
-    state.show_discard_dialog = false;
-    state.discard_preview = None;
-    state.discard_clean_untracked = false;
-    state.unstaged.clear();
-    state.staged.clear();
-    state.inferred_commit_scopes.clear();
-    state.commit_summary.clear();
-    state.commit_body.clear();
-    state.focus_commit_summary_requested = false;
-    state.selected_file = None;
-    state.diff_content.clear();
-    state.actions.clear();
-    state.center_view = CenterView::Diff;
-    state.commit_history.clear();
-    state.pull_request_prompt = None;
-    state.conflict_data = None;
-    state.dragging = None;
-    state.busy = None;
+pub(super) fn reset_repo_state(repo_state: &mut RepoState) {
+    repo_state.has_origin_remote = false;
+    repo_state.has_github_origin = false;
+    repo_state.has_github_https_origin = false;
+    repo_state.branch.clear();
+    repo_state.outgoing_commit_count = 0;
+    repo_state.branches.clear();
+    repo_state.commit_history.clear();
+    repo_state.pull_request_prompt = None;
+}
+
+pub(super) fn reset_worktree_state(worktree_state: &mut WorktreeState) {
+    worktree_state.unstaged.clear();
+    worktree_state.staged.clear();
+}
+
+pub(super) fn reset_commit_state(commit_state: &mut CommitState) {
+    commit_state.inferred_commit_scopes.clear();
+    commit_state.commit_summary.clear();
+    commit_state.commit_body.clear();
+    commit_state.focus_commit_summary_requested = false;
+}
+
+pub(super) fn reset_inspector_state(inspector_state: &mut InspectorState) {
+    inspector_state.selected_file = None;
+    inspector_state.diff_content.clear();
+    inspector_state.diff_wrap = false;
+    inspector_state.center_view = CenterView::Diff;
+    inspector_state.conflict_data = None;
+    inspector_state.dragging = None;
+}
+
+pub(super) fn reset_dialog_state(dialog_state: &mut DialogState) {
+    reset_branch_dialog_state(&mut dialog_state.branch);
+    reset_tag_dialog_state(&mut dialog_state.tag);
+    reset_cleanup_dialog_state(&mut dialog_state.cleanup);
+    reset_discard_dialog_state(&mut dialog_state.discard);
+}
+
+pub(super) fn reset_ui_state(ui_state: &mut UiState) {
+    ui_state.actions.clear();
+    ui_state.busy = None;
+}
+
+fn reset_branch_dialog_state(dialog_state: &mut BranchDialogState) {
+    dialog_state.new_branch_name.clear();
+    dialog_state.focus_new_branch_name_requested = false;
+    dialog_state.show_create_branch_dialog = false;
+    dialog_state.show_create_branch_confirm = false;
+    dialog_state.create_branch_preview = None;
+    dialog_state.pending_new_branch_name = None;
+}
+
+fn reset_tag_dialog_state(dialog_state: &mut TagDialogState) {
+    dialog_state.new_tag_name.clear();
+    dialog_state.focus_new_tag_name_requested = false;
+    dialog_state.show_create_tag_dialog = false;
+}
+
+fn reset_cleanup_dialog_state(dialog_state: &mut CleanupBranchesDialogState) {
+    dialog_state.stale_branches.clear();
+    dialog_state.show_cleanup_branches_dialog = false;
+}
+
+fn reset_discard_dialog_state(dialog_state: &mut DiscardDialogState) {
+    dialog_state.show_discard_dialog = false;
+    dialog_state.discard_preview = None;
+    dialog_state.discard_clean_untracked = false;
 }
 
 pub(super) fn load_selected_file(
-    state: &mut AppState,
+    worktree_state: &WorktreeState,
+    inspector_state: &mut InspectorState,
     repo: &Repository,
     path: String,
     staged: bool,
 ) {
-    let is_conflicted = state
+    let is_conflicted = worktree_state
         .unstaged
         .iter()
         .any(|file| file.path == path && file.is_conflicted);
 
     if is_conflicted {
-        state.selected_file = Some(SelectedFile {
+        inspector_state.selected_file = Some(SelectedFile {
             path: path.clone(),
             staged: false,
         });
-        match git_ops::read_conflict_file(repo, &path) {
+        match AppRepoRead::read_conflict_file(repo, &path) {
             Ok(conflict_data) => {
-                state.conflict_data = Some(conflict_data);
-                state.diff_content.clear();
+                inspector_state.conflict_data = Some(conflict_data);
+                inspector_state.diff_content.clear();
             }
             Err(error) => {
-                state.conflict_data = None;
-                state.diff_content = format!("Error loading conflict data: {}", error);
+                inspector_state.conflict_data = None;
+                inspector_state.diff_content = format!("Error loading conflict data: {}", error);
             }
         }
         return;
     }
 
-    state.conflict_data = None;
-    match git_ops::get_file_diff(repo, &path, staged) {
-        Ok(diff) => state.diff_content = diff,
-        Err(error) => state.diff_content = format!("Error loading diff: {}", error),
+    inspector_state.conflict_data = None;
+    match AppRepoRead::file_diff(repo, &path, staged) {
+        Ok(diff) => inspector_state.diff_content = diff,
+        Err(error) => inspector_state.diff_content = format!("Error loading diff: {}", error),
     }
-    state.selected_file = Some(SelectedFile { path, staged });
+    inspector_state.selected_file = Some(SelectedFile { path, staged });
 }
 
 pub(super) fn repo_root_path(repo: &Repository) -> PathBuf {
@@ -177,31 +221,41 @@ pub(super) fn status_message_for_worker_dispatch(context: &str) -> String {
     format!("{context} could not start. Please try again.")
 }
 
-fn sync_pull_request_prompt(state: &mut AppState) {
+fn sync_pull_request_prompt(repo_state: &mut RepoState) {
     let keep_prompt = matches!(
-        state.pull_request_prompt.as_ref(),
+        repo_state.pull_request_prompt.as_ref(),
         Some(PullRequestPrompt::Open { branch, .. } | PullRequestPrompt::Create { branch, .. })
-            if branch == &state.branch && state.has_origin_remote
+            if branch == &repo_state.branch && repo_state.has_origin_remote
     );
 
     if !keep_prompt {
-        state.pull_request_prompt = None;
+        repo_state.pull_request_prompt = None;
     }
 }
 
-fn sync_selected_file(state: &mut AppState, repo: &Repository) {
-    let Some(selected) = state.selected_file.clone() else {
-        state.conflict_data = None;
+fn sync_selected_file(
+    worktree_state: &WorktreeState,
+    inspector_state: &mut InspectorState,
+    repo: &Repository,
+) {
+    let Some(selected) = inspector_state.selected_file.clone() else {
+        inspector_state.conflict_data = None;
         return;
     };
 
-    let in_unstaged = state.unstaged.iter().any(|file| file.path == selected.path);
-    let in_staged = state.staged.iter().any(|file| file.path == selected.path);
+    let in_unstaged = worktree_state
+        .unstaged
+        .iter()
+        .any(|file| file.path == selected.path);
+    let in_staged = worktree_state
+        .staged
+        .iter()
+        .any(|file| file.path == selected.path);
 
     if !in_unstaged && !in_staged {
-        state.selected_file = None;
-        state.diff_content.clear();
-        state.conflict_data = None;
+        inspector_state.selected_file = None;
+        inspector_state.diff_content.clear();
+        inspector_state.conflict_data = None;
         return;
     }
 
@@ -213,5 +267,5 @@ fn sync_selected_file(state: &mut AppState, repo: &Repository) {
         in_staged && !in_unstaged
     };
 
-    load_selected_file(state, repo, selected.path, staged);
+    load_selected_file(worktree_state, inspector_state, repo, selected.path, staged);
 }

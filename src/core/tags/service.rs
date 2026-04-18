@@ -1,14 +1,16 @@
 use std::path::Path;
 
-use crate::core::ports::{GitHubPort, GitPort, GitRemoteAuth};
+use crate::core::ports::{
+    GitBranchReadPort, GitHubRemoteInfoPort, GitRemoteAuth, GitRemoteInfoPort, GitTagPort,
+};
 use crate::shared::github::GithubAuthSession;
 
 pub fn create_tag(
     repo_path: &Path,
     tag_name: &str,
     auth: Option<&GithubAuthSession>,
-    git: &impl GitPort,
-    github: &impl GitHubPort,
+    git: &(impl GitBranchReadPort + GitTagPort + GitRemoteInfoPort),
+    github: &impl GitHubRemoteInfoPort,
 ) -> Result<String, String> {
     let tag_name = tag_name.trim();
     if tag_name.is_empty() {
@@ -44,8 +46,8 @@ fn push_tag(
     repo_path: &Path,
     tag_name: &str,
     auth: Option<&GithubAuthSession>,
-    git: &impl GitPort,
-    github: &impl GitHubPort,
+    git: &impl GitTagPort,
+    github: &impl GitHubRemoteInfoPort,
 ) -> Result<(), String> {
     if github.is_github_https_origin(repo_path) {
         let auth = auth.ok_or_else(|| {

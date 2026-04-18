@@ -54,7 +54,7 @@ impl HandleWelcomeTaskResult for GithubAuthResult {
 
         match self.0 {
             Ok(session) => {
-                let persistence_result = git_ops::save_github_auth_session(&session);
+                let persistence_result = AppGitHubAuth::save_session(&session);
                 let message = match &persistence_result {
                     Ok(()) => format!("GitHub sign-in complete for @{}", session.login),
                     Err(error) => {
@@ -163,7 +163,7 @@ impl HandleWelcomeTaskResult for CloneRepoResult {
 
 impl HandleRepoTaskResult for PushResult {
     fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
-        ctx.tab.state.busy = None;
+        ctx.tab.state.ui.busy = None;
 
         match self.0 {
             Ok(result) => {
@@ -176,12 +176,12 @@ impl HandleRepoTaskResult for PushResult {
                     }
                     None => String::new(),
                 };
-                ctx.tab.state.pull_request_prompt = result.pull_request_prompt;
-                ctx.tab.state.status_msg = format!("Push: {}{}", result.message, prompt_message);
+                ctx.tab.state.repo.pull_request_prompt = result.pull_request_prompt;
+                ctx.tab.state.ui.status_msg = format!("Push: {}{}", result.message, prompt_message);
                 ctx.request_refresh();
             }
             Err(msg) => {
-                ctx.tab.state.status_msg = helpers::status_message_for_error("Push", &msg);
+                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Push", &msg);
                 ctx.log_error("Push", &msg);
             }
         }
@@ -190,15 +190,15 @@ impl HandleRepoTaskResult for PushResult {
 
 impl HandleRepoTaskResult for PullResult {
     fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
-        ctx.tab.state.busy = None;
+        ctx.tab.state.ui.busy = None;
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.status_msg = format!("Pull: {}", msg);
+                ctx.tab.state.ui.status_msg = format!("Pull: {}", msg);
                 ctx.request_refresh();
             }
             Err(msg) => {
-                ctx.tab.state.status_msg = helpers::status_message_for_error("Pull", &msg);
+                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Pull", &msg);
                 ctx.log_error("Pull", &msg);
             }
         }
@@ -207,17 +207,17 @@ impl HandleRepoTaskResult for PullResult {
 
 impl HandleRepoTaskResult for CreateTagResult {
     fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
-        ctx.tab.state.busy = None;
+        ctx.tab.state.ui.busy = None;
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.status_msg = msg;
-                ctx.tab.state.new_tag_name.clear();
-                ctx.tab.state.focus_new_tag_name_requested = false;
-                ctx.tab.state.show_create_tag_dialog = false;
+                ctx.tab.state.ui.status_msg = msg;
+                ctx.tab.state.dialogs.tag.new_tag_name.clear();
+                ctx.tab.state.dialogs.tag.focus_new_tag_name_requested = false;
+                ctx.tab.state.dialogs.tag.show_create_tag_dialog = false;
             }
             Err(msg) => {
-                ctx.tab.state.status_msg = helpers::status_message_for_error("Create tag", &msg);
+                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Create tag", &msg);
                 ctx.log_error("Create tag", &msg);
             }
         }
@@ -228,14 +228,14 @@ impl HandleRepoTaskResult for CreateTagResult {
 
 impl HandleRepoTaskResult for OpenPullRequestResult {
     fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
-        ctx.tab.state.busy = None;
+        ctx.tab.state.ui.busy = None;
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.status_msg = msg;
+                ctx.tab.state.ui.status_msg = msg;
             }
             Err(msg) => {
-                ctx.tab.state.status_msg = helpers::status_message_for_error("Open PR", &msg);
+                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Open PR", &msg);
                 ctx.log_error("Open PR", &msg);
             }
         }
@@ -244,14 +244,14 @@ impl HandleRepoTaskResult for OpenPullRequestResult {
 
 impl HandleRepoTaskResult for CreatePullRequestResult {
     fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
-        ctx.tab.state.busy = None;
+        ctx.tab.state.ui.busy = None;
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.status_msg = msg;
+                ctx.tab.state.ui.status_msg = msg;
             }
             Err(msg) => {
-                ctx.tab.state.status_msg = helpers::status_message_for_error("Create PR", &msg);
+                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Create PR", &msg);
                 ctx.log_error("Create PR", &msg);
             }
         }
@@ -260,17 +260,17 @@ impl HandleRepoTaskResult for CreatePullRequestResult {
 
 impl HandleRepoTaskResult for DiscardAndResetResult {
     fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
-        ctx.tab.state.busy = None;
+        ctx.tab.state.ui.busy = None;
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.status_msg = format!("Discard: {}", msg);
-                ctx.tab.state.show_discard_dialog = false;
-                ctx.tab.state.discard_preview = None;
-                ctx.tab.state.discard_clean_untracked = false;
+                ctx.tab.state.ui.status_msg = format!("Discard: {}", msg);
+                ctx.tab.state.dialogs.discard.show_discard_dialog = false;
+                ctx.tab.state.dialogs.discard.discard_preview = None;
+                ctx.tab.state.dialogs.discard.discard_clean_untracked = false;
             }
             Err(msg) => {
-                ctx.tab.state.status_msg =
+                ctx.tab.state.ui.status_msg =
                     helpers::status_message_for_error("Discard & reset", &msg);
                 ctx.log_error("Discard & reset", &msg);
             }
@@ -316,20 +316,32 @@ impl GitGuiApp {
 }
 
 fn refresh_repo_tab(tab: &mut RepoTab, logger: &mut AppLogger) {
-    let Some(path) = tab.state.repo_path.clone() else {
+    let Some(path) = tab.state.repo.path.clone() else {
         return;
     };
 
-    match git_ops::open_repo(&path) {
+    match AppRepoRead::open(&path) {
         Ok(repo) => {
-            if let Some(detail) = helpers::refresh_status(&mut tab.state, &repo) {
+            let refresh_result = {
+                let (repo_state, worktree_state, commit_state, inspector_state, ui_state) =
+                    tab.state.refresh_parts_mut();
+                helpers::refresh_status(
+                    repo_state,
+                    worktree_state,
+                    commit_state,
+                    inspector_state,
+                    ui_state,
+                    &repo,
+                )
+            };
+            if let Some(detail) = refresh_result {
                 logger.log_error("Refresh", &detail);
             }
             tab.repo = repo;
         }
         Err(error) => {
             let detail = error.to_string();
-            tab.state.status_msg = helpers::status_message_for_error("Refresh", &detail);
+            tab.state.ui.status_msg = helpers::status_message_for_error("Refresh", &detail);
             logger.log_error("Refresh", &detail);
         }
     }

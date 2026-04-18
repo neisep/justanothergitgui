@@ -54,87 +54,124 @@ impl BusyState {
     }
 }
 
+#[derive(Default)]
 pub struct AppState {
-    pub repo_path: Option<PathBuf>,
+    pub repo: RepoState,
+    pub worktree: WorktreeState,
+    pub inspector: InspectorState,
+    pub commit: CommitState,
+    pub dialogs: DialogState,
+    pub ui: UiState,
+}
+
+impl AppState {
+    pub fn refresh_parts_mut(
+        &mut self,
+    ) -> (
+        &mut RepoState,
+        &mut WorktreeState,
+        &mut CommitState,
+        &mut InspectorState,
+        &mut UiState,
+    ) {
+        let Self {
+            repo,
+            worktree,
+            commit,
+            inspector,
+            ui,
+            ..
+        } = self;
+        (repo, worktree, commit, inspector, ui)
+    }
+}
+
+#[derive(Default)]
+pub struct RepoState {
+    pub path: Option<PathBuf>,
     pub has_origin_remote: bool,
     pub has_github_origin: bool,
     pub has_github_https_origin: bool,
     pub branch: String,
     pub outgoing_commit_count: usize,
     pub branches: Vec<String>,
+    pub commit_history: Vec<CommitEntry>,
+    pub pull_request_prompt: Option<PullRequestPrompt>,
+}
+
+#[derive(Default)]
+pub struct WorktreeState {
+    pub unstaged: Vec<FileEntry>,
+    pub staged: Vec<FileEntry>,
+}
+
+#[derive(Default)]
+pub struct InspectorState {
+    pub selected_file: Option<SelectedFile>,
+    pub diff_content: String,
+    pub diff_wrap: bool,
+    pub center_view: CenterView,
+    pub conflict_data: Option<ConflictData>,
+    pub dragging: Option<DragFile>,
+}
+
+#[derive(Default)]
+pub struct CommitState {
+    pub inferred_commit_scopes: Vec<String>,
+    pub commit_summary: String,
+    pub commit_body: String,
+    pub focus_commit_summary_requested: bool,
+}
+
+#[derive(Default)]
+pub struct DialogState {
+    pub branch: BranchDialogState,
+    pub tag: TagDialogState,
+    pub cleanup: CleanupBranchesDialogState,
+    pub discard: DiscardDialogState,
+}
+
+#[derive(Default)]
+pub struct BranchDialogState {
     pub new_branch_name: String,
     pub focus_new_branch_name_requested: bool,
     pub show_create_branch_dialog: bool,
     pub show_create_branch_confirm: bool,
     pub create_branch_preview: Option<CreateBranchPreview>,
     pub pending_new_branch_name: Option<String>,
+}
+
+#[derive(Default)]
+pub struct TagDialogState {
     pub new_tag_name: String,
     pub focus_new_tag_name_requested: bool,
     pub show_create_tag_dialog: bool,
+}
+
+#[derive(Default)]
+pub struct CleanupBranchesDialogState {
     pub stale_branches: Vec<StaleBranch>,
     pub show_cleanup_branches_dialog: bool,
+}
+
+#[derive(Default)]
+pub struct DiscardDialogState {
     pub show_discard_dialog: bool,
     pub discard_preview: Option<DiscardPreview>,
     pub discard_clean_untracked: bool,
-    pub unstaged: Vec<FileEntry>,
-    pub staged: Vec<FileEntry>,
-    pub inferred_commit_scopes: Vec<String>,
-    pub commit_summary: String,
-    pub commit_body: String,
-    pub focus_commit_summary_requested: bool,
+}
+
+pub struct UiState {
     pub status_msg: String,
-    pub selected_file: Option<SelectedFile>,
-    pub diff_content: String,
-    pub diff_wrap: bool,
     pub actions: Vec<UiAction>,
-    pub center_view: CenterView,
-    pub commit_history: Vec<CommitEntry>,
-    pub pull_request_prompt: Option<PullRequestPrompt>,
-    pub conflict_data: Option<ConflictData>,
-    pub dragging: Option<DragFile>,
     pub busy: Option<BusyState>,
 }
 
-impl Default for AppState {
+impl Default for UiState {
     fn default() -> Self {
         Self {
-            repo_path: None,
-            has_origin_remote: false,
-            has_github_origin: false,
-            has_github_https_origin: false,
-            branch: String::new(),
-            outgoing_commit_count: 0,
-            branches: Vec::new(),
-            new_branch_name: String::new(),
-            focus_new_branch_name_requested: false,
-            show_create_branch_dialog: false,
-            show_create_branch_confirm: false,
-            create_branch_preview: None,
-            pending_new_branch_name: None,
-            new_tag_name: String::new(),
-            focus_new_tag_name_requested: false,
-            show_create_tag_dialog: false,
-            stale_branches: Vec::new(),
-            show_cleanup_branches_dialog: false,
-            show_discard_dialog: false,
-            discard_preview: None,
-            discard_clean_untracked: false,
-            unstaged: Vec::new(),
-            staged: Vec::new(),
-            inferred_commit_scopes: Vec::new(),
-            commit_summary: String::new(),
-            commit_body: String::new(),
-            focus_commit_summary_requested: false,
             status_msg: "No repository open".into(),
-            selected_file: None,
-            diff_content: String::new(),
-            diff_wrap: false,
             actions: Vec::new(),
-            center_view: CenterView::default(),
-            commit_history: Vec::new(),
-            pull_request_prompt: None,
-            conflict_data: None,
-            dragging: None,
             busy: None,
         }
     }

@@ -10,16 +10,15 @@ impl GitGuiApp {
             return true;
         }
 
-        if self.tabs.is_empty() {
+        let Some(active_index) = self.active_tab_index() else {
             return false;
-        }
-
-        let state = &self.tabs[self.active_tab.min(self.tabs.len() - 1)].state;
-        state.show_create_branch_dialog
-            || state.show_create_branch_confirm
-            || state.show_create_tag_dialog
-            || state.show_cleanup_branches_dialog
-            || state.show_discard_dialog
+        };
+        let state = &self.tabs[active_index].state;
+        state.dialogs.branch.show_create_branch_dialog
+            || state.dialogs.branch.show_create_branch_confirm
+            || state.dialogs.tag.show_create_tag_dialog
+            || state.dialogs.cleanup.show_cleanup_branches_dialog
+            || state.dialogs.discard.show_discard_dialog
     }
 
     pub(super) fn close_topmost_dialog(&mut self) -> bool {
@@ -33,51 +32,52 @@ impl GitGuiApp {
             return true;
         }
 
-        if !self.tabs.is_empty() {
-            let active_index = self.active_tab.min(self.tabs.len() - 1);
+        if let Some(active_index) = self.normalize_active_tab() {
             let state = &mut self.tabs[active_index].state;
             let create_tag_busy = state
+                .ui
                 .busy
                 .as_ref()
                 .is_some_and(|busy| busy.action == BusyAction::CreateTag);
             let discard_busy = state
+                .ui
                 .busy
                 .as_ref()
                 .is_some_and(|busy| busy.action == BusyAction::DiscardAndReset);
 
-            if state.show_cleanup_branches_dialog {
-                state.show_cleanup_branches_dialog = false;
-                state.stale_branches.clear();
+            if state.dialogs.cleanup.show_cleanup_branches_dialog {
+                state.dialogs.cleanup.show_cleanup_branches_dialog = false;
+                state.dialogs.cleanup.stale_branches.clear();
                 return true;
             }
 
-            if state.show_discard_dialog && !discard_busy {
-                state.show_discard_dialog = false;
-                state.discard_preview = None;
-                state.discard_clean_untracked = false;
+            if state.dialogs.discard.show_discard_dialog && !discard_busy {
+                state.dialogs.discard.show_discard_dialog = false;
+                state.dialogs.discard.discard_preview = None;
+                state.dialogs.discard.discard_clean_untracked = false;
                 return true;
             }
 
-            if state.show_create_tag_dialog && !create_tag_busy {
-                state.show_create_tag_dialog = false;
-                state.new_tag_name.clear();
-                state.focus_new_tag_name_requested = false;
+            if state.dialogs.tag.show_create_tag_dialog && !create_tag_busy {
+                state.dialogs.tag.show_create_tag_dialog = false;
+                state.dialogs.tag.new_tag_name.clear();
+                state.dialogs.tag.focus_new_tag_name_requested = false;
                 return true;
             }
 
-            if state.show_create_branch_confirm {
-                state.show_create_branch_confirm = false;
-                state.create_branch_preview = None;
-                state.pending_new_branch_name = None;
-                state.new_branch_name.clear();
-                state.focus_new_branch_name_requested = false;
+            if state.dialogs.branch.show_create_branch_confirm {
+                state.dialogs.branch.show_create_branch_confirm = false;
+                state.dialogs.branch.create_branch_preview = None;
+                state.dialogs.branch.pending_new_branch_name = None;
+                state.dialogs.branch.new_branch_name.clear();
+                state.dialogs.branch.focus_new_branch_name_requested = false;
                 return true;
             }
 
-            if state.show_create_branch_dialog {
-                state.show_create_branch_dialog = false;
-                state.new_branch_name.clear();
-                state.focus_new_branch_name_requested = false;
+            if state.dialogs.branch.show_create_branch_dialog {
+                state.dialogs.branch.show_create_branch_dialog = false;
+                state.dialogs.branch.new_branch_name.clear();
+                state.dialogs.branch.focus_new_branch_name_requested = false;
                 return true;
             }
         }
@@ -188,7 +188,7 @@ impl GitGuiApp {
             self.clone_dialog.status = "URL and destination folder are required.".into();
             return;
         }
-        let Some(repo_name) = git_ops::repo_name_from_clone_url(&url) else {
+        let Some(repo_name) = AppRepoRead::repo_name_from_clone_url(&url) else {
             self.clone_dialog.status = "Could not derive a repository name from this URL.".into();
             return;
         };
@@ -297,15 +297,22 @@ impl GitGuiApp {
     }
 
     pub(super) fn show_create_branch_dialog(&mut self, ctx: &egui::Context) {
-        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
 
-        if !self.tabs[active_index].state.show_create_branch_dialog {
+        if !self.tabs[active_index]
+            .state
+            .dialogs
+            .branch
+            .show_create_branch_dialog
+        {
             return;
         }
 
-        let validation_error = git_ops::validate_new_branch_name(
+        let validation_error = AppRepoRead::validate_new_branch_name(
             &self.tabs[active_index].repo,
-            &self.tabs[active_index].state.new_branch_name,
+            &self.tabs[active_index].state.dialogs.branch.new_branch_name,
         );
 
         let state = &mut self.tabs[active_index].state;
@@ -315,54 +322,61 @@ impl GitGuiApp {
 
         if let Some(branch_name) = output.submit_branch {
             state
+                .ui
                 .actions
                 .push(UiAction::open_create_branch_confirm(branch_name));
         }
 
-        if !output.keep_open && state.show_create_branch_dialog {
-            state.new_branch_name.clear();
-            state.focus_new_branch_name_requested = false;
+        if !output.keep_open && state.dialogs.branch.show_create_branch_dialog {
+            state.dialogs.branch.new_branch_name.clear();
+            state.dialogs.branch.focus_new_branch_name_requested = false;
         }
-        state.show_create_branch_dialog = output.keep_open;
+        state.dialogs.branch.show_create_branch_dialog = output.keep_open;
     }
 
     pub(super) fn show_create_branch_confirm_dialog(&mut self, ctx: &egui::Context) {
-        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
         let state = &mut self.tabs[active_index].state;
 
-        if !state.show_create_branch_confirm {
+        if !state.dialogs.branch.show_create_branch_confirm {
             return;
         }
 
         let output = ui::dialogs::branch::show_confirm_dialog(ctx, state);
 
         if output.confirm_requested {
-            state.actions.push(UiAction::confirm_create_branch());
+            state.ui.actions.push(UiAction::confirm_create_branch());
         }
 
-        if !output.keep_open && state.show_create_branch_confirm {
-            state.create_branch_preview = None;
-            state.pending_new_branch_name = None;
-            state.new_branch_name.clear();
+        if !output.keep_open && state.dialogs.branch.show_create_branch_confirm {
+            state.dialogs.branch.create_branch_preview = None;
+            state.dialogs.branch.pending_new_branch_name = None;
+            state.dialogs.branch.new_branch_name.clear();
         }
-        state.show_create_branch_confirm = output.keep_open;
+        state.dialogs.branch.show_create_branch_confirm = output.keep_open;
     }
 
     pub(super) fn show_create_tag_dialog(&mut self, ctx: &egui::Context) {
-        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
         let state = &mut self.tabs[active_index].state;
 
-        if !state.show_create_tag_dialog {
+        if !state.dialogs.tag.show_create_tag_dialog {
             return;
         }
 
         let create_tag_busy = state
+            .ui
             .busy
             .as_ref()
             .is_some_and(|busy| busy.action == BusyAction::CreateTag);
-        let can_create_tag = git_ops::can_create_tag_on_branch(&state.branch)
-            && (!state.has_github_https_origin || self.github_auth_session.is_some());
+        let can_create_tag = AppRepoRead::can_create_tag_on_branch(&state.repo.branch)
+            && (!state.repo.has_github_https_origin || self.github_auth_session.is_some());
         let create_tag_busy_label = state
+            .ui
             .busy
             .as_ref()
             .filter(|busy| busy.action == BusyAction::CreateTag)
@@ -377,25 +391,27 @@ impl GitGuiApp {
         );
 
         if let Some(tag_name) = output.submit_tag {
-            state.actions.push(UiAction::create_tag(tag_name));
+            state.ui.actions.push(UiAction::create_tag(tag_name));
         }
 
-        state.show_create_tag_dialog = if create_tag_busy {
+        state.dialogs.tag.show_create_tag_dialog = if create_tag_busy {
             true
         } else {
             output.keep_open
         };
-        if !state.show_create_tag_dialog {
-            state.new_tag_name.clear();
-            state.focus_new_tag_name_requested = false;
+        if !state.dialogs.tag.show_create_tag_dialog {
+            state.dialogs.tag.new_tag_name.clear();
+            state.dialogs.tag.focus_new_tag_name_requested = false;
         }
     }
 
     pub(super) fn show_cleanup_branches_dialog(&mut self, ctx: &egui::Context) {
-        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
         let state = &mut self.tabs[active_index].state;
 
-        if !state.show_cleanup_branches_dialog {
+        if !state.dialogs.cleanup.show_cleanup_branches_dialog {
             return;
         }
 
@@ -403,35 +419,44 @@ impl GitGuiApp {
 
         if output.delete_requested {
             let names: Vec<String> = state
+                .dialogs
+                .cleanup
                 .stale_branches
                 .iter()
                 .filter(|branch| branch.selected)
                 .map(|branch| branch.name.clone())
                 .collect();
             if !names.is_empty() {
-                state.actions.push(UiAction::delete_stale_branches(names));
+                state
+                    .ui
+                    .actions
+                    .push(UiAction::delete_stale_branches(names));
             }
         }
 
-        state.show_cleanup_branches_dialog = output.keep_open;
-        if !state.show_cleanup_branches_dialog {
-            state.stale_branches.clear();
+        state.dialogs.cleanup.show_cleanup_branches_dialog = output.keep_open;
+        if !state.dialogs.cleanup.show_cleanup_branches_dialog {
+            state.dialogs.cleanup.stale_branches.clear();
         }
     }
 
     pub(super) fn show_discard_dialog(&mut self, ctx: &egui::Context) {
-        let active_index = self.active_tab.min(self.tabs.len() - 1);
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
         let state = &mut self.tabs[active_index].state;
 
-        if !state.show_discard_dialog {
+        if !state.dialogs.discard.show_discard_dialog {
             return;
         }
 
         let discard_busy = state
+            .ui
             .busy
             .as_ref()
             .is_some_and(|busy| busy.action == BusyAction::DiscardAndReset);
         let discard_busy_label = state
+            .ui
             .busy
             .as_ref()
             .filter(|busy| busy.action == BusyAction::DiscardAndReset)
@@ -440,16 +465,18 @@ impl GitGuiApp {
             ui::dialogs::discard::show(ctx, state, discard_busy, discard_busy_label.as_deref());
 
         if output.confirm_requested {
-            let clean_untracked = state.discard_clean_untracked;
+            let clean_untracked = state.dialogs.discard.discard_clean_untracked;
             state
+                .ui
                 .actions
                 .push(UiAction::discard_and_reset(clean_untracked));
         }
 
-        state.show_discard_dialog = if discard_busy { true } else { output.keep_open };
-        if !state.show_discard_dialog {
-            state.discard_preview = None;
-            state.discard_clean_untracked = false;
+        state.dialogs.discard.show_discard_dialog =
+            if discard_busy { true } else { output.keep_open };
+        if !state.dialogs.discard.show_discard_dialog {
+            state.dialogs.discard.discard_preview = None;
+            state.dialogs.discard.discard_clean_untracked = false;
         }
     }
 

@@ -1,12 +1,23 @@
-use crate::core::ports::{GitHubPort, GitPort};
+use crate::core::ports::{
+    GitBranchReadPort, GitHubRemoteInfoPort, GitHubRepoCreationPort, GitRemoteInfoPort,
+    GitRemoteSyncPort, GitRepoBootstrapPort, GitWorktreeCommitPort,
+};
 use crate::core::sync::service as sync_service;
 use crate::shared::github::{CreateGithubRepoRequest, CreateGithubRepoSuccess};
 
-pub fn create_github_repo(
+pub fn create_github_repo<G, H>(
     request: &CreateGithubRepoRequest,
-    git: &impl GitPort,
-    github: &impl GitHubPort,
-) -> Result<CreateGithubRepoSuccess, String> {
+    git: &G,
+    github: &H,
+) -> Result<CreateGithubRepoSuccess, String>
+where
+    G: GitRepoBootstrapPort
+        + GitRemoteInfoPort
+        + GitWorktreeCommitPort
+        + GitBranchReadPort
+        + GitRemoteSyncPort,
+    H: GitHubRepoCreationPort + GitHubRemoteInfoPort,
+{
     let repo_name = request.repo_name.trim();
     let commit_message = request.commit_message.trim();
     if repo_name.is_empty() {

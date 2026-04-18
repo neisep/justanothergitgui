@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-use crate::app::{RepoWorkerContext, WelcomeWorkerContext};
+use crate::app::{AppRepoWorkerOps, AppWelcomeWorkerOps, RepoWorkerContext, WelcomeWorkerContext};
 use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthPrompt, GithubAuthSession,
     GithubRepoSummary, PushSuccess,
@@ -223,21 +223,21 @@ impl WorkerTaskSpec<WelcomeTaskResult> for WelcomeWorkerTask {
         match self {
             WelcomeWorkerTask::GithubAuth { client_id } => {
                 let prompt_tx = result_tx.clone();
-                WelcomeTaskResult::github_auth(crate::git_ops::github_auth_login(
+                WelcomeTaskResult::github_auth(AppWelcomeWorkerOps::github_auth_login(
                     &client_id,
                     move |prompt| {
                         let _ = prompt_tx.send(WelcomeTaskResult::github_auth_prompt(prompt));
                     },
                 ))
             }
-            WelcomeWorkerTask::CreateGithubRepo(request) => {
-                WelcomeTaskResult::create_github_repo(crate::git_ops::create_github_repo(&request))
-            }
+            WelcomeWorkerTask::CreateGithubRepo(request) => WelcomeTaskResult::create_github_repo(
+                AppWelcomeWorkerOps::create_github_repo(&request),
+            ),
             WelcomeWorkerTask::ListGithubRepos { auth } => WelcomeTaskResult::list_github_repos(
-                crate::git_ops::list_github_repositories(&auth),
+                AppWelcomeWorkerOps::list_github_repositories(&auth),
             ),
             WelcomeWorkerTask::CloneRepo { url, dest, auth } => WelcomeTaskResult::clone_repo(
-                crate::git_ops::clone_repository(&url, &dest, auth.as_ref()),
+                AppWelcomeWorkerOps::clone_repository(&url, &dest, auth.as_ref()),
             ),
             #[cfg(test)]
             WelcomeWorkerTask::Panic => panic!("panic task"),
@@ -264,25 +264,25 @@ impl WorkerTaskSpec<RepoTaskResult> for RepoWorkerTask {
     fn run(self, _result_tx: &mpsc::Sender<RepoTaskResult>) -> RepoTaskResult {
         match self {
             RepoWorkerTask::Push(path, auth) => {
-                RepoTaskResult::push(crate::git_ops::push(&path, auth.as_ref()))
+                RepoTaskResult::push(AppRepoWorkerOps::push(&path, auth.as_ref()))
             }
             RepoWorkerTask::Pull(path, auth) => {
-                RepoTaskResult::pull(crate::git_ops::pull(&path, auth.as_ref()))
+                RepoTaskResult::pull(AppRepoWorkerOps::pull(&path, auth.as_ref()))
             }
             RepoWorkerTask::CreateTag(path, tag_name, auth) => RepoTaskResult::create_tag(
-                crate::git_ops::create_tag(&path, &tag_name, auth.as_ref()),
+                AppRepoWorkerOps::create_tag(&path, &tag_name, auth.as_ref()),
             ),
             RepoWorkerTask::OpenPullRequest(url) => {
-                RepoTaskResult::open_pull_request(crate::git_ops::open_pull_request(&url))
+                RepoTaskResult::open_pull_request(AppRepoWorkerOps::open_pull_request(&url))
             }
             RepoWorkerTask::CreatePullRequest(url) => {
-                RepoTaskResult::create_pull_request(crate::git_ops::create_pull_request(&url))
+                RepoTaskResult::create_pull_request(AppRepoWorkerOps::create_pull_request(&url))
             }
             RepoWorkerTask::DiscardAndReset {
                 path,
                 auth,
                 clean_untracked,
-            } => RepoTaskResult::discard_and_reset(crate::git_ops::discard_and_reset_to_remote(
+            } => RepoTaskResult::discard_and_reset(AppRepoWorkerOps::discard_and_reset_to_remote(
                 &path,
                 auth.as_ref(),
                 clean_untracked,
@@ -299,7 +299,6 @@ struct BusyGuard {
 
 impl BusyGuard {
     fn new(busy: Arc<AtomicBool>) -> Self {
-        busy.store(true, Ordering::SeqCst);
         Self { busy }
     }
 }
@@ -360,11 +359,20 @@ where
 
     #[must_use]
     fn dispatch(&self, task: Task) -> bool {
-        if self.is_busy() {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return false;
         }
 
-        self.tx.send(task).is_ok()
+        if self.tx.send(task).is_ok() {
+            true
+        } else {
+            self.busy.store(false, Ordering::SeqCst);
+            false
+        }
     }
 
     fn is_busy(&self) -> bool {
@@ -565,7 +573,7 @@ mod tests {
         let worker = WorkerCore::<TestTask, ()>::new();
 
         assert!(worker.dispatch(TestTask::Sleep(Duration::from_millis(50))));
-        assert!(wait_until(|| worker.is_busy()));
+        assert!(worker.is_busy());
         assert!(!worker.dispatch(TestTask::Sleep(Duration::from_millis(10))));
         assert!(wait_until(|| worker.try_recv().is_some()));
         assert!(wait_until(|| !worker.is_busy()));

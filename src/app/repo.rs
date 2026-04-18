@@ -8,7 +8,7 @@ impl GitGuiApp {
     }
 
     pub(super) fn open_repo(&mut self, path: PathBuf) {
-        match git_ops::open_repo(&path) {
+        match AppRepoRead::open(&path) {
             Ok(repo) => self.add_repo_tab(repo),
             Err(error) => {
                 let detail = error.to_string();
@@ -27,23 +27,42 @@ impl GitGuiApp {
         if let Some(index) = self
             .tabs
             .iter()
-            .position(|tab| tab.state.repo_path.as_ref() == Some(&repo_path))
+            .position(|tab| tab.state.repo.path.as_ref() == Some(&repo_path))
         {
             self.active_tab = index;
-            self.tabs[index].state.status_msg = "Repository already open".into();
+            self.tabs[index].state.ui.status_msg = "Repository already open".into();
             return;
         }
 
         let mut state = AppState {
-            repo_path: Some(repo_path.clone()),
+            repo: crate::state::RepoState {
+                path: Some(repo_path.clone()),
+                ..crate::state::RepoState::default()
+            },
             ..AppState::default()
         };
-        helpers::reset_repo_view_state(&mut state);
-        let refresh_error = helpers::refresh_status(&mut state, &repo);
+        helpers::reset_repo_state(&mut state.repo);
+        helpers::reset_worktree_state(&mut state.worktree);
+        helpers::reset_commit_state(&mut state.commit);
+        helpers::reset_inspector_state(&mut state.inspector);
+        helpers::reset_dialog_state(&mut state.dialogs);
+        helpers::reset_ui_state(&mut state.ui);
+        let refresh_error = {
+            let (repo_state, worktree_state, commit_state, inspector_state, ui_state) =
+                state.refresh_parts_mut();
+            helpers::refresh_status(
+                repo_state,
+                worktree_state,
+                commit_state,
+                inspector_state,
+                ui_state,
+                &repo,
+            )
+        };
         if let Some(detail) = refresh_error {
             self.logger.log_error("Refresh", &detail);
         } else {
-            state.status_msg = format!(
+            state.ui.status_msg = format!(
                 "Repository loaded: {}",
                 helpers::repo_tab_label(Some(&repo_path))
             );
@@ -60,7 +79,7 @@ impl GitGuiApp {
 
     pub(super) fn set_status_message(&mut self, message: String) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.state.status_msg = message;
+            tab.state.ui.status_msg = message;
         } else {
             self.welcome_status = message;
         }

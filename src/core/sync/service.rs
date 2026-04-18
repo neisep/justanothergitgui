@@ -1,13 +1,15 @@
 use std::path::Path;
 
-use crate::core::ports::{GitHubPort, GitPort, GitRemoteAuth};
+use crate::core::ports::{
+    GitBranchReadPort, GitHubRemoteInfoPort, GitRemoteAuth, GitRemoteSyncPort,
+};
 use crate::shared::github::{GithubAuthSession, PushSuccess};
 
 pub fn push(
     repo_path: &Path,
     auth: Option<&GithubAuthSession>,
-    git: &impl GitPort,
-    github: &impl GitHubPort,
+    git: &(impl GitBranchReadPort + GitRemoteSyncPort),
+    github: &impl GitHubRemoteInfoPort,
 ) -> Result<PushSuccess, String> {
     let branch_name = git.current_branch_name(repo_path)?;
     let base_message = if let Some(message) =
@@ -42,8 +44,8 @@ pub fn push(
 pub fn pull(
     repo_path: &Path,
     auth: Option<&GithubAuthSession>,
-    git: &impl GitPort,
-    github: &impl GitHubPort,
+    git: &(impl GitBranchReadPort + GitRemoteSyncPort),
+    github: &impl GitHubRemoteInfoPort,
 ) -> Result<String, String> {
     if github.is_github_https_origin(repo_path) {
         let branch_name = git
@@ -67,8 +69,8 @@ pub fn discard_and_reset_to_remote(
     repo_path: &Path,
     auth: Option<&GithubAuthSession>,
     clean_untracked: bool,
-    git: &impl GitPort,
-    github: &impl GitHubPort,
+    git: &impl GitRemoteSyncPort,
+    github: &impl GitHubRemoteInfoPort,
 ) -> Result<String, String> {
     let remote_auth = if github.is_github_https_origin(repo_path) {
         let auth = auth.ok_or_else(|| {
@@ -87,8 +89,8 @@ pub(crate) fn try_push_with_auth(
     repo_path: &Path,
     branch_name: Option<&str>,
     auth: Option<&GithubAuthSession>,
-    git: &impl GitPort,
-    github: &impl GitHubPort,
+    git: &impl GitRemoteSyncPort,
+    github: &impl GitHubRemoteInfoPort,
 ) -> Result<Option<String>, String> {
     if !github.is_github_https_origin(repo_path) {
         return Ok(None);
@@ -113,7 +115,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::shared::github::{GithubRepoVisibility, PullRequestPrompt};
+    use crate::shared::github::PullRequestPrompt;
 
     #[derive(Default)]
     struct FakeGitPort {
@@ -122,11 +124,13 @@ mod tests {
         push_calls: std::cell::RefCell<Vec<(PathBuf, String, &'static str)>>,
     }
 
-    impl GitPort for FakeGitPort {
+    impl GitBranchReadPort for FakeGitPort {
         fn current_branch_name(&self, _repo_path: &Path) -> Result<Option<String>, String> {
             Ok(self.branch_name.clone())
         }
+    }
 
+    impl GitRemoteSyncPort for FakeGitPort {
         fn push(
             &self,
             repo_path: &Path,
@@ -162,55 +166,6 @@ mod tests {
         ) -> Result<String, String> {
             unreachable!()
         }
-
-        fn can_create_tag_on_branch(&self, _branch_name: &str) -> bool {
-            unreachable!()
-        }
-
-        fn create_tag(&self, _repo_path: &Path, _tag_name: &str) -> Result<(), String> {
-            unreachable!()
-        }
-
-        fn push_tag(
-            &self,
-            _repo_path: &Path,
-            _tag_name: &str,
-            _auth: GitRemoteAuth<'_>,
-        ) -> Result<(), String> {
-            unreachable!()
-        }
-
-        fn has_origin_remote(&self, _repo_path: &Path) -> Result<bool, String> {
-            unreachable!()
-        }
-
-        fn rollback_tag(&self, _repo_path: &Path, _tag_name: &str) -> Result<(), String> {
-            unreachable!()
-        }
-
-        fn open_or_init_repo(&self, _repo_path: &Path) -> Result<(), String> {
-            unreachable!()
-        }
-
-        fn repo_has_changes(&self, _repo_path: &Path) -> Result<bool, String> {
-            unreachable!()
-        }
-
-        fn head_exists(&self, _repo_path: &Path) -> Result<bool, String> {
-            unreachable!()
-        }
-
-        fn stage_all(&self, _repo_path: &Path) -> Result<(), String> {
-            unreachable!()
-        }
-
-        fn create_commit(&self, _repo_path: &Path, _message: &str) -> Result<(), String> {
-            unreachable!()
-        }
-
-        fn add_remote(&self, _repo_path: &Path, _name: &str, _url: &str) -> Result<(), String> {
-            unreachable!()
-        }
     }
 
     struct FakeGitHubPort {
@@ -218,7 +173,7 @@ mod tests {
         prompt: Option<PullRequestPrompt>,
     }
 
-    impl GitHubPort for FakeGitHubPort {
+    impl GitHubRemoteInfoPort for FakeGitHubPort {
         fn is_github_https_origin(&self, _repo_path: &Path) -> bool {
             self.https_origin
         }
@@ -230,15 +185,6 @@ mod tests {
             _auth: Option<&GithubAuthSession>,
         ) -> Result<Option<PullRequestPrompt>, String> {
             Ok(self.prompt.clone())
-        }
-
-        fn create_repository(
-            &self,
-            _auth: &GithubAuthSession,
-            _repo_name: &str,
-            _visibility: GithubRepoVisibility,
-        ) -> Result<String, String> {
-            unreachable!()
         }
     }
 

@@ -308,12 +308,57 @@ pub fn get_commit_history(
         return Ok(Vec::new());
     }
 
-    let mut branch_map: HashMap<git2::Oid, Vec<String>> = HashMap::new();
+    let mut branch_map = collect_commit_labels(repo);
+    let Some(head_oid) = resolve_history_head(repo)? else {
+        return Ok(Vec::new());
+    };
+
+    let walk = build_history_revwalk(repo, head_oid)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let mut history = Vec::new();
+    for oid in walk.take(limit) {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        history.push(build_commit_entry(
+            repo,
+            oid,
+            &commit,
+            now,
+            branch_map.remove(&oid).unwrap_or_default(),
+        )?);
+    }
+
+    Ok(history)
+}
+
+fn resolve_history_head(repo: &Repository) -> Result<Option<git2::Oid>, git2::Error> {
+    match repo.head() {
+        Ok(head) => Ok(head.target()),
+        Err(error)
+            if matches!(
+                error.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn collect_commit_labels(repo: &Repository) -> HashMap<git2::Oid, Vec<String>> {
+    let mut labels: HashMap<git2::Oid, Vec<String>> = HashMap::new();
+
     if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
         for branch in branches {
             if let Ok((branch, _)) = branch {
                 if let (Ok(Some(name)), Some(target)) = (branch.name(), branch.get().target()) {
-                    branch_map.entry(target).or_default().push(name.to_string());
+                    labels.entry(target).or_default().push(name.to_string());
                 }
             }
         }
@@ -325,7 +370,7 @@ pub fn get_commit_history(
             if let Ok(reference) = repo.find_reference(&refname)
                 && let Ok(target) = reference.peel_to_commit()
             {
-                branch_map
+                labels
                     .entry(target.id())
                     .or_default()
                     .push(name.to_string());
@@ -333,54 +378,41 @@ pub fn get_commit_history(
         }
     }
 
-    let head = match repo.head() {
-        Ok(head) => head,
-        Err(error)
-            if matches!(
-                error.code(),
-                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
-            ) =>
-        {
-            return Ok(Vec::new());
-        }
-        Err(error) => return Err(error),
-    };
+    labels
+}
 
-    let Some(head_oid) = head.target() else {
-        return Ok(Vec::new());
-    };
-
+fn build_history_revwalk(
+    repo: &Repository,
+    head_oid: git2::Oid,
+) -> Result<git2::Revwalk<'_>, git2::Error> {
     let mut walk = repo.revwalk()?;
     walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
     walk.push(head_oid)?;
+    Ok(walk)
+}
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+fn build_commit_entry(
+    repo: &Repository,
+    oid: git2::Oid,
+    commit: &git2::Commit<'_>,
+    now: i64,
+    branch_labels: Vec<String>,
+) -> Result<CommitEntry, git2::Error> {
+    let short_oid = repo
+        .find_object(oid, None)?
+        .short_id()?
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| oid.to_string());
 
-    let mut history = Vec::new();
-    for oid in walk.take(limit) {
-        let oid = oid?;
-        let commit = repo.find_commit(oid)?;
-        let short_oid = repo
-            .find_object(oid, None)?
-            .short_id()?
-            .as_str()
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| oid.to_string());
-
-        history.push(CommitEntry {
-            short_oid,
-            message: commit.summary().unwrap_or_default().to_string(),
-            author: commit.author().name().unwrap_or_default().to_string(),
-            time: format_relative_time(now, commit.time().seconds()),
-            is_merge: commit.parent_count() > 1,
-            branch_labels: branch_map.remove(&oid).unwrap_or_default(),
-        });
-    }
-
-    Ok(history)
+    Ok(CommitEntry {
+        short_oid,
+        message: commit.summary().unwrap_or_default().to_string(),
+        author: commit.author().name().unwrap_or_default().to_string(),
+        time: format_relative_time(now, commit.time().seconds()),
+        is_merge: commit.parent_count() > 1,
+        branch_labels,
+    })
 }
 
 pub(crate) fn open_or_init_repo(folder_path: &Path) -> Result<Repository, String> {

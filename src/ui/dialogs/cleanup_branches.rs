@@ -8,7 +8,7 @@ pub struct CleanupBranchesDialogOutput {
 }
 
 pub fn show(ctx: &egui::Context, state: &mut AppState) -> CleanupBranchesDialogOutput {
-    let mut keep_open = state.show_cleanup_branches_dialog;
+    let mut keep_open = state.dialogs.cleanup.show_cleanup_branches_dialog;
     let mut close_requested = false;
     let mut delete_requested = false;
 
@@ -19,7 +19,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> CleanupBranchesDialogO
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .open(&mut keep_open)
         .show(ctx, |ui| {
-            if state.stale_branches.is_empty() {
+            if state.dialogs.cleanup.stale_branches.is_empty() {
                 ui.label("No stale branches to clean up.");
                 ui.add_space(4.0);
                 ui.weak(
@@ -32,7 +32,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> CleanupBranchesDialogO
                 egui::ScrollArea::vertical()
                     .max_height(260.0)
                     .show(ui, |ui| {
-                        for branch in state.stale_branches.iter_mut() {
+                        for branch in state.dialogs.cleanup.stale_branches.iter_mut() {
                             ui.horizontal(|ui| {
                                 ui.checkbox(&mut branch.selected, &branch.name);
                                 if branch.merged_into_head {
@@ -48,8 +48,15 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> CleanupBranchesDialogO
                     });
 
                 ui.add_space(8.0);
-                let any_selected = state.stale_branches.iter().any(|branch| branch.selected);
+                let any_selected = state
+                    .dialogs
+                    .cleanup
+                    .stale_branches
+                    .iter()
+                    .any(|branch| branch.selected);
                 let any_unmerged_selected = state
+                    .dialogs
+                    .cleanup
                     .stale_branches
                     .iter()
                     .any(|branch| branch.selected && !branch.merged_into_head);

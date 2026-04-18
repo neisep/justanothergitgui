@@ -1,11 +1,14 @@
 mod actions;
 mod dialogs;
 mod helpers;
+mod ports;
 mod repo;
 mod shell;
 mod worker_events;
 
 pub(crate) use actions::TabActionContext;
+use ports::{AppGitHubAuth, AppRepoRead, AppRepoWrite};
+pub(crate) use ports::{AppRepoWorkerOps, AppWelcomeWorkerOps};
 pub(crate) use worker_events::{RepoWorkerContext, WelcomeWorkerContext};
 
 use std::path::{Path, PathBuf};
@@ -14,7 +17,6 @@ use eframe::egui;
 use git2::Repository;
 
 use crate::commit_rules::{self, CommitMessageRuleSet};
-use crate::git_ops;
 use crate::logging::{self, AppLogger};
 use crate::settings::{self, AppSettings};
 use crate::shared::actions::UiAction;
@@ -165,11 +167,11 @@ impl GitGuiApp {
                 AppSettings::default()
             }
         };
-        let github_auth_session = match git_ops::load_github_auth_session() {
-            Ok(Some(session)) => match git_ops::verify_github_auth_session(&session) {
+        let github_auth_session = match AppGitHubAuth::load_session() {
+            Ok(Some(session)) => match AppGitHubAuth::verify_session(&session) {
                 Ok(GithubAuthCheck::Valid) => Some(session),
                 Ok(GithubAuthCheck::Revoked) => {
-                    if let Err(clear_err) = git_ops::clear_github_auth_session() {
+                    if let Err(clear_err) = AppGitHubAuth::clear_session() {
                         logger.log_error("GitHub sign-in", &clear_err);
                     }
                     logger.log_error(
@@ -222,7 +224,7 @@ impl GitGuiApp {
             show_log_viewer: false,
         };
 
-        if let Ok(repo) = git_ops::open_repo(Path::new(".")) {
+        if let Ok(repo) = AppRepoRead::open(Path::new(".")) {
             app.add_repo_tab(repo);
         }
 
@@ -232,6 +234,19 @@ impl GitGuiApp {
         }
 
         app
+    }
+
+    fn active_tab_index(&self) -> Option<usize> {
+        self.tabs
+            .len()
+            .checked_sub(1)
+            .map(|last_index| self.active_tab.min(last_index))
+    }
+
+    fn normalize_active_tab(&mut self) -> Option<usize> {
+        let active_index = self.active_tab_index()?;
+        self.active_tab = active_index;
+        Some(active_index)
     }
 }
 
@@ -256,23 +271,60 @@ impl eframe::App for GitGuiApp {
         }
 
         self.show_repo_tabs(ui);
-        self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+        let Some(active_index) = self.normalize_active_tab() else {
+            self.show_publish_repo_dialog(&ctx);
+            self.show_clone_repo_dialog(&ctx);
+            self.show_settings_dialog(&ctx);
+            self.show_create_branch_dialog(&ctx);
+            self.show_create_branch_confirm_dialog(&ctx);
+            self.show_create_tag_dialog(&ctx);
+            self.show_discard_dialog(&ctx);
+            self.show_cleanup_branches_dialog(&ctx);
+            self.show_github_auth_dialog(&ctx);
+            self.show_log_viewer_dialog(&ctx);
+            self.process_actions();
+            return;
+        };
         let has_logs = self.logger.has_entries();
+        let commit_message_ruleset = self.settings.commit_message_ruleset;
+        let commit_message_custom_scopes = &self.settings.commit_message_custom_scopes;
 
         let open_logs_clicked = {
-            let tab = &mut self.tabs[self.active_tab];
+            let tab = &mut self.tabs[active_index];
 
-            let open_logs = ui::bottom_bar::show(ui, &tab.state, has_logs);
-            ui::file_panel::show(ui, &mut tab.state);
+            let open_logs = ui::bottom_bar::show(
+                ui,
+                ui::bottom_bar::BottomBarView {
+                    repo_path: tab.state.repo.path.as_deref(),
+                    status_msg: &tab.state.ui.status_msg,
+                },
+                has_logs,
+            );
+            ui::file_panel::show(
+                ui,
+                ui::file_panel::FilePanelState {
+                    worktree: &tab.state.worktree,
+                    inspector: &mut tab.state.inspector,
+                    ui_state: &mut tab.state.ui,
+                },
+            );
             ui::commit_panel::show(
                 ui,
                 &mut tab.state,
-                self.settings.commit_message_ruleset,
-                &self.settings.commit_message_custom_scopes,
+                commit_message_ruleset,
+                commit_message_custom_scopes,
             );
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                ui::diff_panel::show(ui, &mut tab.state);
+                ui::diff_panel::show(
+                    ui,
+                    ui::diff_panel::DiffPanelState {
+                        repo: &tab.state.repo,
+                        worktree: &tab.state.worktree,
+                        inspector: &mut tab.state.inspector,
+                        ui_state: &mut tab.state.ui,
+                    },
+                );
             });
             open_logs
         };

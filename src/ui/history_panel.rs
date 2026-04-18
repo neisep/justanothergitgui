@@ -1,10 +1,17 @@
+use std::path::Path;
+
 use eframe::egui;
 
-use crate::state::AppState;
+use crate::shared::git::CommitEntry;
 
-pub fn show(ui: &mut egui::Ui, state: &AppState) {
-    if state.commit_history.is_empty() {
-        let (title, hint) = if state.repo_path.is_none() {
+pub struct HistoryPanelView<'a> {
+    pub repo_path: Option<&'a Path>,
+    pub commit_history: &'a [CommitEntry],
+}
+
+pub fn show(ui: &mut egui::Ui, view: HistoryPanelView<'_>) {
+    if view.commit_history.is_empty() {
+        let (title, hint) = if view.repo_path.is_none() {
             (
                 "No repository open",
                 "Use the top bar to open or clone a repository.",
@@ -29,8 +36,8 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
     egui::ScrollArea::vertical()
         .id_salt("history_scroll")
         .show(ui, |ui| {
-            let last_index = state.commit_history.len().saturating_sub(1);
-            for (index, commit) in state.commit_history.iter().enumerate() {
+            let last_index = view.commit_history.len().saturating_sub(1);
+            for (index, commit) in view.commit_history.iter().enumerate() {
                 ui.horizontal(|ui| {
                     let graph_color = if commit.is_merge {
                         egui::Color32::from_rgb(180, 100, 255)

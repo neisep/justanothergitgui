@@ -31,14 +31,8 @@ pub fn has_github_https_origin(repo: &Repository) -> bool {
         .is_some_and(|remote| remote.url().is_some_and(is_github_https_url))
 }
 
-pub fn is_github_https_origin(repo_path: &Path) -> bool {
-    let Ok(repo) = Repository::open(repo_path) else {
-        return false;
-    };
-    let Ok(remote) = repo.find_remote("origin") else {
-        return false;
-    };
-    remote.url().is_some_and(is_github_https_url)
+pub fn is_github_https_origin(repo: &Repository) -> bool {
+    has_github_https_origin(repo)
 }
 
 pub fn is_github_https_url(url: &str) -> bool {

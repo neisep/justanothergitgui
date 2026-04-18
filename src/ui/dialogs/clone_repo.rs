@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::app::CloneRepoDialogState;
-use crate::{git_ops, ui};
+use crate::infra::github::repos::repo_name_from_clone_url;
+use crate::ui;
 
 pub struct CloneRepoDialogOutput {
     pub keep_open: bool,
@@ -55,7 +56,7 @@ pub fn show(
                     }
                 });
 
-                let repo_name = git_ops::repo_name_from_clone_url(&dialog.url);
+                let repo_name = repo_name_from_clone_url(&dialog.url);
                 let parent_display = dialog.parent_folder.trim();
                 if let Some(name) = &repo_name
                     && !parent_display.is_empty()

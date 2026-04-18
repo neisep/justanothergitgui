@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::path::Path;
 
 use crate::core::{publish, sync, tags};
@@ -7,22 +8,28 @@ use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthSession, PushSuccess,
 };
 
+#[allow(unused_imports)]
 pub use crate::infra::git::clone::{clone_repository, repo_name_from_clone_url};
+#[allow(unused_imports)]
 pub use crate::infra::git::repository::{
     can_create_tag_on_branch, create_branch, delete_local_branch, get_branches, get_commit_history,
     get_current_branch, get_outgoing_commit_count, has_origin_remote, list_stale_branches,
     open_repo, preview_create_branch, preview_discard_damage, suggest_next_tag, switch_branch,
     validate_new_branch_name,
 };
+#[allow(unused_imports)]
 pub use crate::infra::git::worktree::{
     create_commit, get_file_diff, get_file_statuses, read_conflict_file, stage_all, stage_file,
     unstage_all, unstage_file, write_resolved_file,
 };
+#[allow(unused_imports)]
 pub use crate::infra::github::auth::{
     clear_github_auth_session, github_auth_login, load_github_auth_session,
     save_github_auth_session, verify_github_auth_session,
 };
+#[allow(unused_imports)]
 pub use crate::infra::github::pulls::{has_github_https_origin, has_github_origin};
+#[allow(unused_imports)]
 pub use crate::infra::github::repos::list_github_repositories;
 
 pub fn push(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<PushSuccess, String> {

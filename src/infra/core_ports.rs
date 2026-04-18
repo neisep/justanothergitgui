@@ -2,7 +2,10 @@ use std::path::Path;
 
 use git2::Repository;
 
-use crate::core::ports::{GitHubPort, GitPort, GitRemoteAuth};
+use crate::core::ports::{
+    GitBranchReadPort, GitHubRemoteInfoPort, GitHubRepoCreationPort, GitRemoteAuth,
+    GitRemoteInfoPort, GitRemoteSyncPort, GitRepoBootstrapPort, GitTagPort, GitWorktreeCommitPort,
+};
 use crate::infra::git::{
     remotes as git_remotes, repository as git_repository, worktree as git_worktree,
 };
@@ -15,11 +18,13 @@ pub struct InfraGitPort;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InfraGitHubPort;
 
-impl GitPort for InfraGitPort {
+impl GitBranchReadPort for InfraGitPort {
     fn current_branch_name(&self, repo_path: &Path) -> Result<Option<String>, String> {
         git_repository::current_branch_name(repo_path)
     }
+}
 
+impl GitRemoteSyncPort for InfraGitPort {
     fn push(
         &self,
         repo_path: &Path,
@@ -46,7 +51,9 @@ impl GitPort for InfraGitPort {
     ) -> Result<String, String> {
         git_remotes::reset_to_remote(repo_path, map_remote_auth(auth), clean_untracked)
     }
+}
 
+impl GitTagPort for InfraGitPort {
     fn can_create_tag_on_branch(&self, branch_name: &str) -> bool {
         git_repository::can_create_tag_on_branch(branch_name)
     }
@@ -80,22 +87,36 @@ impl GitPort for InfraGitPort {
         git_remotes::push_tag_with_git2(repo_path, tag_name, map_remote_auth(auth))
     }
 
-    fn has_origin_remote(&self, repo_path: &Path) -> Result<bool, String> {
-        let repo =
-            Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
-        Ok(git_repository::has_origin_remote(&repo))
-    }
-
     fn rollback_tag(&self, repo_path: &Path, tag_name: &str) -> Result<(), String> {
         let repo =
             Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
         git_remotes::rollback_tag(&repo, tag_name)
     }
+}
 
+impl GitRemoteInfoPort for InfraGitPort {
+    fn has_origin_remote(&self, repo_path: &Path) -> Result<bool, String> {
+        let repo =
+            Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
+        Ok(git_repository::has_origin_remote(&repo))
+    }
+}
+
+impl GitRepoBootstrapPort for InfraGitPort {
     fn open_or_init_repo(&self, repo_path: &Path) -> Result<(), String> {
         git_repository::open_or_init_repo(repo_path).map(|_| ())
     }
 
+    fn add_remote(&self, repo_path: &Path, name: &str, url: &str) -> Result<(), String> {
+        let repo =
+            Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
+        repo.remote(name, url)
+            .map(|_| ())
+            .map_err(|error| format!("Remote add error: {}", error))
+    }
+}
+
+impl GitWorktreeCommitPort for InfraGitPort {
     fn repo_has_changes(&self, repo_path: &Path) -> Result<bool, String> {
         let repo =
             Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
@@ -121,19 +142,14 @@ impl GitPort for InfraGitPort {
             .map(|_| ())
             .map_err(|error| format!("Commit error: {}", error))
     }
-
-    fn add_remote(&self, repo_path: &Path, name: &str, url: &str) -> Result<(), String> {
-        let repo =
-            Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
-        repo.remote(name, url)
-            .map(|_| ())
-            .map_err(|error| format!("Remote add error: {}", error))
-    }
 }
 
-impl GitHubPort for InfraGitHubPort {
+impl GitHubRemoteInfoPort for InfraGitHubPort {
     fn is_github_https_origin(&self, repo_path: &Path) -> bool {
-        github_pulls::is_github_https_origin(repo_path)
+        let Ok(repo) = git_repository::open_repo(repo_path) else {
+            return false;
+        };
+        github_pulls::is_github_https_origin(&repo)
     }
 
     fn detect_pull_request_prompt(
@@ -144,7 +160,9 @@ impl GitHubPort for InfraGitHubPort {
     ) -> Result<Option<PullRequestPrompt>, String> {
         github_pulls::detect_pull_request_prompt(repo_path, branch, auth)
     }
+}
 
+impl GitHubRepoCreationPort for InfraGitHubPort {
     fn create_repository(
         &self,
         auth: &GithubAuthSession,
