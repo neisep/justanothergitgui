@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::core::{publish, sync, tags};
+use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
 use crate::infra::system::browser;
 use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthSession, PushSuccess,
@@ -25,11 +26,15 @@ pub use crate::infra::github::pulls::{has_github_https_origin, has_github_origin
 pub use crate::infra::github::repos::list_github_repositories;
 
 pub fn push(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<PushSuccess, String> {
-    sync::service::push(repo_path, auth)
+    let git = InfraGitPort;
+    let github = InfraGitHubPort;
+    sync::service::push(repo_path, auth, &git, &github)
 }
 
 pub fn pull(repo_path: &Path, auth: Option<&GithubAuthSession>) -> Result<String, String> {
-    sync::service::pull(repo_path, auth)
+    let git = InfraGitPort;
+    let github = InfraGitHubPort;
+    sync::service::pull(repo_path, auth, &git, &github)
 }
 
 pub fn discard_and_reset_to_remote(
@@ -37,7 +42,9 @@ pub fn discard_and_reset_to_remote(
     auth: Option<&GithubAuthSession>,
     clean_untracked: bool,
 ) -> Result<String, String> {
-    sync::service::discard_and_reset_to_remote(repo_path, auth, clean_untracked)
+    let git = InfraGitPort;
+    let github = InfraGitHubPort;
+    sync::service::discard_and_reset_to_remote(repo_path, auth, clean_untracked, &git, &github)
 }
 
 pub fn create_tag(
@@ -45,13 +52,17 @@ pub fn create_tag(
     tag_name: &str,
     auth: Option<&GithubAuthSession>,
 ) -> Result<String, String> {
-    tags::service::create_tag(repo_path, tag_name, auth)
+    let git = InfraGitPort;
+    let github = InfraGitHubPort;
+    tags::service::create_tag(repo_path, tag_name, auth, &git, &github)
 }
 
 pub fn create_github_repo(
     request: &CreateGithubRepoRequest,
 ) -> Result<CreateGithubRepoSuccess, String> {
-    publish::service::create_github_repo(request)
+    let git = InfraGitPort;
+    let github = InfraGitHubPort;
+    publish::service::create_github_repo(request, &git, &github)
 }
 
 pub fn open_pull_request(url: &str) -> Result<String, String> {
@@ -90,6 +101,7 @@ mod tests {
         is_github_https_url, parse_github_remote_slug, parse_link_header_next, parse_semver_tag,
         repo_name_from_clone_url, suggest_next_tag,
     };
+    use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
     use git2::Repository;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -155,18 +167,33 @@ mod tests {
     #[test]
     fn github_https_pushes_require_app_auth() {
         let repo_dir = TestRepoDir::init_with_origin("https://github.com/octocat/hello-world.git");
-        let error =
-            crate::core::sync::service::try_push_with_auth(repo_dir.path(), Some("main"), None)
-                .expect_err("https GitHub remotes should require app auth");
+        let git = InfraGitPort;
+        let github = InfraGitHubPort;
+        let error = crate::core::sync::service::try_push_with_auth(
+            repo_dir.path(),
+            Some("main"),
+            None,
+            &git,
+            &github,
+        )
+        .expect_err("https GitHub remotes should require app auth");
         assert!(error.contains("GitHub push requires the app's GitHub sign-in"));
     }
 
     #[test]
     fn github_ssh_pushes_fall_back_to_system_auth() {
         let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
+        let git = InfraGitPort;
+        let github = InfraGitHubPort;
         assert_eq!(
-            crate::core::sync::service::try_push_with_auth(repo_dir.path(), Some("main"), None)
-                .expect("ssh GitHub remotes should stay on system auth"),
+            crate::core::sync::service::try_push_with_auth(
+                repo_dir.path(),
+                Some("main"),
+                None,
+                &git,
+                &github,
+            )
+            .expect("ssh GitHub remotes should stay on system auth"),
             None
         );
     }

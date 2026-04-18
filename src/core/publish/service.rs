@@ -1,10 +1,11 @@
+use crate::core::ports::{GitHubPort, GitPort};
 use crate::core::sync::service as sync_service;
-use crate::infra::git::{repository as git_repository, worktree as git_worktree};
-use crate::infra::github::repos as github_repos;
 use crate::shared::github::{CreateGithubRepoRequest, CreateGithubRepoSuccess};
 
 pub fn create_github_repo(
     request: &CreateGithubRepoRequest,
+    git: &impl GitPort,
+    github: &impl GitHubPort,
 ) -> Result<CreateGithubRepoSuccess, String> {
     let repo_name = request.repo_name.trim();
     let commit_message = request.commit_message.trim();
@@ -23,23 +24,21 @@ pub fn create_github_repo(
         return Err("Selected path is not a folder".into());
     }
 
-    let repo = git_repository::open_or_init_repo(&folder_path)?;
-    if repo.find_remote("origin").is_ok() {
+    git.open_or_init_repo(&folder_path)?;
+    if git.has_origin_remote(&folder_path)? {
         return Err("Remote 'origin' already exists for this repository".into());
     }
 
-    let has_changes = git_repository::repo_has_changes(&repo)?;
-    let has_head = repo.head().ok().and_then(|head| head.target()).is_some();
+    let has_changes = git.repo_has_changes(&folder_path)?;
+    let has_head = git.head_exists(&folder_path)?;
     if has_changes || !has_head {
-        git_worktree::stage_all(&repo).map_err(|error| format!("Stage all error: {}", error))?;
-        git_worktree::create_commit(&repo, commit_message)
-            .map_err(|error| format!("Commit error: {}", error))?;
+        git.stage_all(&folder_path)?;
+        git.create_commit(&folder_path, commit_message)?;
     }
 
-    let clone_url = github_repos::create_repository(&request.auth, repo_name, request.visibility)?;
-    repo.remote("origin", &clone_url)
-        .map_err(|error| format!("Remote add error: {}", error))?;
-    let push_result = sync_service::push(&folder_path, Some(&request.auth))?;
+    let clone_url = github.create_repository(&request.auth, repo_name, request.visibility)?;
+    git.add_remote(&folder_path, "origin", &clone_url)?;
+    let push_result = sync_service::push(&folder_path, Some(&request.auth), git, github)?;
     let message = format!(
         "Created GitHub repository {}. {}",
         repo_name, push_result.message

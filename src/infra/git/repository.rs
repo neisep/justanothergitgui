@@ -1,7 +1,6 @@
 use git2::{Repository, Status, StatusOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::shared::git::{CommitEntry, CreateBranchPreview, DiscardPreview, StaleBranch};
 
@@ -298,15 +297,16 @@ pub fn get_commit_history(
     repo: &Repository,
     limit: usize,
 ) -> Result<Vec<CommitEntry>, git2::Error> {
-    let mut branch_map: HashMap<String, Vec<String>> = HashMap::new();
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut branch_map: HashMap<git2::Oid, Vec<String>> = HashMap::new();
     if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
         for branch in branches {
             if let Ok((branch, _)) = branch {
                 if let (Ok(Some(name)), Some(target)) = (branch.name(), branch.get().target()) {
-                    branch_map
-                        .entry(target.to_string())
-                        .or_default()
-                        .push(name.to_string());
+                    branch_map.entry(target).or_default().push(name.to_string());
                 }
             }
         }
@@ -319,33 +319,33 @@ pub fn get_commit_history(
                 && let Ok(target) = reference.peel_to_commit()
             {
                 branch_map
-                    .entry(target.id().to_string())
+                    .entry(target.id())
                     .or_default()
                     .push(name.to_string());
             }
         }
     }
 
-    let repo_dir = repo
-        .workdir()
-        .or_else(|| repo.path().parent())
-        .ok_or_else(|| git2::Error::from_str("Cannot determine repository path"))?;
-    let output = Command::new("git")
-        .args([
-            "log",
-            "--graph",
-            "--topo-order",
-            "-n",
-            &limit.to_string(),
-            "--format=format:%x1f%H%x1f%h%x1f%P%x1f%an%x1f%at%x1f%s",
-        ])
-        .current_dir(repo_dir)
-        .output()
-        .map_err(|error| git2::Error::from_str(&error.to_string()))?;
+    let head = match repo.head() {
+        Ok(head) => head,
+        Err(error)
+            if matches!(
+                error.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error),
+    };
 
-    if !output.status.success() {
+    let Some(head_oid) = head.target() else {
         return Ok(Vec::new());
-    }
+    };
+
+    let mut walk = repo.revwalk()?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+    walk.push(head_oid)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -353,26 +353,23 @@ pub fn get_commit_history(
         .as_secs() as i64;
 
     let mut history = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let parts: Vec<&str> = line.splitn(7, '\x1f').collect();
-        if parts.len() != 7 {
-            continue;
-        }
-
-        let oid = parts[1];
-        let short_oid = parts[2];
-        let parents = parts[3];
-        let author = parts[4];
-        let timestamp = parts[5].parse::<i64>().unwrap_or_default();
-        let message = parts[6];
+    for oid in walk.take(limit) {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        let short_oid = repo
+            .find_object(oid, None)?
+            .short_id()?
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| oid.to_string());
 
         history.push(CommitEntry {
-            short_oid: short_oid.to_string(),
-            message: message.to_string(),
-            author: author.to_string(),
-            time: format_relative_time(now, timestamp),
-            is_merge: parents.split_whitespace().count() > 1,
-            branch_labels: branch_map.remove(oid).unwrap_or_default(),
+            short_oid,
+            message: commit.summary().unwrap_or_default().to_string(),
+            author: commit.author().name().unwrap_or_default().to_string(),
+            time: format_relative_time(now, commit.time().seconds()),
+            is_merge: commit.parent_count() > 1,
+            branch_labels: branch_map.remove(&oid).unwrap_or_default(),
         });
     }
 
@@ -465,4 +462,148 @@ fn format_relative_time(now: i64, then: i64) -> String {
         return format!("{}d ago", diff / 86400);
     }
     format!("{}mo ago", diff / 2592000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_commit_history;
+    use git2::{Repository, RepositoryInitOptions, Signature, Time};
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestRepoDir {
+        path: PathBuf,
+    }
+
+    impl TestRepoDir {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "justanothergitgui-repository-test-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            std::fs::create_dir_all(&path).expect("create temp repo dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestRepoDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn init_repo(path: &Path) -> Repository {
+        let mut options = RepositoryInitOptions::new();
+        options.initial_head("main");
+        Repository::init_opts(path, &options).expect("init temp repo")
+    }
+
+    fn empty_tree(repo: &Repository) -> git2::Tree<'_> {
+        let tree_id = {
+            let mut index = repo.index().expect("index");
+            index.write_tree().expect("write tree")
+        };
+        repo.find_tree(tree_id).expect("find tree")
+    }
+
+    fn signature(name: &str, timestamp: i64) -> Signature<'static> {
+        Signature::new(name, "tester@example.com", &Time::new(timestamp, 0)).expect("signature")
+    }
+
+    #[test]
+    fn get_commit_history_uses_git2_revwalk_and_keeps_labels() {
+        let repo_dir = TestRepoDir::new();
+        let repo = init_repo(repo_dir.path());
+        let tree = empty_tree(&repo);
+
+        let base_sig = signature("Base Author", 1_700_000_000);
+        let base_oid = repo
+            .commit(Some("HEAD"), &base_sig, &base_sig, "base", &tree, &[])
+            .expect("base commit");
+        let base_commit = repo.find_commit(base_oid).expect("find base");
+
+        repo.branch("feature", &base_commit, false)
+            .expect("create feature branch");
+
+        let feature_sig = signature("Feature Author", 1_700_000_100);
+        let feature_oid = repo
+            .commit(
+                Some("refs/heads/feature"),
+                &feature_sig,
+                &feature_sig,
+                "feature work",
+                &tree,
+                &[&base_commit],
+            )
+            .expect("feature commit");
+        let feature_commit = repo.find_commit(feature_oid).expect("find feature");
+
+        let main_sig = signature("Main Author", 1_700_000_200);
+        let main_oid = repo
+            .commit(
+                Some("HEAD"),
+                &main_sig,
+                &main_sig,
+                "main work",
+                &tree,
+                &[&base_commit],
+            )
+            .expect("main commit");
+        let main_commit = repo.find_commit(main_oid).expect("find main");
+
+        let merge_sig = signature("Merge Author", 1_700_000_300);
+        let merge_oid = repo
+            .commit(
+                Some("HEAD"),
+                &merge_sig,
+                &merge_sig,
+                "merge feature",
+                &tree,
+                &[&main_commit, &feature_commit],
+            )
+            .expect("merge commit");
+        let merge_commit = repo.find_commit(merge_oid).expect("find merge");
+
+        repo.tag_lightweight("v1.0.0.0", merge_commit.as_object(), false)
+            .expect("tag merge commit");
+
+        let history = get_commit_history(&repo, 10).expect("history");
+
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].message, "merge feature");
+        assert!(history[0].is_merge);
+        assert!(history[0].branch_labels.iter().any(|label| label == "main"));
+        assert!(
+            history[0]
+                .branch_labels
+                .iter()
+                .any(|label| label == "v1.0.0.0")
+        );
+        assert!(history.iter().any(|entry| {
+            entry.message == "feature work"
+                && entry.author == "Feature Author"
+                && entry.branch_labels.iter().any(|label| label == "feature")
+        }));
+        assert!(history.iter().any(|entry| entry.message == "main work"));
+        assert!(history.iter().any(|entry| entry.message == "base"));
+    }
+
+    #[test]
+    fn get_commit_history_returns_empty_for_unborn_head() {
+        let repo_dir = TestRepoDir::new();
+        let repo = init_repo(repo_dir.path());
+
+        let history = get_commit_history(&repo, 10).expect("history");
+
+        assert!(history.is_empty());
+    }
 }
