@@ -224,10 +224,7 @@ fn render_empty_section(
 
     let width = ui.available_width();
     let height = max_height.clamp(72.0, 140.0);
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(width, height),
-        egui::Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
 
     let painter = ui.painter_at(rect);
     let weak = ui.visuals().weak_text_color();

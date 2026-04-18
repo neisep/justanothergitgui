@@ -50,6 +50,16 @@ pub struct GithubAuthSession {
     pub login: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct GithubRepoSummary {
+    pub full_name: String,
+    pub clone_url: String,
+    #[serde(default)]
+    pub private: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct GithubAuthPrompt {
     pub user_code: String,
@@ -260,9 +270,7 @@ pub enum GithubAuthCheck {
     Revoked,
 }
 
-pub fn verify_github_auth_session(
-    session: &GithubAuthSession,
-) -> Result<GithubAuthCheck, String> {
+pub fn verify_github_auth_session(session: &GithubAuthSession) -> Result<GithubAuthCheck, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -284,6 +292,150 @@ pub fn verify_github_auth_session(
     } else {
         Err(format!("GitHub token check failed with status {}", status))
     }
+}
+
+const GITHUB_REPO_LIST_MAX_PAGES: usize = 5;
+
+pub fn list_github_repositories(
+    auth: &GithubAuthSession,
+) -> Result<Vec<GithubRepoSummary>, String> {
+    let client = github_http_client()?;
+    let mut results = Vec::new();
+    let mut next_url = Some(
+        "https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member"
+            .to_string(),
+    );
+    let mut pages = 0;
+
+    while let Some(url) = next_url.take() {
+        if pages >= GITHUB_REPO_LIST_MAX_PAGES {
+            break;
+        }
+        pages += 1;
+
+        let response = client
+            .get(&url)
+            .header(AUTHORIZATION, format!("Bearer {}", auth.access_token))
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, "justanothergitgui")
+            .send()
+            .map_err(|e| format!("GitHub repo list failed: {}", e))?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(
+                "GitHub token is no longer valid. Sign in again to refresh your session.".into(),
+            );
+        }
+        if !status.is_success() {
+            return Err(format!("GitHub repo list failed with status {}", status));
+        }
+
+        let link_header = response
+            .headers()
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let page: Vec<GithubRepoSummary> = response
+            .json()
+            .map_err(|e| format!("Invalid GitHub repo list response: {}", e))?;
+        results.extend(page);
+
+        next_url = link_header.as_deref().and_then(parse_link_header_next);
+    }
+
+    Ok(results)
+}
+
+pub fn clone_repository(
+    url: &str,
+    dest: &Path,
+    auth: Option<&GithubAuthSession>,
+) -> Result<PathBuf, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("Clone URL is required.".into());
+    }
+
+    if dest.exists() {
+        let is_empty = std::fs::read_dir(dest)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if !is_empty {
+            return Err(format!(
+                "Destination already exists and is not empty: {}",
+                dest.display()
+            ));
+        }
+    } else if let Some(parent) = dest.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        return Err(format!(
+            "Parent folder does not exist: {}",
+            parent.display()
+        ));
+    }
+
+    let use_github_auth = auth.is_some() && is_github_https_url(trimmed);
+    let callbacks = if use_github_auth {
+        github_remote_callbacks(auth.expect("auth is Some"))
+    } else {
+        let config = git2::Config::open_default()
+            .map_err(|e| format!("Credential configuration error: {}", e))?;
+        standard_remote_callbacks_from_config(config)
+    };
+
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_options);
+
+    let repo = builder
+        .clone(trimmed, dest)
+        .map_err(|e| format!("Clone error: {}", e))?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| "Cloned repository has no working directory.".to_string())?
+        .to_path_buf();
+
+    Ok(workdir.canonicalize().unwrap_or(workdir))
+}
+
+pub fn repo_name_from_clone_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_git = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    let segment = without_git
+        .rsplit(|c: char| c == '/' || c == ':')
+        .find(|s| !s.is_empty())?;
+    let segment = segment.trim();
+    if segment.is_empty() {
+        None
+    } else {
+        Some(segment.to_string())
+    }
+}
+
+fn parse_link_header_next(header: &str) -> Option<String> {
+    for part in header.split(',') {
+        let part = part.trim();
+        let Some((target, params)) = part.split_once(';') else {
+            continue;
+        };
+        let url = target.trim().trim_start_matches('<').trim_end_matches('>');
+        if params
+            .split(';')
+            .any(|p| p.trim() == "rel=\"next\"" || p.trim() == "rel=next")
+        {
+            return Some(url.to_string());
+        }
+    }
+    None
 }
 
 pub fn get_file_statuses(
@@ -1405,6 +1557,10 @@ fn standard_remote_callbacks(repo: &Repository) -> Result<git2::RemoteCallbacks<
     let config = repo
         .config()
         .map_err(|e| format!("Credential configuration error: {}", e))?;
+    Ok(standard_remote_callbacks_from_config(config))
+}
+
+fn standard_remote_callbacks_from_config(config: git2::Config) -> git2::RemoteCallbacks<'static> {
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed_types| {
         if allowed_types.contains(git2::CredentialType::SSH_KEY)
@@ -1429,7 +1585,7 @@ fn standard_remote_callbacks(repo: &Repository) -> Result<git2::RemoteCallbacks<
 
         git2::Cred::default()
     });
-    Ok(callbacks)
+    callbacks
 }
 
 fn parse_github_slug(slug: &str) -> Option<(String, String)> {
@@ -1625,7 +1781,10 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_github_https_url, parse_github_remote_slug, parse_semver_tag, suggest_next_tag};
+    use super::{
+        is_github_https_url, parse_github_remote_slug, parse_link_header_next, parse_semver_tag,
+        repo_name_from_clone_url, suggest_next_tag,
+    };
     use git2::Repository;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1781,6 +1940,40 @@ mod tests {
         }
 
         assert_eq!(suggest_next_tag(&repo), "3.4.5.3");
+    }
+
+    #[test]
+    fn repo_name_strips_git_suffix_and_picks_last_segment() {
+        assert_eq!(
+            repo_name_from_clone_url("https://github.com/octocat/Hello-World.git"),
+            Some("Hello-World".to_string())
+        );
+        assert_eq!(
+            repo_name_from_clone_url("https://github.com/octocat/Hello-World"),
+            Some("Hello-World".to_string())
+        );
+        assert_eq!(
+            repo_name_from_clone_url("git@github.com:octocat/Hello-World.git"),
+            Some("Hello-World".to_string())
+        );
+        assert_eq!(
+            repo_name_from_clone_url("  https://example.com/a/b/repo/  "),
+            Some("repo".to_string())
+        );
+        assert_eq!(repo_name_from_clone_url(""), None);
+        assert_eq!(repo_name_from_clone_url("   "), None);
+    }
+
+    #[test]
+    fn parse_link_header_finds_next_url() {
+        let header = "<https://api.github.com/user/repos?page=2>; rel=\"next\", <https://api.github.com/user/repos?page=5>; rel=\"last\"";
+        assert_eq!(
+            parse_link_header_next(header).as_deref(),
+            Some("https://api.github.com/user/repos?page=2")
+        );
+
+        let last_only = "<https://api.github.com/user/repos?page=5>; rel=\"last\"";
+        assert_eq!(parse_link_header_next(last_only), None);
     }
 }
 

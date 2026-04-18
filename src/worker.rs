@@ -13,6 +13,8 @@ pub enum TaskResult {
     OpenPullRequest(Result<String, String>),
     CreatePullRequest(Result<String, String>),
     DiscardAndReset(Result<String, String>),
+    ListGithubRepos(Result<Vec<crate::git_ops::GithubRepoSummary>, String>),
+    CloneRepo(Result<PathBuf, String>),
 }
 
 enum WorkerTask {
@@ -29,6 +31,14 @@ enum WorkerTask {
         path: PathBuf,
         auth: Option<crate::git_ops::GithubAuthSession>,
         clean_untracked: bool,
+    },
+    ListGithubRepos {
+        auth: crate::git_ops::GithubAuthSession,
+    },
+    CloneRepo {
+        url: String,
+        dest: PathBuf,
+        auth: Option<crate::git_ops::GithubAuthSession>,
     },
 }
 
@@ -85,6 +95,12 @@ impl Worker {
                         auth.as_ref(),
                         clean_untracked,
                     )),
+                    WorkerTask::ListGithubRepos { auth } => {
+                        TaskResult::ListGithubRepos(crate::git_ops::list_github_repositories(&auth))
+                    }
+                    WorkerTask::CloneRepo { url, dest, auth } => TaskResult::CloneRepo(
+                        crate::git_ops::clone_repository(&url, &dest, auth.as_ref()),
+                    ),
                 };
                 let _ = result_tx.send(result);
                 busy_clone.store(false, Ordering::SeqCst);
@@ -159,6 +175,23 @@ impl Worker {
                 auth,
                 clean_untracked,
             });
+        }
+    }
+
+    pub fn list_github_repos(&self, auth: crate::git_ops::GithubAuthSession) {
+        if !self.is_busy() {
+            let _ = self.tx.send(WorkerTask::ListGithubRepos { auth });
+        }
+    }
+
+    pub fn clone_repo(
+        &self,
+        url: String,
+        dest: PathBuf,
+        auth: Option<crate::git_ops::GithubAuthSession>,
+    ) {
+        if !self.is_busy() {
+            let _ = self.tx.send(WorkerTask::CloneRepo { url, dest, auth });
         }
     }
 

@@ -43,6 +43,46 @@ struct PublishRepoDialogState {
     operation_status: String,
 }
 
+struct CloneRepoDialogState {
+    show: bool,
+    url: String,
+    parent_folder: String,
+    focus_url_requested: bool,
+    status: String,
+    github_repos: Vec<git_ops::GithubRepoSummary>,
+    github_repos_loading: bool,
+    github_repos_error: Option<String>,
+    filter_text: String,
+}
+
+impl CloneRepoDialogState {
+    fn new() -> Self {
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self {
+            show: false,
+            url: String::new(),
+            parent_folder: current_dir.display().to_string(),
+            focus_url_requested: false,
+            status: String::new(),
+            github_repos: Vec::new(),
+            github_repos_loading: false,
+            github_repos_error: None,
+            filter_text: String::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.url.clear();
+        self.parent_folder = current_dir.display().to_string();
+        self.status.clear();
+        self.github_repos.clear();
+        self.github_repos_loading = false;
+        self.github_repos_error = None;
+        self.filter_text.clear();
+    }
+}
+
 struct SettingsDialogState {
     show: bool,
     status: String,
@@ -57,6 +97,7 @@ pub struct GitGuiApp {
     welcome_worker: Worker,
     welcome_busy: Option<BusyState>,
     publish_dialog: PublishRepoDialogState,
+    clone_dialog: CloneRepoDialogState,
     settings: AppSettings,
     settings_dialog: SettingsDialogState,
     github_auth_session: Option<git_ops::GithubAuthSession>,
@@ -153,6 +194,7 @@ impl GitGuiApp {
             welcome_worker: Worker::new(),
             welcome_busy: None,
             publish_dialog: PublishRepoDialogState::new(settings.commit_message_ruleset),
+            clone_dialog: CloneRepoDialogState::new(),
             settings,
             settings_dialog: SettingsDialogState {
                 show: false,
@@ -244,6 +286,23 @@ impl GitGuiApp {
         self.publish_dialog.show = true;
         self.publish_dialog.focus_folder_requested = true;
         self.refresh_github_auth_status();
+    }
+
+    fn open_clone_repo_dialog(&mut self) {
+        self.clone_dialog.reset();
+        self.clone_dialog.show = true;
+        self.clone_dialog.focus_url_requested = true;
+
+        if let Some(session) = self.github_auth_session.clone()
+            && !self.welcome_worker.is_busy()
+        {
+            self.clone_dialog.github_repos_loading = true;
+            self.welcome_busy = Some(BusyState::new(
+                BusyAction::ListGithubRepos,
+                "Loading GitHub repositories...",
+            ));
+            self.welcome_worker.list_github_repos(session);
+        }
     }
 
     fn open_settings_dialog(&mut self) {
@@ -977,6 +1036,33 @@ impl GitGuiApp {
                         status_message_for_error("Publish to GitHub", &msg);
                     self.welcome_status = status_message_for_error("Publish to GitHub", &msg);
                 }
+                TaskResult::ListGithubRepos(Ok(list)) => {
+                    self.welcome_busy = None;
+                    self.clone_dialog.github_repos = list;
+                    self.clone_dialog.github_repos_loading = false;
+                    self.clone_dialog.github_repos_error = None;
+                }
+                TaskResult::ListGithubRepos(Err(msg)) => {
+                    self.welcome_busy = None;
+                    self.clone_dialog.github_repos_loading = false;
+                    self.clone_dialog.github_repos_error = Some(msg.clone());
+                    self.logger.log_error("GitHub repos", &msg);
+                }
+                TaskResult::CloneRepo(Ok(path)) => {
+                    self.welcome_busy = None;
+                    self.clone_dialog.show = false;
+                    self.clone_dialog.status.clear();
+                    let message = format!("Cloned repository to {}", path.display());
+                    self.welcome_status = message.clone();
+                    self.open_repo(path);
+                    self.set_status_message(message);
+                }
+                TaskResult::CloneRepo(Err(msg)) => {
+                    self.welcome_busy = None;
+                    self.logger.log_error("Clone", &msg);
+                    self.clone_dialog.status = status_message_for_error("Clone", &msg);
+                    self.welcome_status = status_message_for_error("Clone", &msg);
+                }
                 TaskResult::Push(_)
                 | TaskResult::Pull(_)
                 | TaskResult::CreateTag(_)
@@ -1072,7 +1158,9 @@ impl GitGuiApp {
                     }
                     TaskResult::GithubAuthPrompt(_)
                     | TaskResult::GithubAuth(_)
-                    | TaskResult::CreateGithubRepo(_) => {}
+                    | TaskResult::CreateGithubRepo(_)
+                    | TaskResult::ListGithubRepos(_)
+                    | TaskResult::CloneRepo(_) => {}
                 }
             }
 
@@ -1454,6 +1542,12 @@ impl GitGuiApp {
                 self.open_repo_dialog();
             }
             if ui
+                .add_enabled(!worker_busy, egui::Button::new("Clone Repository..."))
+                .clicked()
+            {
+                self.open_clone_repo_dialog();
+            }
+            if ui
                 .add_enabled(
                     !worker_busy,
                     egui::Button::new("Publish Folder to GitHub..."),
@@ -1598,6 +1692,200 @@ impl GitGuiApp {
         }
 
         self.settings_dialog.show = keep_open;
+    }
+
+    fn show_clone_repo_dialog(&mut self, ctx: &egui::Context) {
+        if !self.clone_dialog.show {
+            return;
+        }
+
+        let welcome_busy = self.welcome_busy.clone();
+        let worker_busy = welcome_busy.is_some();
+        let mut keep_open = self.clone_dialog.show;
+        let mut choose_folder_clicked = false;
+        let mut clone_clicked = false;
+        let mut cancel_clicked = false;
+        let signed_in = self.github_auth_session.is_some();
+        let signed_in_login = self
+            .github_auth_session
+            .as_ref()
+            .map(|s| s.login.clone())
+            .unwrap_or_default();
+
+        egui::Window::new("Clone Repository")
+            .id(egui::Id::new("clone_repo_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                ui.add_enabled_ui(!worker_busy, |ui| {
+                    ui.label("Clone URL");
+                    let url_response = ui.add(
+                        egui::TextEdit::singleline(&mut self.clone_dialog.url)
+                            .desired_width(420.0)
+                            .hint_text("https://github.com/owner/repo.git"),
+                    );
+                    if self.clone_dialog.focus_url_requested {
+                        url_response.request_focus();
+                        self.clone_dialog.focus_url_requested = false;
+                    }
+
+                    ui.add_space(8.0);
+                    ui.label("Destination folder");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.clone_dialog.parent_folder)
+                                .desired_width(320.0),
+                        );
+                        if ui.button("Choose...").clicked() {
+                            choose_folder_clicked = true;
+                        }
+                    });
+
+                    let repo_name = git_ops::repo_name_from_clone_url(&self.clone_dialog.url);
+                    let parent_display = self.clone_dialog.parent_folder.trim();
+                    if let Some(name) = &repo_name
+                        && !parent_display.is_empty()
+                    {
+                        let preview = PathBuf::from(parent_display).join(name);
+                        ui.weak(format!("Will clone into: {}", preview.display()));
+                    } else {
+                        ui.weak("Pick a parent folder and paste a URL to see the target path.");
+                    }
+                });
+
+                if signed_in {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.heading("Your GitHub repositories");
+                    ui.weak(format!("Signed in as @{}", signed_in_login));
+
+                    if self.clone_dialog.github_repos_loading {
+                        ui::show_inline_busy(ui, "Loading repositories...");
+                    } else if let Some(error) = self.clone_dialog.github_repos_error.clone() {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    } else if self.clone_dialog.github_repos.is_empty() {
+                        ui.weak("No repositories returned.");
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label("Filter");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.clone_dialog.filter_text)
+                                    .desired_width(320.0)
+                                    .hint_text("Type to filter by name..."),
+                            );
+                        });
+
+                        let filter = self.clone_dialog.filter_text.to_ascii_lowercase();
+                        let filter = filter.trim();
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let mut chosen_url: Option<String> = None;
+                                for repo in &self.clone_dialog.github_repos {
+                                    if !filter.is_empty()
+                                        && !repo
+                                            .full_name
+                                            .to_ascii_lowercase()
+                                            .contains(filter)
+                                    {
+                                        continue;
+                                    }
+                                    let selected = self.clone_dialog.url == repo.clone_url;
+                                    let mut label = repo.full_name.clone();
+                                    if repo.private {
+                                        label.push_str("  [private]");
+                                    }
+                                    let response =
+                                        ui.selectable_label(selected, label);
+                                    if response.clicked() {
+                                        chosen_url = Some(repo.clone_url.clone());
+                                    }
+                                    if let Some(desc) = repo
+                                        .description
+                                        .as_ref()
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                    {
+                                        ui.weak(format!("    {}", desc));
+                                    }
+                                }
+                                if let Some(url) = chosen_url {
+                                    self.clone_dialog.url = url;
+                                }
+                            });
+                    }
+                } else {
+                    ui.add_space(8.0);
+                    ui.weak(
+                        "Tip: sign in to GitHub from the welcome screen to browse your repositories here.",
+                    );
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let clone_enabled = !worker_busy
+                        && !self.clone_dialog.url.trim().is_empty()
+                        && !self.clone_dialog.parent_folder.trim().is_empty();
+                    if ui
+                        .add_enabled(clone_enabled, egui::Button::new("Clone"))
+                        .clicked()
+                    {
+                        clone_clicked = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                    if let Some(busy) = &welcome_busy {
+                        ui::show_inline_busy(ui, &busy.label);
+                    }
+                });
+
+                if !self.clone_dialog.status.is_empty() {
+                    ui.add_space(6.0);
+                    ui.weak(&self.clone_dialog.status);
+                }
+            });
+
+        if choose_folder_clicked && let Some(path) = rfd::FileDialog::new().pick_folder() {
+            self.clone_dialog.parent_folder = path.display().to_string();
+        }
+
+        if clone_clicked {
+            self.start_clone_repo();
+            return;
+        }
+
+        if cancel_clicked {
+            keep_open = false;
+        }
+
+        self.clone_dialog.show = keep_open;
+    }
+
+    fn start_clone_repo(&mut self) {
+        if self.welcome_worker.is_busy() {
+            self.clone_dialog.status = "Busy — please wait...".into();
+            return;
+        }
+        let url = self.clone_dialog.url.trim().to_string();
+        let parent = self.clone_dialog.parent_folder.trim().to_string();
+        if url.is_empty() || parent.is_empty() {
+            self.clone_dialog.status = "URL and destination folder are required.".into();
+            return;
+        }
+        let Some(repo_name) = git_ops::repo_name_from_clone_url(&url) else {
+            self.clone_dialog.status = "Could not derive a repository name from this URL.".into();
+            return;
+        };
+        let dest = PathBuf::from(&parent).join(&repo_name);
+        self.clone_dialog.status = format!("Cloning into {}...", dest.display());
+        self.welcome_busy = Some(BusyState::new(BusyAction::CloneRepository, "Cloning..."));
+        self.welcome_worker
+            .clone_repo(url, dest, self.github_auth_session.clone());
     }
 
     fn show_publish_repo_dialog(&mut self, ctx: &egui::Context) {
@@ -2368,6 +2656,7 @@ impl eframe::App for GitGuiApp {
             self.show_welcome(ui);
             self.show_settings_dialog(&ctx);
             self.show_publish_repo_dialog(&ctx);
+            self.show_clone_repo_dialog(&ctx);
             self.show_github_auth_dialog(&ctx);
             self.show_log_viewer_dialog(&ctx);
             return;
@@ -2401,6 +2690,7 @@ impl eframe::App for GitGuiApp {
         }
 
         self.show_publish_repo_dialog(&ctx);
+        self.show_clone_repo_dialog(&ctx);
         self.show_settings_dialog(&ctx);
         self.show_create_branch_dialog(&ctx);
         self.show_create_branch_confirm_dialog(&ctx);
