@@ -1,3 +1,5 @@
+use std::any::Any;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +30,8 @@ pub(crate) struct CreatePullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct DiscardAndResetResult(pub(crate) Result<String, String>);
 pub(crate) struct ListGithubReposResult(pub(crate) Result<Vec<GithubRepoSummary>, String>);
 pub(crate) struct CloneRepoResult(pub(crate) Result<PathBuf, String>);
+#[cfg(test)]
+struct NoopResult;
 
 impl TaskResult {
     fn new(result: impl HandleTaskResult + 'static) -> Self {
@@ -78,6 +82,11 @@ impl TaskResult {
         Self::new(CloneRepoResult(result))
     }
 
+    #[cfg(test)]
+    fn noop() -> Self {
+        Self::new(NoopResult)
+    }
+
     pub(crate) fn apply_to_welcome(self, ctx: &mut WelcomeWorkerContext<'_>) {
         self.0.apply_to_welcome(ctx);
     }
@@ -110,6 +119,140 @@ enum WorkerTask {
         dest: PathBuf,
         auth: Option<GithubAuthSession>,
     },
+    #[cfg(test)]
+    Panic,
+}
+
+#[derive(Clone, Copy)]
+enum WorkerTaskKind {
+    Push,
+    Pull,
+    CreateTag,
+    GithubAuth,
+    CreateGithubRepo,
+    OpenPullRequest,
+    CreatePullRequest,
+    DiscardAndReset,
+    ListGithubRepos,
+    CloneRepo,
+    #[cfg(test)]
+    Panic,
+}
+
+impl WorkerTaskKind {
+    fn panic_result(self, message: String) -> TaskResult {
+        match self {
+            Self::Push => TaskResult::push(Err(message)),
+            Self::Pull => TaskResult::pull(Err(message)),
+            Self::CreateTag => TaskResult::create_tag(Err(message)),
+            Self::GithubAuth => TaskResult::github_auth(Err(message)),
+            Self::CreateGithubRepo => TaskResult::create_github_repo(Err(message)),
+            Self::OpenPullRequest => TaskResult::open_pull_request(Err(message)),
+            Self::CreatePullRequest => TaskResult::create_pull_request(Err(message)),
+            Self::DiscardAndReset => TaskResult::discard_and_reset(Err(message)),
+            Self::ListGithubRepos => TaskResult::list_github_repos(Err(message)),
+            Self::CloneRepo => TaskResult::clone_repo(Err(message)),
+            #[cfg(test)]
+            Self::Panic => TaskResult::noop(),
+        }
+    }
+}
+
+impl WorkerTask {
+    fn kind(&self) -> WorkerTaskKind {
+        match self {
+            Self::Push(..) => WorkerTaskKind::Push,
+            Self::Pull(..) => WorkerTaskKind::Pull,
+            Self::CreateTag(..) => WorkerTaskKind::CreateTag,
+            Self::GithubAuth { .. } => WorkerTaskKind::GithubAuth,
+            Self::CreateGithubRepo(..) => WorkerTaskKind::CreateGithubRepo,
+            Self::OpenPullRequest(..) => WorkerTaskKind::OpenPullRequest,
+            Self::CreatePullRequest(..) => WorkerTaskKind::CreatePullRequest,
+            Self::DiscardAndReset { .. } => WorkerTaskKind::DiscardAndReset,
+            Self::ListGithubRepos { .. } => WorkerTaskKind::ListGithubRepos,
+            Self::CloneRepo { .. } => WorkerTaskKind::CloneRepo,
+            #[cfg(test)]
+            Self::Panic => WorkerTaskKind::Panic,
+        }
+    }
+
+    fn run(self, result_tx: &mpsc::Sender<TaskResult>) -> TaskResult {
+        match self {
+            WorkerTask::Push(path, auth) => {
+                TaskResult::push(crate::git_ops::push(&path, auth.as_ref()))
+            }
+            WorkerTask::Pull(path, auth) => {
+                TaskResult::pull(crate::git_ops::pull(&path, auth.as_ref()))
+            }
+            WorkerTask::CreateTag(path, tag_name, auth) => {
+                TaskResult::create_tag(crate::git_ops::create_tag(&path, &tag_name, auth.as_ref()))
+            }
+            WorkerTask::GithubAuth { client_id } => {
+                let prompt_tx = result_tx.clone();
+                TaskResult::github_auth(crate::git_ops::github_auth_login(
+                    &client_id,
+                    move |prompt| {
+                        let _ = prompt_tx.send(TaskResult::github_auth_prompt(prompt));
+                    },
+                ))
+            }
+            WorkerTask::CreateGithubRepo(request) => {
+                TaskResult::create_github_repo(crate::git_ops::create_github_repo(&request))
+            }
+            WorkerTask::OpenPullRequest(url) => {
+                TaskResult::open_pull_request(crate::git_ops::open_pull_request(&url))
+            }
+            WorkerTask::CreatePullRequest(url) => {
+                TaskResult::create_pull_request(crate::git_ops::create_pull_request(&url))
+            }
+            WorkerTask::DiscardAndReset {
+                path,
+                auth,
+                clean_untracked,
+            } => TaskResult::discard_and_reset(crate::git_ops::discard_and_reset_to_remote(
+                &path,
+                auth.as_ref(),
+                clean_untracked,
+            )),
+            WorkerTask::ListGithubRepos { auth } => {
+                TaskResult::list_github_repos(crate::git_ops::list_github_repositories(&auth))
+            }
+            WorkerTask::CloneRepo { url, dest, auth } => {
+                TaskResult::clone_repo(crate::git_ops::clone_repository(&url, &dest, auth.as_ref()))
+            }
+            #[cfg(test)]
+            WorkerTask::Panic => panic!("panic task"),
+        }
+    }
+}
+
+struct BusyGuard {
+    busy: Arc<AtomicBool>,
+}
+
+impl BusyGuard {
+    fn new(busy: Arc<AtomicBool>) -> Self {
+        busy.store(true, Ordering::SeqCst);
+        Self { busy }
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.busy.store(false, Ordering::SeqCst);
+    }
+}
+
+fn worker_panic_message(payload: Box<dyn Any + Send>) -> String {
+    let detail = if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        message
+    } else {
+        "unknown panic payload"
+    };
+
+    format!("internal error: worker task panicked: {detail}")
 }
 
 pub struct Worker {
@@ -120,62 +263,20 @@ pub struct Worker {
 
 impl Worker {
     pub fn new() -> Self {
-        let (task_tx, task_rx) = mpsc::channel();
-        let (result_tx, result_rx) = mpsc::channel();
+        let (task_tx, task_rx) = mpsc::channel::<WorkerTask>();
+        let (result_tx, result_rx) = mpsc::channel::<TaskResult>();
         let busy = Arc::new(AtomicBool::new(false));
         let busy_clone = busy.clone();
 
         std::thread::spawn(move || {
             while let Ok(task) = task_rx.recv() {
-                busy_clone.store(true, Ordering::SeqCst);
-                let result = match task {
-                    WorkerTask::Push(path, auth) => {
-                        TaskResult::push(crate::git_ops::push(&path, auth.as_ref()))
-                    }
-                    WorkerTask::Pull(path, auth) => {
-                        TaskResult::pull(crate::git_ops::pull(&path, auth.as_ref()))
-                    }
-                    WorkerTask::CreateTag(path, tag_name, auth) => TaskResult::create_tag(
-                        crate::git_ops::create_tag(&path, &tag_name, auth.as_ref()),
-                    ),
-                    WorkerTask::GithubAuth { client_id } => {
-                        let prompt_tx = result_tx.clone();
-                        TaskResult::github_auth(crate::git_ops::github_auth_login(
-                            &client_id,
-                            move |prompt| {
-                                let _ = prompt_tx.send(TaskResult::github_auth_prompt(prompt));
-                            },
-                        ))
-                    }
-                    WorkerTask::CreateGithubRepo(request) => {
-                        TaskResult::create_github_repo(crate::git_ops::create_github_repo(&request))
-                    }
-                    WorkerTask::OpenPullRequest(url) => {
-                        TaskResult::open_pull_request(crate::git_ops::open_pull_request(&url))
-                    }
-                    WorkerTask::CreatePullRequest(url) => {
-                        TaskResult::create_pull_request(crate::git_ops::create_pull_request(&url))
-                    }
-                    WorkerTask::DiscardAndReset {
-                        path,
-                        auth,
-                        clean_untracked,
-                    } => {
-                        TaskResult::discard_and_reset(crate::git_ops::discard_and_reset_to_remote(
-                            &path,
-                            auth.as_ref(),
-                            clean_untracked,
-                        ))
-                    }
-                    WorkerTask::ListGithubRepos { auth } => TaskResult::list_github_repos(
-                        crate::git_ops::list_github_repositories(&auth),
-                    ),
-                    WorkerTask::CloneRepo { url, dest, auth } => TaskResult::clone_repo(
-                        crate::git_ops::clone_repository(&url, &dest, auth.as_ref()),
-                    ),
-                };
+                let _busy_guard = BusyGuard::new(busy_clone.clone());
+                let task_kind = task.kind();
+                let result = panic::catch_unwind(AssertUnwindSafe(|| task.run(&result_tx)))
+                    .unwrap_or_else(|payload| {
+                        task_kind.panic_result(worker_panic_message(payload))
+                    });
                 let _ = result_tx.send(result);
-                busy_clone.store(false, Ordering::SeqCst);
             }
         });
 
@@ -268,5 +369,56 @@ impl Worker {
 
     pub fn try_recv(&self) -> Option<TaskResult> {
         self.rx.try_recv().ok()
+    }
+}
+
+#[cfg(test)]
+impl HandleTaskResult for NoopResult {}
+
+#[cfg(test)]
+impl Worker {
+    fn panic_for_test(&self) {
+        if !self.is_busy() {
+            let _ = self.tx.send(WorkerTask::Panic);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn worker_recovers_after_task_panic() {
+        let worker = Worker::new();
+
+        worker.panic_for_test();
+        assert!(wait_for_result(&worker));
+        assert!(wait_for_idle(&worker));
+
+        worker.panic_for_test();
+        assert!(wait_for_result(&worker));
+        assert!(wait_for_idle(&worker));
+    }
+
+    fn wait_for_result(worker: &Worker) -> bool {
+        wait_until(|| worker.try_recv().is_some())
+    }
+
+    fn wait_for_idle(worker: &Worker) -> bool {
+        wait_until(|| !worker.is_busy())
+    }
+
+    fn wait_until(mut predicate: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if predicate() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        predicate()
     }
 }
