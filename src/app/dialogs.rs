@@ -293,7 +293,7 @@ impl GitGuiApp {
         if let Some(branch_name) = output.submit_branch {
             state
                 .actions
-                .push(UiAction::OpenCreateBranchConfirm(branch_name));
+                .push(UiAction::open_create_branch_confirm(branch_name));
         }
 
         if !output.keep_open && state.show_create_branch_dialog {
@@ -314,7 +314,7 @@ impl GitGuiApp {
         let output = ui::dialogs::branch::show_confirm_dialog(ctx, state);
 
         if output.confirm_requested {
-            state.actions.push(UiAction::ConfirmCreateBranch);
+            state.actions.push(UiAction::confirm_create_branch());
         }
 
         if !output.keep_open && state.show_create_branch_confirm {
@@ -354,7 +354,7 @@ impl GitGuiApp {
         );
 
         if let Some(tag_name) = output.submit_tag {
-            state.actions.push(UiAction::CreateTag(tag_name));
+            state.actions.push(UiAction::create_tag(tag_name));
         }
 
         state.show_create_tag_dialog = if create_tag_busy {
@@ -386,7 +386,7 @@ impl GitGuiApp {
                 .map(|branch| branch.name.clone())
                 .collect();
             if !names.is_empty() {
-                state.actions.push(UiAction::DeleteStaleBranches(names));
+                state.actions.push(UiAction::delete_stale_branches(names));
             }
         }
 
@@ -420,7 +420,7 @@ impl GitGuiApp {
             let clean_untracked = state.discard_clean_untracked;
             state
                 .actions
-                .push(UiAction::DiscardAndReset { clean_untracked });
+                .push(UiAction::discard_and_reset(clean_untracked));
         }
 
         state.show_discard_dialog = if discard_busy { true } else { output.keep_open };

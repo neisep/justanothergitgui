@@ -1,24 +1,17 @@
-#[derive(Clone, Debug)]
-pub enum UiAction {
-    StageFile(String),
-    UnstageFile(String),
-    StageAll,
-    UnstageAll,
-    Commit,
-    Push,
-    Pull,
-    SelectFile { path: String, staged: bool },
-    SwitchBranch(String),
-    CreateBranch(String),
-    OpenCreateBranchConfirm(String),
-    ConfirmCreateBranch,
-    CreateTag(String),
-    LaunchPullRequest,
-    ShowDiff,
-    ShowHistory,
-    SaveConflictResolution,
-    OpenCleanupBranches,
-    DeleteStaleBranches(Vec<String>),
-    OpenDiscardDialog,
-    DiscardAndReset { clean_untracked: bool },
+use crate::app::TabActionContext;
+
+pub trait HandleUiAction {
+    fn apply(self: Box<Self>, ctx: &mut TabActionContext<'_>);
+}
+
+pub struct UiAction(Box<dyn HandleUiAction>);
+
+impl UiAction {
+    pub(crate) fn new(action: impl HandleUiAction + 'static) -> Self {
+        Self(Box::new(action))
+    }
+
+    pub(crate) fn apply(self, ctx: &mut TabActionContext<'_>) {
+        self.0.apply(ctx);
+    }
 }

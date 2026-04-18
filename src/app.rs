@@ -5,6 +5,9 @@ mod repo;
 mod shell;
 mod worker_events;
 
+pub(crate) use actions::TabActionContext;
+pub(crate) use worker_events::{RepoWorkerContext, WelcomeWorkerContext};
+
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -21,7 +24,7 @@ use crate::shared::github::{
 };
 use crate::state::{AppState, BusyAction, BusyState};
 use crate::ui;
-use crate::worker::{TaskResult, Worker};
+use crate::worker::Worker;
 
 const GITHUB_OAUTH_CLIENT_ID: &str = "Ov23liRh81zsShRFaA4r";
 const SHORTCUT_STAGE_SELECTED_FILE: egui::KeyboardShortcut =

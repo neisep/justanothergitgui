@@ -11,13 +11,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             .selectable_label(state.center_view == CenterView::Diff, "Changes")
             .clicked()
         {
-            state.actions.push(UiAction::ShowDiff);
+            state.actions.push(UiAction::show_diff());
         }
         if ui
             .selectable_label(state.center_view == CenterView::History, "History")
             .clicked()
         {
-            state.actions.push(UiAction::ShowHistory);
+            state.actions.push(UiAction::show_history());
         }
     });
     ui.separator();
@@ -225,7 +225,7 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     if save_clicked {
-        state.actions.push(UiAction::SaveConflictResolution);
+        state.actions.push(UiAction::save_conflict_resolution());
     }
 }
 

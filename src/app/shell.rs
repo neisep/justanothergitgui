@@ -62,11 +62,11 @@ impl GitGuiApp {
                 Some(selected) if selected.staged => self.tabs[active_index]
                     .state
                     .actions
-                    .push(UiAction::UnstageFile(selected.path)),
+                    .push(UiAction::unstage_file(selected.path)),
                 Some(selected) => self.tabs[active_index]
                     .state
                     .actions
-                    .push(UiAction::StageFile(selected.path)),
+                    .push(UiAction::stage_file(selected.path)),
                 None => {
                     self.tabs[active_index].state.status_msg =
                         "Select a file to stage or unstage first".into();
@@ -90,7 +90,7 @@ impl GitGuiApp {
                 tab.state.status_msg = error;
                 tab.state.focus_commit_summary_requested = true;
             } else {
-                tab.state.actions.push(UiAction::Commit);
+                tab.state.actions.push(UiAction::commit());
             }
         }
 
@@ -260,7 +260,7 @@ impl GitGuiApp {
                         )
                         .clicked()
                     {
-                        state.actions.push(UiAction::OpenCleanupBranches);
+                        state.actions.push(UiAction::open_cleanup_branches());
                         ui.close();
                     }
 
@@ -278,7 +278,7 @@ impl GitGuiApp {
                         .on_hover_text(discard_tooltip)
                         .clicked()
                     {
-                        state.actions.push(UiAction::OpenDiscardDialog);
+                        state.actions.push(UiAction::open_discard_dialog());
                         ui.close();
                     }
 
@@ -337,14 +337,14 @@ impl GitGuiApp {
                                         .on_hover_text(push_tooltip)
                                         .clicked()
                                     {
-                                        state.actions.push(UiAction::Push);
+                                        state.actions.push(UiAction::push());
                                     }
                                     if ui
                                         .add_enabled(!repo_worker_busy, egui::Button::new("Pull"))
                                         .on_hover_text("Pull from remote")
                                         .clicked()
                                     {
-                                        state.actions.push(UiAction::Pull);
+                                        state.actions.push(UiAction::pull());
                                     }
                                     if let Some(busy) = repo_busy.as_ref().filter(|busy| {
                                         matches!(busy.action, BusyAction::Push | BusyAction::Pull)
@@ -373,7 +373,7 @@ impl GitGuiApp {
                             .on_hover_text(hover)
                             .clicked()
                         {
-                            state.actions.push(UiAction::LaunchPullRequest);
+                            state.actions.push(UiAction::launch_pull_request());
                         }
                         if let Some(busy) = repo_busy.as_ref().filter(|busy| {
                             matches!(
@@ -411,7 +411,7 @@ impl GitGuiApp {
 
                             if state.branch != prev_branch {
                                 let new_branch = state.branch.clone();
-                                state.actions.push(UiAction::SwitchBranch(new_branch));
+                                state.actions.push(UiAction::switch_branch(new_branch));
                             }
                         }
                     });

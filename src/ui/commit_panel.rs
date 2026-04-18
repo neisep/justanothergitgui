@@ -77,7 +77,7 @@ pub fn show(
                     })
                     .clicked()
                 {
-                    state.actions.push(UiAction::Commit);
+                    state.actions.push(UiAction::commit());
                 }
             });
 

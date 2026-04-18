@@ -25,7 +25,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                             .on_hover_text("Stage all changes")
                             .clicked()
                     {
-                        state.actions.push(UiAction::StageAll);
+                        state.actions.push(UiAction::stage_all());
                     }
                 });
             });
@@ -45,7 +45,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                             .on_hover_text("Unstage all changes")
                             .clicked()
                     {
-                        state.actions.push(UiAction::UnstageAll);
+                        state.actions.push(UiAction::unstage_all());
                     }
                 });
             });
@@ -170,9 +170,11 @@ fn render_file_table(
                         {
                             action_clicked = true;
                             if staged {
-                                state.actions.push(UiAction::UnstageFile(file.path.clone()));
+                                state
+                                    .actions
+                                    .push(UiAction::unstage_file(file.path.clone()));
                             } else {
-                                state.actions.push(UiAction::StageFile(file.path.clone()));
+                                state.actions.push(UiAction::stage_file(file.path.clone()));
                             }
                         }
                     });
@@ -184,10 +186,9 @@ fn render_file_table(
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                 if row_response.clicked() && !action_clicked && !drag_started {
-                    state.actions.push(UiAction::SelectFile {
-                        path: file.path.clone(),
-                        staged,
-                    });
+                    state
+                        .actions
+                        .push(UiAction::select_file(file.path.clone(), staged));
                 }
             });
         })
@@ -337,9 +338,11 @@ fn handle_drop(
             if let Some(pos) = hover_pos {
                 if target_rect.contains(pos) {
                     if drag.from_staged {
-                        state.actions.push(UiAction::UnstageFile(drag.path.clone()));
+                        state
+                            .actions
+                            .push(UiAction::unstage_file(drag.path.clone()));
                     } else {
-                        state.actions.push(UiAction::StageFile(drag.path.clone()));
+                        state.actions.push(UiAction::stage_file(drag.path.clone()));
                     }
                 }
             }
