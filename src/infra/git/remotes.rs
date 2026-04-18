@@ -25,7 +25,7 @@ pub fn push_with_git2(
     let mut callbacks = remote_callbacks(&repo, auth)?;
     callbacks.push_update_reference(move |_refname, status| {
         if let Some(message) = status {
-            *push_rejected_cb.lock().unwrap() = Some(message.to_string());
+            *push_rejected_cb.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.to_string());
         }
         Ok(())
     });
@@ -35,7 +35,7 @@ pub fn push_with_git2(
         .push(&[&refspec], Some(&mut push_options))
         .map_err(|error| format!("Push error: {}", error))?;
 
-    if let Some(reason) = push_rejected.lock().unwrap().take() {
+    if let Some(reason) = push_rejected.lock().unwrap_or_else(|e| e.into_inner()).take() {
         return Err(format!("Push rejected by remote: {}", reason));
     }
 
@@ -67,7 +67,7 @@ pub fn push_tag_with_git2(
     let mut callbacks = remote_callbacks(&repo, auth)?;
     callbacks.push_update_reference(move |_refname, status| {
         if let Some(message) = status {
-            *push_rejected_cb.lock().unwrap() = Some(message.to_string());
+            *push_rejected_cb.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.to_string());
         }
         Ok(())
     });
@@ -77,7 +77,7 @@ pub fn push_tag_with_git2(
         .push(&[&refspec], Some(&mut push_options))
         .map_err(|error| format!("Tag push error: {}", error))?;
 
-    if let Some(reason) = push_rejected.lock().unwrap().take() {
+    if let Some(reason) = push_rejected.lock().unwrap_or_else(|e| e.into_inner()).take() {
         return Err(format!("Tag push rejected by remote: {}", reason));
     }
 
