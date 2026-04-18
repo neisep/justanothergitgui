@@ -31,6 +31,7 @@ pub(crate) struct CreateGithubRepoResult(pub(crate) Result<CreateGithubRepoSucce
 pub(crate) struct OpenPullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct CreatePullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct DiscardAndResetResult(pub(crate) Result<String, String>);
+pub(crate) struct UndoLastCommitResult(pub(crate) Result<String, String>);
 pub(crate) struct ListGithubReposResult(pub(crate) Result<Vec<GithubRepoSummary>, String>);
 pub(crate) struct CloneRepoResult(pub(crate) Result<PathBuf, String>);
 #[cfg(test)]
@@ -102,6 +103,10 @@ impl RepoTaskResult {
         Self::new(DiscardAndResetResult(result))
     }
 
+    fn undo_last_commit(result: Result<String, String>) -> Self {
+        Self::new(UndoLastCommitResult(result))
+    }
+
     #[cfg(test)]
     fn noop() -> Self {
         Self::new(RepoNoopResult)
@@ -150,6 +155,7 @@ enum RepoWorkerTask {
         auth: Option<GithubAuthSession>,
         clean_untracked: bool,
     },
+    UndoLastCommit(PathBuf),
     #[cfg(test)]
     Panic,
 }
@@ -162,6 +168,7 @@ enum RepoWorkerTaskKind {
     OpenPullRequest,
     CreatePullRequest,
     DiscardAndReset,
+    UndoLastCommit,
     #[cfg(test)]
     Panic,
 }
@@ -199,10 +206,28 @@ impl WorkerTaskKind<RepoTaskResult> for RepoWorkerTaskKind {
             Self::OpenPullRequest => RepoTaskResult::open_pull_request(Err(message)),
             Self::CreatePullRequest => RepoTaskResult::create_pull_request(Err(message)),
             Self::DiscardAndReset => RepoTaskResult::discard_and_reset(Err(message)),
+            Self::UndoLastCommit => RepoTaskResult::undo_last_commit(Err(message)),
             #[cfg(test)]
             Self::Panic => RepoTaskResult::noop(),
         }
     }
+}
+
+fn log_closed_result_channel(context: &str) {
+    eprintln!("Worker result channel closed while sending {context}.");
+}
+
+fn send_github_auth_prompt(
+    result_tx: &mpsc::Sender<WelcomeTaskResult>,
+    prompt: GithubAuthPrompt,
+) -> Result<(), String> {
+    result_tx
+        .send(WelcomeTaskResult::github_auth_prompt(prompt))
+        .map_err(|_| {
+            log_closed_result_channel("GitHub auth prompt");
+            "internal error: welcome worker result channel closed before GitHub sign-in prompt could be delivered"
+                .into()
+        })
 }
 
 impl WorkerTaskSpec<WelcomeTaskResult> for WelcomeWorkerTask {
@@ -225,9 +250,7 @@ impl WorkerTaskSpec<WelcomeTaskResult> for WelcomeWorkerTask {
                 let prompt_tx = result_tx.clone();
                 WelcomeTaskResult::github_auth(AppWelcomeWorkerOps::github_auth_login(
                     &client_id,
-                    move |prompt| {
-                        let _ = prompt_tx.send(WelcomeTaskResult::github_auth_prompt(prompt));
-                    },
+                    move |prompt| send_github_auth_prompt(&prompt_tx, prompt),
                 ))
             }
             WelcomeWorkerTask::CreateGithubRepo(request) => WelcomeTaskResult::create_github_repo(
@@ -256,6 +279,7 @@ impl WorkerTaskSpec<RepoTaskResult> for RepoWorkerTask {
             Self::OpenPullRequest(..) => RepoWorkerTaskKind::OpenPullRequest,
             Self::CreatePullRequest(..) => RepoWorkerTaskKind::CreatePullRequest,
             Self::DiscardAndReset { .. } => RepoWorkerTaskKind::DiscardAndReset,
+            Self::UndoLastCommit(..) => RepoWorkerTaskKind::UndoLastCommit,
             #[cfg(test)]
             Self::Panic => RepoWorkerTaskKind::Panic,
         }
@@ -287,6 +311,9 @@ impl WorkerTaskSpec<RepoTaskResult> for RepoWorkerTask {
                 auth.as_ref(),
                 clean_untracked,
             )),
+            RepoWorkerTask::UndoLastCommit(path) => {
+                RepoTaskResult::undo_last_commit(AppRepoWorkerOps::undo_last_commit(&path))
+            }
             #[cfg(test)]
             RepoWorkerTask::Panic => panic!("panic task"),
         }
@@ -346,7 +373,9 @@ where
                     .unwrap_or_else(|payload| {
                         task_kind.panic_result(worker_panic_message(payload))
                     });
-                let _ = result_tx.send(result);
+                if result_tx.send(result).is_err() {
+                    log_closed_result_channel("worker task result");
+                }
             }
         });
 
@@ -474,6 +503,11 @@ impl RepoWorker {
         })
     }
 
+    #[must_use]
+    pub fn undo_last_commit(&self, repo_path: PathBuf) -> bool {
+        self.0.dispatch(RepoWorkerTask::UndoLastCommit(repo_path))
+    }
+
     pub fn is_busy(&self) -> bool {
         self.0.is_busy()
     }
@@ -577,6 +611,29 @@ mod tests {
         assert!(!worker.dispatch(TestTask::Sleep(Duration::from_millis(10))));
         assert!(wait_until(|| worker.try_recv().is_some()));
         assert!(wait_until(|| !worker.is_busy()));
+    }
+
+    #[test]
+    fn send_github_auth_prompt_returns_err_when_channel_closed() {
+        let (tx, rx) = mpsc::channel::<WelcomeTaskResult>();
+        drop(rx);
+
+        let result = send_github_auth_prompt(
+            &tx,
+            GithubAuthPrompt {
+                user_code: "ABCD-EFGH".into(),
+                verification_uri: "https://github.com/login/device".into(),
+                browser_url: "https://github.com/login/device".into(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(
+                "internal error: welcome worker result channel closed before GitHub sign-in prompt could be delivered"
+                    .into()
+            )
+        );
     }
 
     fn wait_until(mut predicate: impl FnMut() -> bool) -> bool {

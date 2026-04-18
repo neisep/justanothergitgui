@@ -6,7 +6,6 @@ mod repo;
 mod shell;
 mod worker_events;
 
-pub(crate) use actions::TabActionContext;
 use ports::{AppGitHubAuth, AppRepoRead, AppRepoWrite};
 pub(crate) use ports::{AppRepoWorkerOps, AppWelcomeWorkerOps};
 pub(crate) use worker_events::{RepoWorkerContext, WelcomeWorkerContext};
@@ -156,7 +155,11 @@ impl PublishRepoDialogState {
 }
 
 impl GitGuiApp {
-    pub fn new() -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        cc.egui_ctx
+            .set_visuals_of(egui::Theme::Dark, egui::Visuals::dark());
+
         let logger = AppLogger::new();
         let mut startup_status = None;
         let settings = match settings::load_app_settings() {

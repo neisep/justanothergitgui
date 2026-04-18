@@ -21,6 +21,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Just Another Git GUI",
         options,
-        Box::new(|_cc| Ok(Box::new(app::GitGuiApp::new()))),
+        Box::new(|cc| Ok(Box::new(app::GitGuiApp::new(cc)))),
     )
 }

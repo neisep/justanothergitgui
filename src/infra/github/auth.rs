@@ -89,7 +89,7 @@ pub fn verify_github_auth_session(session: &GithubAuthSession) -> Result<GithubA
 
 pub fn github_auth_login<F>(client_id: &str, on_prompt: F) -> Result<GithubAuthSession, String>
 where
-    F: FnOnce(GithubAuthPrompt),
+    F: FnOnce(GithubAuthPrompt) -> Result<(), String>,
 {
     let client = github_http_client()?;
     let device_response = client
@@ -124,7 +124,7 @@ where
         user_code: device.user_code.clone(),
         verification_uri: device.verification_uri.clone(),
         browser_url: open_url.to_string(),
-    });
+    })?;
     let _ = webbrowser::open(open_url);
 
     let mut poll_interval = device.interval.unwrap_or(5).max(1);

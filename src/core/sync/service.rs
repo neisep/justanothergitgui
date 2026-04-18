@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::core::ports::{
-    GitBranchReadPort, GitHubRemoteInfoPort, GitRemoteAuth, GitRemoteSyncPort,
+    GitBranchReadPort, GitHubRemoteInfoPort, GitRemoteAuth, GitRemoteSyncPort, GitUndoCommitPort,
 };
 use crate::shared::github::{GithubAuthSession, PushSuccess};
 
@@ -85,6 +85,24 @@ pub fn discard_and_reset_to_remote(
     git.reset_to_remote(repo_path, remote_auth, clean_untracked)
 }
 
+pub fn undo_last_commit(
+    repo_path: &Path,
+    git: &(impl GitBranchReadPort + GitUndoCommitPort),
+) -> Result<String, String> {
+    let branch_name = git
+        .current_branch_name(repo_path)?
+        .ok_or_else(|| "Undo last commit requires a checked-out branch.".to_string())?;
+    let outgoing_commit_count = git.outgoing_commit_count(repo_path)?;
+    if outgoing_commit_count == 0 {
+        return Err(format!(
+            "Undo last commit requires at least one local-only commit on {}.",
+            branch_name
+        ));
+    }
+
+    git.undo_last_commit(repo_path)
+}
+
 pub(crate) fn try_push_with_auth(
     repo_path: &Path,
     branch_name: Option<&str>,
@@ -120,8 +138,11 @@ mod tests {
     #[derive(Default)]
     struct FakeGitPort {
         branch_name: Option<String>,
+        outgoing_commit_count: usize,
         push_message: String,
+        undo_message: String,
         push_calls: std::cell::RefCell<Vec<(PathBuf, String, &'static str)>>,
+        undo_calls: std::cell::RefCell<Vec<PathBuf>>,
     }
 
     impl GitBranchReadPort for FakeGitPort {
@@ -168,6 +189,17 @@ mod tests {
         }
     }
 
+    impl GitUndoCommitPort for FakeGitPort {
+        fn outgoing_commit_count(&self, _repo_path: &Path) -> Result<usize, String> {
+            Ok(self.outgoing_commit_count)
+        }
+
+        fn undo_last_commit(&self, repo_path: &Path) -> Result<String, String> {
+            self.undo_calls.borrow_mut().push(repo_path.to_path_buf());
+            Ok(self.undo_message.clone())
+        }
+    }
+
     struct FakeGitHubPort {
         https_origin: bool,
         prompt: Option<PullRequestPrompt>,
@@ -192,8 +224,11 @@ mod tests {
     fn push_uses_injected_ports_without_real_repo() {
         let git = FakeGitPort {
             branch_name: Some("feature/demo".into()),
+            outgoing_commit_count: 0,
             push_message: "Push complete".into(),
+            undo_message: String::new(),
             push_calls: std::cell::RefCell::new(Vec::new()),
+            undo_calls: std::cell::RefCell::new(Vec::new()),
         };
         let github = FakeGitHubPort {
             https_origin: false,
@@ -224,8 +259,11 @@ mod tests {
     fn github_https_push_requires_app_auth_without_repo_access() {
         let git = FakeGitPort {
             branch_name: Some("main".into()),
+            outgoing_commit_count: 0,
             push_message: String::new(),
+            undo_message: String::new(),
             push_calls: std::cell::RefCell::new(Vec::new()),
+            undo_calls: std::cell::RefCell::new(Vec::new()),
         };
         let github = FakeGitHubPort {
             https_origin: true,
@@ -243,5 +281,67 @@ mod tests {
 
         assert!(error.contains("GitHub push requires the app's GitHub sign-in"));
         assert!(git.push_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn undo_last_commit_requires_checked_out_branch() {
+        let git = FakeGitPort {
+            branch_name: None,
+            outgoing_commit_count: 1,
+            push_message: String::new(),
+            undo_message: "Undid commit".into(),
+            push_calls: std::cell::RefCell::new(Vec::new()),
+            undo_calls: std::cell::RefCell::new(Vec::new()),
+        };
+
+        let error =
+            undo_last_commit(Path::new("/virtual/repo"), &git).expect_err("branch is required");
+
+        assert_eq!(error, "Undo last commit requires a checked-out branch.");
+        assert!(git.undo_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn undo_last_commit_requires_local_only_commit() {
+        let git = FakeGitPort {
+            branch_name: Some("main".into()),
+            outgoing_commit_count: 0,
+            push_message: String::new(),
+            undo_message: "Undid commit".into(),
+            push_calls: std::cell::RefCell::new(Vec::new()),
+            undo_calls: std::cell::RefCell::new(Vec::new()),
+        };
+
+        let error = undo_last_commit(Path::new("/virtual/repo"), &git)
+            .expect_err("local-only commit should be required");
+
+        assert_eq!(
+            error,
+            "Undo last commit requires at least one local-only commit on main."
+        );
+        assert!(git.undo_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn undo_last_commit_uses_injected_port_when_commit_is_local_only() {
+        let git = FakeGitPort {
+            branch_name: Some("main".into()),
+            outgoing_commit_count: 1,
+            push_message: String::new(),
+            undo_message: "Removed commit abc12345 from main and kept its changes staged".into(),
+            push_calls: std::cell::RefCell::new(Vec::new()),
+            undo_calls: std::cell::RefCell::new(Vec::new()),
+        };
+
+        let result = undo_last_commit(Path::new("/virtual/repo"), &git).expect("undo");
+
+        assert_eq!(
+            result,
+            "Removed commit abc12345 from main and kept its changes staged"
+        );
+        assert_eq!(
+            git.undo_calls.borrow().as_slice(),
+            &[PathBuf::from("/virtual/repo")]
+        );
     }
 }

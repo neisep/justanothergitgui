@@ -60,6 +60,11 @@ pub trait GitWorktreeCommitPort {
     fn create_commit(&self, repo_path: &Path, message: &str) -> Result<(), String>;
 }
 
+pub trait GitUndoCommitPort {
+    fn outgoing_commit_count(&self, repo_path: &Path) -> Result<usize, String>;
+    fn undo_last_commit(&self, repo_path: &Path) -> Result<String, String>;
+}
+
 #[allow(dead_code)]
 pub trait GitPort:
     GitBranchReadPort
@@ -68,6 +73,7 @@ pub trait GitPort:
     + GitTagPort
     + GitRepoBootstrapPort
     + GitWorktreeCommitPort
+    + GitUndoCommitPort
 {
 }
 
@@ -79,6 +85,7 @@ impl<T> GitPort for T where
         + GitTagPort
         + GitRepoBootstrapPort
         + GitWorktreeCommitPort
+        + GitUndoCommitPort
 {
 }
 

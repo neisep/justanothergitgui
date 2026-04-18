@@ -161,7 +161,7 @@ impl AppWelcomeWorkerOps {
         on_prompt: F,
     ) -> Result<GithubAuthSession, String>
     where
-        F: FnOnce(GithubAuthPrompt),
+        F: FnOnce(GithubAuthPrompt) -> Result<(), String>,
     {
         auth::github_auth_login(client_id, on_prompt)
     }
@@ -238,6 +238,11 @@ impl AppRepoWorkerOps {
         let git = InfraGitPort;
         let github = InfraGitHubPort;
         sync::service::discard_and_reset_to_remote(repo_path, auth, clean_untracked, &git, &github)
+    }
+
+    pub(crate) fn undo_last_commit(repo_path: &Path) -> Result<String, String> {
+        let git = InfraGitPort;
+        sync::service::undo_last_commit(repo_path, &git)
     }
 }
 
