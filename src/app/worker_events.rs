@@ -1,8 +1,8 @@
 use super::{helpers, *};
 use crate::worker::{
     CloneRepoResult, CreateGithubRepoResult, CreatePullRequestResult, CreateTagResult,
-    DiscardAndResetResult, GithubAuthPromptResult, GithubAuthResult, HandleTaskResult,
-    ListGithubReposResult, OpenPullRequestResult, PullResult, PushResult,
+    DiscardAndResetResult, GithubAuthPromptResult, GithubAuthResult, HandleRepoTaskResult,
+    HandleWelcomeTaskResult, ListGithubReposResult, OpenPullRequestResult, PullResult, PushResult,
 };
 
 pub(crate) struct WelcomeWorkerContext<'a> {
@@ -31,8 +31,8 @@ impl<'a> RepoWorkerContext<'a> {
     }
 }
 
-impl HandleTaskResult for GithubAuthPromptResult {
-    fn apply_to_welcome(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
+impl HandleWelcomeTaskResult for GithubAuthPromptResult {
+    fn apply(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
         let message = format!(
             "Enter GitHub code {} to finish signing in.",
             self.0.user_code
@@ -48,8 +48,8 @@ impl HandleTaskResult for GithubAuthPromptResult {
     }
 }
 
-impl HandleTaskResult for GithubAuthResult {
-    fn apply_to_welcome(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
+impl HandleWelcomeTaskResult for GithubAuthResult {
+    fn apply(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
         ctx.app.welcome_busy = None;
 
         match self.0 {
@@ -98,8 +98,8 @@ impl HandleTaskResult for GithubAuthResult {
     }
 }
 
-impl HandleTaskResult for CreateGithubRepoResult {
-    fn apply_to_welcome(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
+impl HandleWelcomeTaskResult for CreateGithubRepoResult {
+    fn apply(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
         ctx.app.welcome_busy = None;
 
         match self.0 {
@@ -122,8 +122,8 @@ impl HandleTaskResult for CreateGithubRepoResult {
     }
 }
 
-impl HandleTaskResult for ListGithubReposResult {
-    fn apply_to_welcome(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
+impl HandleWelcomeTaskResult for ListGithubReposResult {
+    fn apply(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
         match self.0 {
             Ok(list) => {
                 ctx.app.clone_dialog.github_repos = list;
@@ -139,8 +139,8 @@ impl HandleTaskResult for ListGithubReposResult {
     }
 }
 
-impl HandleTaskResult for CloneRepoResult {
-    fn apply_to_welcome(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
+impl HandleWelcomeTaskResult for CloneRepoResult {
+    fn apply(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>) {
         ctx.app.welcome_busy = None;
 
         match self.0 {
@@ -161,8 +161,8 @@ impl HandleTaskResult for CloneRepoResult {
     }
 }
 
-impl HandleTaskResult for PushResult {
-    fn apply_to_repo(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+impl HandleRepoTaskResult for PushResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
         ctx.tab.state.busy = None;
 
         match self.0 {
@@ -188,8 +188,8 @@ impl HandleTaskResult for PushResult {
     }
 }
 
-impl HandleTaskResult for PullResult {
-    fn apply_to_repo(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+impl HandleRepoTaskResult for PullResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
         ctx.tab.state.busy = None;
 
         match self.0 {
@@ -205,8 +205,8 @@ impl HandleTaskResult for PullResult {
     }
 }
 
-impl HandleTaskResult for CreateTagResult {
-    fn apply_to_repo(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+impl HandleRepoTaskResult for CreateTagResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
         ctx.tab.state.busy = None;
 
         match self.0 {
@@ -226,8 +226,8 @@ impl HandleTaskResult for CreateTagResult {
     }
 }
 
-impl HandleTaskResult for OpenPullRequestResult {
-    fn apply_to_repo(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+impl HandleRepoTaskResult for OpenPullRequestResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
         ctx.tab.state.busy = None;
 
         match self.0 {
@@ -242,8 +242,8 @@ impl HandleTaskResult for OpenPullRequestResult {
     }
 }
 
-impl HandleTaskResult for CreatePullRequestResult {
-    fn apply_to_repo(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+impl HandleRepoTaskResult for CreatePullRequestResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
         ctx.tab.state.busy = None;
 
         match self.0 {
@@ -258,8 +258,8 @@ impl HandleTaskResult for CreatePullRequestResult {
     }
 }
 
-impl HandleTaskResult for DiscardAndResetResult {
-    fn apply_to_repo(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+impl HandleRepoTaskResult for DiscardAndResetResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
         ctx.tab.state.busy = None;
 
         match self.0 {
@@ -284,7 +284,7 @@ impl GitGuiApp {
     pub(super) fn poll_workers(&mut self) -> bool {
         while let Some(result) = self.welcome_worker.try_recv() {
             let mut ctx = WelcomeWorkerContext::new(self);
-            result.apply_to_welcome(&mut ctx);
+            result.apply(&mut ctx);
         }
 
         let mut any_busy = self.welcome_worker.is_busy();
@@ -299,7 +299,7 @@ impl GitGuiApp {
                     logger,
                     refresh_requested: &mut refresh_requested,
                 };
-                result.apply_to_repo(&mut ctx);
+                result.apply(&mut ctx);
             }
 
             if tab.worker.is_busy() {

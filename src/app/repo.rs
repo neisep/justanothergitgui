@@ -52,7 +52,7 @@ impl GitGuiApp {
         self.tabs.push(RepoTab {
             state,
             repo,
-            worker: Worker::new(),
+            worker: crate::worker::RepoWorker::new(),
         });
         self.active_tab = self.tabs.len() - 1;
         self.welcome_status = "Open a Git repository to get started.".into();

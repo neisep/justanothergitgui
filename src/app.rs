@@ -24,7 +24,7 @@ use crate::shared::github::{
 };
 use crate::state::{AppState, BusyAction, BusyState};
 use crate::ui;
-use crate::worker::Worker;
+use crate::worker::{RepoWorker, WelcomeWorker};
 
 const GITHUB_OAUTH_CLIENT_ID: &str = "Ov23liRh81zsShRFaA4r";
 const SHORTCUT_STAGE_SELECTED_FILE: egui::KeyboardShortcut =
@@ -41,7 +41,7 @@ const SHORTCUT_FOCUS_COMMIT: egui::KeyboardShortcut =
 struct RepoTab {
     state: AppState,
     repo: Repository,
-    worker: Worker,
+    worker: RepoWorker,
 }
 
 pub(crate) struct PublishRepoDialogState {
@@ -107,7 +107,7 @@ pub struct GitGuiApp {
     tabs: Vec<RepoTab>,
     active_tab: usize,
     welcome_status: String,
-    welcome_worker: Worker,
+    welcome_worker: WelcomeWorker,
     welcome_busy: Option<BusyState>,
     publish_dialog: PublishRepoDialogState,
     clone_dialog: CloneRepoDialogState,
@@ -205,7 +205,7 @@ impl GitGuiApp {
             tabs: Vec::new(),
             active_tab: 0,
             welcome_status: "Open a Git repository to get started.".into(),
-            welcome_worker: Worker::new(),
+            welcome_worker: WelcomeWorker::new(),
             welcome_busy: None,
             publish_dialog: PublishRepoDialogState::new(settings.commit_message_ruleset),
             clone_dialog: CloneRepoDialogState::new(),
