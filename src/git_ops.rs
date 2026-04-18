@@ -358,7 +358,8 @@ pub fn clone_repository(
         return Err("Clone URL is required.".into());
     }
 
-    if dest.exists() {
+    let dest_existed = dest.exists();
+    if dest_existed {
         let is_empty = std::fs::read_dir(dest)
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(false);
@@ -393,15 +394,36 @@ pub fn clone_repository(
     let mut builder = git2::build::RepoBuilder::new();
     builder.fetch_options(fetch_options);
 
-    let repo = builder
-        .clone(trimmed, dest)
-        .map_err(|e| format!("Clone error: {}", e))?;
+    let repo = match builder.clone(trimmed, dest) {
+        Ok(repo) => repo,
+        Err(e) => {
+            cleanup_failed_clone(dest, dest_existed);
+            return Err(format!("Clone error: {}", e));
+        }
+    };
     let workdir = repo
         .workdir()
         .ok_or_else(|| "Cloned repository has no working directory.".to_string())?
         .to_path_buf();
 
     Ok(workdir.canonicalize().unwrap_or(workdir))
+}
+
+fn cleanup_failed_clone(dest: &Path, dest_existed: bool) {
+    if dest_existed {
+        if let Ok(entries) = std::fs::read_dir(dest) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let removed = match entry.file_type() {
+                    Ok(ft) if ft.is_dir() => std::fs::remove_dir_all(&path),
+                    _ => std::fs::remove_file(&path),
+                };
+                let _ = removed;
+            }
+        }
+    } else {
+        let _ = std::fs::remove_dir_all(dest);
+    }
 }
 
 pub fn repo_name_from_clone_url(url: &str) -> Option<String> {
