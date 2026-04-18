@@ -25,11 +25,7 @@ impl AppLogger {
         if let Some(parent) = logger.path.parent()
             && let Err(error) = fs::create_dir_all(parent)
         {
-            eprintln!(
-                "Logger failure: could not create log directory {}: {}",
-                parent.display(),
-                error
-            );
+            eprintln!("Logger failure: could not create log directory: {}", error);
         }
         logger
     }

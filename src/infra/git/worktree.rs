@@ -181,13 +181,16 @@ pub fn undo_last_commit(repo: &Repository) -> Result<String, git2::Error> {
         ));
     }
 
-    let branch_name = head.shorthand().unwrap_or("HEAD").to_string();
+    let branch_name = head
+        .shorthand()
+        .ok_or_else(|| git2::Error::from_str("Branch has no short name"))?
+        .to_string();
     let branch_ref_name = head
         .name()
         .map(ToOwned::to_owned)
         .ok_or_else(|| git2::Error::from_str("Undo last commit requires a named branch"))?;
     let head_commit = head.peel_to_commit()?;
-    let short_oid = head_commit.id().to_string()[..8].to_string();
+    let short_oid = short_object_id(repo, head_commit.id())?;
     drop(head);
 
     if head_commit.parent_count() > 0 {
@@ -202,6 +205,15 @@ pub fn undo_last_commit(repo: &Repository) -> Result<String, git2::Error> {
         "Removed commit {} from {} and kept its changes staged",
         short_oid, branch_name
     ))
+}
+
+fn short_object_id(repo: &Repository, oid: git2::Oid) -> Result<String, git2::Error> {
+    Ok(repo
+        .find_object(oid, None)?
+        .short_id()?
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| oid.to_string()))
 }
 
 pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<String, git2::Error> {
@@ -410,7 +422,7 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
 mod tests {
     use super::{
         clean_untracked_files, get_file_statuses, parse_conflict_markers, read_conflict_file,
-        stage_all, undo_last_commit,
+        short_object_id, stage_all, undo_last_commit,
     };
     use crate::infra::git::repository::{get_commit_history, get_current_branch};
     use crate::shared::conflicts::{ConflictChoice, ConflictPart};
@@ -613,7 +625,7 @@ mod tests {
 
         let message = undo_last_commit(&repo).expect("undo latest commit");
 
-        assert!(message.contains(&second_oid.to_string()[..8]));
+        assert!(message.contains(&short_object_id(&repo, second_oid).expect("short oid")));
         assert!(message.contains("kept its changes staged"));
         assert_eq!(repo.head().expect("head").target(), Some(first_oid));
         assert_eq!(
@@ -638,7 +650,7 @@ mod tests {
 
         let message = undo_last_commit(&repo).expect("undo initial commit");
 
-        assert!(message.contains(&first_oid.to_string()[..8]));
+        assert!(message.contains(&short_object_id(&repo, first_oid).expect("short oid")));
         assert_eq!(get_current_branch(&repo).expect("current branch"), "main");
         assert!(get_commit_history(&repo, 10).expect("history").is_empty());
         assert_eq!(

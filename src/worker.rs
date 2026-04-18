@@ -213,6 +213,23 @@ impl WorkerTaskKind<RepoTaskResult> for RepoWorkerTaskKind {
     }
 }
 
+fn log_closed_result_channel(context: &str) {
+    eprintln!("Worker result channel closed while sending {context}.");
+}
+
+fn send_github_auth_prompt(
+    result_tx: &mpsc::Sender<WelcomeTaskResult>,
+    prompt: GithubAuthPrompt,
+) -> Result<(), String> {
+    result_tx
+        .send(WelcomeTaskResult::github_auth_prompt(prompt))
+        .map_err(|_| {
+            log_closed_result_channel("GitHub auth prompt");
+            "internal error: welcome worker result channel closed before GitHub sign-in prompt could be delivered"
+                .into()
+        })
+}
+
 impl WorkerTaskSpec<WelcomeTaskResult> for WelcomeWorkerTask {
     type Kind = WelcomeWorkerTaskKind;
 
@@ -233,9 +250,7 @@ impl WorkerTaskSpec<WelcomeTaskResult> for WelcomeWorkerTask {
                 let prompt_tx = result_tx.clone();
                 WelcomeTaskResult::github_auth(AppWelcomeWorkerOps::github_auth_login(
                     &client_id,
-                    move |prompt| {
-                        let _ = prompt_tx.send(WelcomeTaskResult::github_auth_prompt(prompt));
-                    },
+                    move |prompt| send_github_auth_prompt(&prompt_tx, prompt),
                 ))
             }
             WelcomeWorkerTask::CreateGithubRepo(request) => WelcomeTaskResult::create_github_repo(
@@ -358,7 +373,9 @@ where
                     .unwrap_or_else(|payload| {
                         task_kind.panic_result(worker_panic_message(payload))
                     });
-                let _ = result_tx.send(result);
+                if result_tx.send(result).is_err() {
+                    log_closed_result_channel("worker task result");
+                }
             }
         });
 
@@ -594,6 +611,29 @@ mod tests {
         assert!(!worker.dispatch(TestTask::Sleep(Duration::from_millis(10))));
         assert!(wait_until(|| worker.try_recv().is_some()));
         assert!(wait_until(|| !worker.is_busy()));
+    }
+
+    #[test]
+    fn send_github_auth_prompt_returns_err_when_channel_closed() {
+        let (tx, rx) = mpsc::channel::<WelcomeTaskResult>();
+        drop(rx);
+
+        let result = send_github_auth_prompt(
+            &tx,
+            GithubAuthPrompt {
+                user_code: "ABCD-EFGH".into(),
+                verification_uri: "https://github.com/login/device".into(),
+                browser_url: "https://github.com/login/device".into(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(
+                "internal error: welcome worker result channel closed before GitHub sign-in prompt could be delivered"
+                    .into()
+            )
+        );
     }
 
     fn wait_until(mut predicate: impl FnMut() -> bool) -> bool {

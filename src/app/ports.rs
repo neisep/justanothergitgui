@@ -161,7 +161,7 @@ impl AppWelcomeWorkerOps {
         on_prompt: F,
     ) -> Result<GithubAuthSession, String>
     where
-        F: FnOnce(GithubAuthPrompt),
+        F: FnOnce(GithubAuthPrompt) -> Result<(), String>,
     {
         auth::github_auth_login(client_id, on_prompt)
     }
