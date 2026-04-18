@@ -131,7 +131,6 @@ pub enum BusyAction {
     GithubSignIn,
     PublishRepository,
     CloneRepository,
-    ListGithubRepos,
 }
 
 #[derive(Clone, Debug)]

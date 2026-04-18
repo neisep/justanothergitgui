@@ -1,0 +1,46 @@
+src/
+  app/
+    mod.rs
+    state.rs
+    routes.rs
+  ui/
+    mod.rs
+    components/
+      button.rs
+      file_list.rs
+      error_popup.rs
+    screens/
+      home.rs
+      settings.rs
+      repository.rs
+  core/
+    mod.rs
+    saving/
+      mod.rs
+      service.rs
+      validator.rs
+      errors.rs
+    repository/
+      mod.rs
+      repo_service.rs
+      repo_errors.rs
+  infra/
+    mod.rs
+    fs/
+      file_io.rs
+    git/
+      git_client.rs
+    config/
+      settings.rs
+  shared/
+    mod.rs
+    types.rs
+    result.rs
+    errors.rs
+    utils.rs
+docs/
+  structure.md
+  memory-map.md
+  defensive-rules.md
+  solid-rules.md
+

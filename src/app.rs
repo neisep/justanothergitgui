@@ -297,10 +297,6 @@ impl GitGuiApp {
             && !self.welcome_worker.is_busy()
         {
             self.clone_dialog.github_repos_loading = true;
-            self.welcome_busy = Some(BusyState::new(
-                BusyAction::ListGithubRepos,
-                "Loading GitHub repositories...",
-            ));
             self.welcome_worker.list_github_repos(session);
         }
     }
@@ -1037,13 +1033,11 @@ impl GitGuiApp {
                     self.welcome_status = status_message_for_error("Publish to GitHub", &msg);
                 }
                 TaskResult::ListGithubRepos(Ok(list)) => {
-                    self.welcome_busy = None;
                     self.clone_dialog.github_repos = list;
                     self.clone_dialog.github_repos_loading = false;
                     self.clone_dialog.github_repos_error = None;
                 }
                 TaskResult::ListGithubRepos(Err(msg)) => {
-                    self.welcome_busy = None;
                     self.clone_dialog.github_repos_loading = false;
                     self.clone_dialog.github_repos_error = Some(msg.clone());
                     self.logger.log_error("GitHub repos", &msg);
@@ -1224,7 +1218,7 @@ impl GitGuiApp {
                 let state = &mut self.tabs[active_index].state;
                 let repo_busy = state.busy.clone();
                 let repo_worker_busy = repo_busy.is_some();
-                let welcome_worker_busy = welcome_busy.is_some();
+                let welcome_worker_busy = welcome_busy.is_some() || self.welcome_worker.is_busy();
                 let controls_width = if state.branch.is_empty() {
                     380.0
                 } else {
@@ -1701,6 +1695,7 @@ impl GitGuiApp {
 
         let welcome_busy = self.welcome_busy.clone();
         let worker_busy = welcome_busy.is_some();
+        let worker_dispatch_busy = worker_busy || self.welcome_worker.is_busy();
         let mut keep_open = self.clone_dialog.show;
         let mut choose_folder_clicked = false;
         let mut clone_clicked = false;
@@ -1827,7 +1822,7 @@ impl GitGuiApp {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let clone_enabled = !worker_busy
+                    let clone_enabled = !worker_dispatch_busy
                         && !self.clone_dialog.url.trim().is_empty()
                         && !self.clone_dialog.parent_folder.trim().is_empty();
                     if ui
@@ -1902,6 +1897,7 @@ impl GitGuiApp {
 
         let welcome_busy = self.welcome_busy.clone();
         let worker_busy = welcome_busy.is_some();
+        let worker_dispatch_busy = worker_busy || self.welcome_worker.is_busy();
         let mut keep_open = self.publish_dialog.show;
         let mut close_requested = false;
         let mut choose_folder_clicked = false;
@@ -2002,7 +1998,7 @@ impl GitGuiApp {
                     ui.weak(&self.publish_dialog.operation_status);
                 }
 
-                let can_create = !worker_busy
+                let can_create = !worker_dispatch_busy
                     && self.publish_dialog.github_authenticated
                     && !self.publish_dialog.folder_path.trim().is_empty()
                     && !self.publish_dialog.repo_name.trim().is_empty()
@@ -2015,7 +2011,7 @@ impl GitGuiApp {
                         ui::show_inline_busy(ui, &busy.label);
                     }
                     if ui
-                        .add_enabled(!worker_busy, egui::Button::new("Sign In with GitHub"))
+                        .add_enabled(!worker_dispatch_busy, egui::Button::new("Sign In with GitHub"))
                         .clicked()
                     {
                         sign_in_clicked = true;
