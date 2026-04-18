@@ -1,6 +1,8 @@
 use eframe::egui;
 
-use crate::state::{AppState, CenterView, ConflictChoice, ConflictPart, UiAction};
+use crate::shared::actions::UiAction;
+use crate::shared::conflicts::{ConflictChoice, ConflictPart};
+use crate::state::{AppState, CenterView};
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     // View toggle

@@ -1,7 +1,8 @@
 use eframe::egui;
 
 use crate::commit_rules::{self, CommitMessageRuleSet};
-use crate::state::{AppState, UiAction};
+use crate::shared::actions::UiAction;
+use crate::state::AppState;
 
 pub fn show(
     ui: &mut egui::Ui,

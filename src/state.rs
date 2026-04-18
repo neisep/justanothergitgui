@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-#[derive(Clone, Debug)]
-pub struct FileEntry {
-    pub path: String,
-    pub display_status: String,
-    pub is_conflicted: bool,
-}
+use crate::shared::actions::UiAction;
+use crate::shared::conflicts::ConflictData;
+use crate::shared::git::{
+    CommitEntry, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
+};
+use crate::shared::github::PullRequestPrompt;
 
 #[derive(Clone, Debug)]
 pub struct SelectedFile {
@@ -21,103 +21,9 @@ pub enum CenterView {
 }
 
 #[derive(Clone, Debug)]
-pub struct CommitEntry {
-    pub short_oid: String,
-    pub message: String,
-    pub author: String,
-    pub time: String,
-    pub is_merge: bool,
-    pub branch_labels: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub enum PullRequestPrompt {
-    Open {
-        branch: String,
-        number: u64,
-        url: String,
-    },
-    Create {
-        branch: String,
-        url: String,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub enum ConflictPart {
-    Common(String),
-    Conflict {
-        ours: String,
-        theirs: String,
-        resolution: ConflictChoice,
-    },
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum ConflictChoice {
-    #[default]
-    Unresolved,
-    Ours,
-    Theirs,
-    Both,
-}
-
-#[derive(Clone, Debug)]
-pub struct ConflictData {
-    pub path: String,
-    pub sections: Vec<ConflictPart>,
-}
-
-#[derive(Clone, Debug)]
 pub struct DragFile {
     pub path: String,
     pub from_staged: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct StaleBranch {
-    pub name: String,
-    pub merged_into_head: bool,
-    pub selected: bool,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct DiscardPreview {
-    pub dirty_files: usize,
-    pub untracked_files: usize,
-    pub local_only_commits: usize,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct CreateBranchPreview {
-    pub branch_name: String,
-    pub dirty_files: usize,
-    pub untracked_files: usize,
-    pub staged_files: usize,
-}
-
-pub enum UiAction {
-    StageFile(String),
-    UnstageFile(String),
-    StageAll,
-    UnstageAll,
-    Commit,
-    Push,
-    Pull,
-    SelectFile { path: String, staged: bool },
-    SwitchBranch(String),
-    CreateBranch(String),
-    OpenCreateBranchConfirm(String),
-    ConfirmCreateBranch,
-    CreateTag(String),
-    LaunchPullRequest,
-    ShowDiff,
-    ShowHistory,
-    SaveConflictResolution,
-    OpenCleanupBranches,
-    DeleteStaleBranches(Vec<String>),
-    OpenDiscardDialog,
-    DiscardAndReset { clean_untracked: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

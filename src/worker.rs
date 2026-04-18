@@ -3,42 +3,47 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
+use crate::shared::github::{
+    CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthPrompt, GithubAuthSession,
+    GithubRepoSummary, PushSuccess,
+};
+
 pub enum TaskResult {
-    Push(Result<crate::git_ops::PushSuccess, String>),
+    Push(Result<PushSuccess, String>),
     Pull(Result<String, String>),
     CreateTag(Result<String, String>),
-    GithubAuthPrompt(crate::git_ops::GithubAuthPrompt),
-    GithubAuth(Result<crate::git_ops::GithubAuthSession, String>),
-    CreateGithubRepo(Result<crate::git_ops::CreateGithubRepoSuccess, String>),
+    GithubAuthPrompt(GithubAuthPrompt),
+    GithubAuth(Result<GithubAuthSession, String>),
+    CreateGithubRepo(Result<CreateGithubRepoSuccess, String>),
     OpenPullRequest(Result<String, String>),
     CreatePullRequest(Result<String, String>),
     DiscardAndReset(Result<String, String>),
-    ListGithubRepos(Result<Vec<crate::git_ops::GithubRepoSummary>, String>),
+    ListGithubRepos(Result<Vec<GithubRepoSummary>, String>),
     CloneRepo(Result<PathBuf, String>),
 }
 
 enum WorkerTask {
-    Push(PathBuf, Option<crate::git_ops::GithubAuthSession>),
-    Pull(PathBuf, Option<crate::git_ops::GithubAuthSession>),
-    CreateTag(PathBuf, String, Option<crate::git_ops::GithubAuthSession>),
+    Push(PathBuf, Option<GithubAuthSession>),
+    Pull(PathBuf, Option<GithubAuthSession>),
+    CreateTag(PathBuf, String, Option<GithubAuthSession>),
     GithubAuth {
         client_id: String,
     },
-    CreateGithubRepo(crate::git_ops::CreateGithubRepoRequest),
+    CreateGithubRepo(CreateGithubRepoRequest),
     OpenPullRequest(String),
     CreatePullRequest(String),
     DiscardAndReset {
         path: PathBuf,
-        auth: Option<crate::git_ops::GithubAuthSession>,
+        auth: Option<GithubAuthSession>,
         clean_untracked: bool,
     },
     ListGithubRepos {
-        auth: crate::git_ops::GithubAuthSession,
+        auth: GithubAuthSession,
     },
     CloneRepo {
         url: String,
         dest: PathBuf,
-        auth: Option<crate::git_ops::GithubAuthSession>,
+        auth: Option<GithubAuthSession>,
     },
 }
 
@@ -114,13 +119,13 @@ impl Worker {
         }
     }
 
-    pub fn push(&self, repo_path: PathBuf, auth: Option<crate::git_ops::GithubAuthSession>) {
+    pub fn push(&self, repo_path: PathBuf, auth: Option<GithubAuthSession>) {
         if !self.is_busy() {
             let _ = self.tx.send(WorkerTask::Push(repo_path, auth));
         }
     }
 
-    pub fn pull(&self, repo_path: PathBuf, auth: Option<crate::git_ops::GithubAuthSession>) {
+    pub fn pull(&self, repo_path: PathBuf, auth: Option<GithubAuthSession>) {
         if !self.is_busy() {
             let _ = self.tx.send(WorkerTask::Pull(repo_path, auth));
         }
@@ -130,7 +135,7 @@ impl Worker {
         &self,
         repo_path: PathBuf,
         tag_name: String,
-        auth: Option<crate::git_ops::GithubAuthSession>,
+        auth: Option<GithubAuthSession>,
     ) {
         if !self.is_busy() {
             let _ = self
@@ -145,7 +150,7 @@ impl Worker {
         }
     }
 
-    pub fn create_github_repo(&self, request: crate::git_ops::CreateGithubRepoRequest) {
+    pub fn create_github_repo(&self, request: CreateGithubRepoRequest) {
         if !self.is_busy() {
             let _ = self.tx.send(WorkerTask::CreateGithubRepo(request));
         }
@@ -166,7 +171,7 @@ impl Worker {
     pub fn discard_and_reset(
         &self,
         repo_path: PathBuf,
-        auth: Option<crate::git_ops::GithubAuthSession>,
+        auth: Option<GithubAuthSession>,
         clean_untracked: bool,
     ) {
         if !self.is_busy() {
@@ -178,18 +183,13 @@ impl Worker {
         }
     }
 
-    pub fn list_github_repos(&self, auth: crate::git_ops::GithubAuthSession) {
+    pub fn list_github_repos(&self, auth: GithubAuthSession) {
         if !self.is_busy() {
             let _ = self.tx.send(WorkerTask::ListGithubRepos { auth });
         }
     }
 
-    pub fn clone_repo(
-        &self,
-        url: String,
-        dest: PathBuf,
-        auth: Option<crate::git_ops::GithubAuthSession>,
-    ) {
+    pub fn clone_repo(&self, url: String, dest: PathBuf, auth: Option<GithubAuthSession>) {
         if !self.is_busy() {
             let _ = self.tx.send(WorkerTask::CloneRepo { url, dest, auth });
         }

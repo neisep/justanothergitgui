@@ -1,7 +1,9 @@
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use crate::state::{AppState, DragFile, FileEntry, UiAction};
+use crate::shared::actions::UiAction;
+use crate::shared::git::FileEntry;
+use crate::state::{AppState, DragFile};
 
 const STATUS_COL_WIDTH: f32 = 72.0;
 const ACTION_COL_WIDTH: f32 = 72.0;
