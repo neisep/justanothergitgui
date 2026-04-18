@@ -169,6 +169,10 @@ impl GitGuiApp {
             self.clone_dialog.parent_folder = path.display().to_string();
         }
 
+        if output.sign_in_clicked {
+            self.begin_github_sign_in("Requesting GitHub sign-in code...");
+        }
+
         if output.clone_clicked {
             self.start_clone_repo();
             return;
