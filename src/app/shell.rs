@@ -628,49 +628,51 @@ impl GitGuiApp {
     pub(super) fn show_welcome(&mut self, ui: &mut egui::Ui) {
         let welcome_busy = self.welcome_busy.clone();
         let worker_busy = welcome_busy.is_some();
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() / 3.0);
-            ui.heading("Just Another Git GUI");
-            ui.add_space(12.0);
-            ui.label("Open a Git repository or publish the current folder to GitHub.");
-            ui.add_space(8.0);
-            if ui.button("Open Repository...").clicked() {
-                self.open_repo_dialog();
-            }
-            if ui
-                .add_enabled(!worker_busy, egui::Button::new("Clone Repository..."))
-                .clicked()
-            {
-                self.open_clone_repo_dialog();
-            }
-            if ui
-                .add_enabled(
-                    !worker_busy,
-                    egui::Button::new("Publish Folder to GitHub..."),
-                )
-                .clicked()
-            {
-                self.open_publish_repo_dialog(None);
-            }
-            if let Some(session) = &self.github_auth_session {
-                ui.weak(format!("Signed in to GitHub as @{}", session.login));
-            } else if ui
-                .add_enabled(!worker_busy, egui::Button::new("Sign in to GitHub..."))
-                .clicked()
-            {
-                self.begin_github_sign_in("Requesting GitHub sign-in code...");
-            }
-            if let Some(busy) = &welcome_busy {
-                ui::show_inline_busy(ui, &busy.label);
-            }
-            if ui.button("Settings...").clicked() {
-                self.open_settings_dialog();
-            }
-            ui.add_space(12.0);
-            ui.weak(&self.welcome_status);
-            if self.logger.has_entries() && ui.button("View Logs").clicked() {
-                self.show_log_viewer = true;
-            }
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() / 3.0);
+                ui.heading("Just Another Git GUI");
+                ui.add_space(12.0);
+                ui.label("Open a Git repository or publish the current folder to GitHub.");
+                ui.add_space(8.0);
+                if ui.button("Open Repository...").clicked() {
+                    self.open_repo_dialog();
+                }
+                if ui
+                    .add_enabled(!worker_busy, egui::Button::new("Clone Repository..."))
+                    .clicked()
+                {
+                    self.open_clone_repo_dialog();
+                }
+                if ui
+                    .add_enabled(
+                        !worker_busy,
+                        egui::Button::new("Publish Folder to GitHub..."),
+                    )
+                    .clicked()
+                {
+                    self.open_publish_repo_dialog(None);
+                }
+                if let Some(session) = &self.github_auth_session {
+                    ui.weak(format!("Signed in to GitHub as @{}", session.login));
+                } else if ui
+                    .add_enabled(!worker_busy, egui::Button::new("Sign in to GitHub..."))
+                    .clicked()
+                {
+                    self.begin_github_sign_in("Requesting GitHub sign-in code...");
+                }
+                if let Some(busy) = &welcome_busy {
+                    ui::show_inline_busy(ui, &busy.label);
+                }
+                if ui.button("Settings...").clicked() {
+                    self.open_settings_dialog();
+                }
+                ui.add_space(12.0);
+                ui.weak(&self.welcome_status);
+                if self.logger.has_entries() && ui.button("View Logs").clicked() {
+                    self.show_log_viewer = true;
+                }
+            });
         });
     }
 }

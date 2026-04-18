@@ -156,7 +156,11 @@ impl PublishRepoDialogState {
 }
 
 impl GitGuiApp {
-    pub fn new() -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        cc.egui_ctx
+            .set_visuals_of(egui::Theme::Dark, egui::Visuals::dark());
+
         let logger = AppLogger::new();
         let mut startup_status = None;
         let settings = match settings::load_app_settings() {
