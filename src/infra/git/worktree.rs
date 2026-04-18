@@ -4,6 +4,18 @@ use std::path::Path;
 use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart};
 use crate::shared::git::FileEntry;
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct CleanUntrackedResult {
+    pub removed_count: usize,
+    pub failures: Vec<UntrackedRemovalFailure>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UntrackedRemovalFailure {
+    pub path: String,
+    pub error: String,
+}
+
 pub fn get_file_statuses(
     repo: &Repository,
 ) -> Result<(Vec<FileEntry>, Vec<FileEntry>), git2::Error> {
@@ -15,7 +27,12 @@ pub fn get_file_statuses(
     let mut staged = Vec::new();
 
     for entry in statuses.iter() {
-        let path = entry.path().unwrap_or("").to_string();
+        let Some(path) = entry.path() else {
+            // libgit2 only exposes UTF-8 status paths here; skip entries we cannot
+            // safely represent because downstream staging/unstaging expects `&str`.
+            continue;
+        };
+        let path = path.to_string();
         let status = entry.status();
 
         if status.contains(Status::CONFLICTED) {
@@ -232,7 +249,9 @@ pub fn write_resolved_file(repo: &Repository, data: &ConflictData) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn clean_untracked_files(repo: &Repository) -> Result<usize, git2::Error> {
+pub(crate) fn clean_untracked_files(
+    repo: &Repository,
+) -> Result<CleanUntrackedResult, git2::Error> {
     let workdir = repo
         .workdir()
         .ok_or_else(|| git2::Error::from_str("Repository has no workdir"))?
@@ -242,7 +261,7 @@ pub(crate) fn clean_untracked_files(repo: &Repository) -> Result<usize, git2::Er
     opts.include_untracked(true).recurse_untracked_dirs(false);
     let statuses = repo.statuses(Some(&mut opts))?;
 
-    let mut count = 0usize;
+    let mut result = CleanUntrackedResult::default();
     for entry in statuses.iter() {
         if entry.status() != Status::WT_NEW {
             continue;
@@ -251,19 +270,25 @@ pub(crate) fn clean_untracked_files(repo: &Repository) -> Result<usize, git2::Er
             continue;
         };
         let full_path = workdir.join(path);
-        let removed = if full_path.is_dir() {
-            std::fs::remove_dir_all(&full_path).is_ok()
+        let removal = if full_path.is_dir() {
+            Some(std::fs::remove_dir_all(&full_path))
         } else if full_path.exists() {
-            std::fs::remove_file(&full_path).is_ok()
+            Some(std::fs::remove_file(&full_path))
         } else {
-            false
+            None
         };
-        if removed {
-            count += 1;
+
+        match removal {
+            Some(Ok(())) => result.removed_count += 1,
+            Some(Err(error)) => result.failures.push(UntrackedRemovalFailure {
+                path: path.trim_end_matches('/').to_string(),
+                error: error.to_string(),
+            }),
+            None => {}
         }
     }
 
-    Ok(count)
+    Ok(result)
 }
 
 fn status_label_staged(status: Status) -> &'static str {
@@ -352,11 +377,19 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_conflict_markers, read_conflict_file};
+    use super::{
+        clean_untracked_files, get_file_statuses, parse_conflict_markers, read_conflict_file,
+    };
     use crate::shared::conflicts::{ConflictChoice, ConflictPart};
     use git2::Repository;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(unix)]
+    use std::{
+        ffi::OsStr,
+        fs::Permissions,
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    };
 
     struct TestRepoDir {
         path: PathBuf,
@@ -386,6 +419,35 @@ mod tests {
     impl Drop for TestRepoDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(unix)]
+    struct PermissionsGuard {
+        path: PathBuf,
+        original: Permissions,
+    }
+
+    #[cfg(unix)]
+    impl PermissionsGuard {
+        fn lock_dir(path: &Path) -> Self {
+            let original = std::fs::metadata(path)
+                .expect("read permissions")
+                .permissions();
+            let mut locked = original.clone();
+            locked.set_mode(0o555);
+            std::fs::set_permissions(path, locked).expect("lock directory");
+            Self {
+                path: path.to_path_buf(),
+                original,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PermissionsGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.path, self.original.clone());
         }
     }
 
@@ -431,5 +493,46 @@ mod tests {
             .expect_err("malformed conflict file should fail");
 
         assert!(error.contains("Unbalanced conflict markers"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clean_untracked_files_reports_failed_removals() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+
+        std::fs::write(repo_dir.path().join("removable.txt"), "remove me")
+            .expect("write removable file");
+
+        let blocked_dir = repo_dir.path().join("blocked");
+        std::fs::create_dir(&blocked_dir).expect("create blocked dir");
+        std::fs::write(blocked_dir.join("locked.txt"), "keep me").expect("write blocked file");
+        let _guard = PermissionsGuard::lock_dir(&blocked_dir);
+
+        let cleanup = clean_untracked_files(&repo).expect("clean untracked files");
+
+        assert_eq!(cleanup.removed_count, 1);
+        assert_eq!(cleanup.failures.len(), 1);
+        assert_eq!(cleanup.failures[0].path, "blocked");
+        assert!(!cleanup.failures[0].error.is_empty());
+        assert!(!repo_dir.path().join("removable.txt").exists());
+        assert!(blocked_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_file_statuses_skips_non_utf8_paths() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+        let invalid_name = OsStr::from_bytes(b"bad-\xFF-name.txt");
+        let invalid_path = repo_dir.path().join(invalid_name);
+
+        std::fs::write(&invalid_path, "non-utf8 path").expect("write non-utf8 file");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("read file statuses");
+
+        assert!(staged.is_empty());
+        assert!(unstaged.iter().all(|file| !file.path.is_empty()));
+        assert!(unstaged.is_empty());
     }
 }

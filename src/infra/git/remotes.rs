@@ -35,7 +35,11 @@ pub fn push_with_git2(
         .push(&[&refspec], Some(&mut push_options))
         .map_err(|error| format!("Push error: {}", error))?;
 
-    if let Some(reason) = push_rejected.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    if let Some(reason) = push_rejected
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
         return Err(format!("Push rejected by remote: {}", reason));
     }
 
@@ -77,7 +81,11 @@ pub fn push_tag_with_git2(
         .push(&[&refspec], Some(&mut push_options))
         .map_err(|error| format!("Tag push error: {}", error))?;
 
-    if let Some(reason) = push_rejected.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    if let Some(reason) = push_rejected
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
         return Err(format!("Tag push rejected by remote: {}", reason));
     }
 
@@ -166,15 +174,31 @@ pub fn reset_to_remote(
     repo.reset(target_commit.as_object(), git2::ResetType::Hard, None)
         .map_err(|error| format!("Reset error: {}", error))?;
 
-    let mut cleaned = 0usize;
+    let mut cleaned = super::worktree::CleanUntrackedResult::default();
     if clean_untracked {
         cleaned = super::worktree::clean_untracked_files(&repo)
             .map_err(|error| format!("Clean untracked error: {}", error))?;
     }
 
     let mut message = format!("Reset to origin/{}", branch_name);
-    if cleaned > 0 {
-        message.push_str(&format!(", removed {} untracked entry(ies)", cleaned));
+    if cleaned.removed_count > 0 {
+        message.push_str(&format!(
+            ", removed {} untracked entry(ies)",
+            cleaned.removed_count
+        ));
+    }
+    if !cleaned.failures.is_empty() {
+        let failed_paths = cleaned
+            .failures
+            .iter()
+            .map(|failure| format!("{} ({})", failure.path, failure.error))
+            .collect::<Vec<_>>()
+            .join(", ");
+        message.push_str(&format!(
+            ", failed to remove {} untracked entry(ies): {}",
+            cleaned.failures.len(),
+            failed_paths
+        ));
     }
     Ok(message)
 }

@@ -2,11 +2,17 @@ use super::*;
 use crate::state::{CenterView, SelectedFile};
 
 pub(super) fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<String> {
-    let mut error_detail = None;
+    let mut errors: Vec<String> = Vec::new();
     state.has_origin_remote = git_ops::has_origin_remote(repo);
     state.has_github_origin = git_ops::has_github_origin(repo);
     state.has_github_https_origin = git_ops::has_github_https_origin(repo);
-    state.outgoing_commit_count = git_ops::get_outgoing_commit_count(repo).unwrap_or(0);
+    match git_ops::get_outgoing_commit_count(repo) {
+        Ok(count) => state.outgoing_commit_count = count,
+        Err(error) => {
+            errors.push(format!("outgoing commit count: {error}"));
+            state.outgoing_commit_count = 0;
+        }
+    }
     match git_ops::get_file_statuses(repo) {
         Ok((unstaged, staged)) => {
             state.unstaged = unstaged;
@@ -28,18 +34,40 @@ pub(super) fn refresh_status(state: &mut AppState, repo: &Repository) -> Option<
                 commit_rules::infer_commit_scopes(state.repo_path.as_deref(), changed_paths);
         }
         Err(error) => {
-            let detail = error.to_string();
-            state.status_msg = status_message_for_error("Refresh", &detail);
-            error_detail = Some(detail);
+            errors.push(format!("file statuses: {error}"));
             state.inferred_commit_scopes.clear();
         }
     }
-    state.branch = git_ops::get_current_branch(repo).unwrap_or_default();
-    state.branches = git_ops::get_branches(repo).unwrap_or_default();
-    state.commit_history = git_ops::get_commit_history(repo, 200).unwrap_or_default();
+    match git_ops::get_current_branch(repo) {
+        Ok(branch) => state.branch = branch,
+        Err(error) => {
+            errors.push(format!("current branch: {error}"));
+            state.branch = String::new();
+        }
+    }
+    match git_ops::get_branches(repo) {
+        Ok(branches) => state.branches = branches,
+        Err(error) => {
+            errors.push(format!("branches: {error}"));
+            state.branches = Vec::new();
+        }
+    }
+    match git_ops::get_commit_history(repo, 200) {
+        Ok(history) => state.commit_history = history,
+        Err(error) => {
+            errors.push(format!("commit history: {error}"));
+            state.commit_history = Vec::new();
+        }
+    }
     sync_pull_request_prompt(state);
     sync_selected_file(state, repo);
-    error_detail
+    if errors.is_empty() {
+        None
+    } else {
+        let detail = errors.join("; ");
+        state.status_msg = status_message_for_error("Refresh", &detail);
+        Some(detail)
+    }
 }
 
 pub(super) fn reset_repo_view_state(state: &mut AppState) {
@@ -141,6 +169,12 @@ pub(super) fn status_message_for_error(context: &str, detail: &str) -> String {
         context,
         logging::summarize_for_ui(detail)
     )
+}
+
+pub(super) const WORKER_DISPATCH_ERROR_DETAIL: &str = "worker rejected task dispatch";
+
+pub(super) fn status_message_for_worker_dispatch(context: &str) -> String {
+    format!("{context} could not start. Please try again.")
 }
 
 fn sync_pull_request_prompt(state: &mut AppState) {

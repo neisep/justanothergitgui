@@ -117,8 +117,7 @@ impl GitGuiApp {
         {
             let mut next_settings = self.settings.clone();
             next_settings.commit_message_ruleset = output.selected_ruleset;
-            next_settings.commit_message_custom_scopes =
-                parsed_custom_scopes.unwrap_or_else(|_| unreachable!());
+            next_settings.commit_message_custom_scopes = parsed_custom_scopes.unwrap_or_default();
             match settings::save_app_settings(&next_settings) {
                 Ok(()) => {
                     self.settings = next_settings;
@@ -194,10 +193,21 @@ impl GitGuiApp {
             return;
         };
         let dest = PathBuf::from(&parent).join(&repo_name);
-        self.clone_dialog.status = format!("Cloning into {}...", dest.display());
-        self.welcome_busy = Some(BusyState::new(BusyAction::CloneRepository, "Cloning..."));
-        self.welcome_worker
-            .clone_repo(url, dest, self.github_auth_session.clone());
+        let message = format!("Cloning into {}...", dest.display());
+        if self
+            .welcome_worker
+            .clone_repo(url, dest, self.github_auth_session.clone())
+        {
+            self.clone_dialog.status = message;
+            self.welcome_busy = Some(BusyState::new(BusyAction::CloneRepository, "Cloning..."));
+        } else {
+            let dispatch_message = helpers::status_message_for_worker_dispatch("Clone");
+            self.clone_dialog.status = dispatch_message.clone();
+            self.logger
+                .log_error("Clone", helpers::WORKER_DISPATCH_ERROR_DETAIL);
+            self.welcome_status = dispatch_message.clone();
+            self.set_status_message(dispatch_message);
+        }
     }
 
     pub(super) fn show_publish_repo_dialog(&mut self, ctx: &egui::Context) {
@@ -242,20 +252,33 @@ impl GitGuiApp {
                 ) {
                     Ok(()) => {
                         let folder_path = PathBuf::from(self.publish_dialog.folder_path.trim());
-                        self.publish_dialog.operation_status =
-                            "Publishing folder to GitHub...".into();
-                        self.welcome_busy = Some(BusyState::new(
-                            BusyAction::PublishRepository,
-                            "Publishing repository...",
-                        ));
-                        self.welcome_worker
+                        if self
+                            .welcome_worker
                             .create_github_repo(CreateGithubRepoRequest {
                                 folder_path,
                                 repo_name: self.publish_dialog.repo_name.trim().to_string(),
                                 commit_message,
                                 visibility: self.publish_dialog.visibility,
                                 auth,
-                            });
+                            })
+                        {
+                            self.publish_dialog.operation_status =
+                                "Publishing folder to GitHub...".into();
+                            self.welcome_busy = Some(BusyState::new(
+                                BusyAction::PublishRepository,
+                                "Publishing repository...",
+                            ));
+                        } else {
+                            let message =
+                                helpers::status_message_for_worker_dispatch("Publish to GitHub");
+                            self.publish_dialog.operation_status = message.clone();
+                            self.logger.log_error(
+                                "Publish to GitHub",
+                                helpers::WORKER_DISPATCH_ERROR_DETAIL,
+                            );
+                            self.welcome_status = message.clone();
+                            self.set_status_message(message);
+                        }
                     }
                     Err(error) => {
                         self.publish_dialog.operation_status = error;

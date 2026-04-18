@@ -35,9 +35,8 @@ pub fn clone_repository(
         ));
     }
 
-    let use_github_auth = auth.is_some() && is_github_https_url(trimmed);
-    let callbacks = if use_github_auth {
-        github_remote_callbacks(auth.expect("auth is Some"))
+    let callbacks = if let Some(auth) = auth.filter(|_| is_github_https_url(trimmed)) {
+        github_remote_callbacks(auth)
     } else {
         let config = git2::Config::open_default()
             .map_err(|error| format!("Credential configuration error: {}", error))?;

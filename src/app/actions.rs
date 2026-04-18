@@ -198,15 +198,17 @@ impl HandleUiAction for Commit {
 
 impl HandleUiAction for Push {
     fn apply(self: Box<Self>, ctx: &mut TabActionContext<'_>) {
-        let tab = &mut ctx.tab;
-        if let Some(path) = tab.state.repo_path.clone() {
-            if tab.worker.is_busy() {
-                tab.state.status_msg = "Busy — please wait...".into();
+        if let Some(path) = ctx.tab.state.repo_path.clone() {
+            if ctx.tab.worker.is_busy() {
+                ctx.tab.state.status_msg = "Busy — please wait...".into();
             } else {
                 let busy = BusyState::new(BusyAction::Push, "Pushing...");
-                tab.state.status_msg = busy.label.clone();
-                tab.state.busy = Some(busy);
-                tab.worker.push(path, ctx.github_auth_session.clone());
+                if ctx.tab.worker.push(path, ctx.github_auth_session.clone()) {
+                    ctx.tab.state.status_msg = busy.label.clone();
+                    ctx.tab.state.busy = Some(busy);
+                } else {
+                    log_worker_dispatch_error(ctx, "Push");
+                }
             }
         }
     }
@@ -214,15 +216,17 @@ impl HandleUiAction for Push {
 
 impl HandleUiAction for Pull {
     fn apply(self: Box<Self>, ctx: &mut TabActionContext<'_>) {
-        let tab = &mut ctx.tab;
-        if let Some(path) = tab.state.repo_path.clone() {
-            if tab.worker.is_busy() {
-                tab.state.status_msg = "Busy — please wait...".into();
+        if let Some(path) = ctx.tab.state.repo_path.clone() {
+            if ctx.tab.worker.is_busy() {
+                ctx.tab.state.status_msg = "Busy — please wait...".into();
             } else {
                 let busy = BusyState::new(BusyAction::Pull, "Pulling...");
-                tab.state.status_msg = busy.label.clone();
-                tab.state.busy = Some(busy);
-                tab.worker.pull(path, ctx.github_auth_session.clone());
+                if ctx.tab.worker.pull(path, ctx.github_auth_session.clone()) {
+                    ctx.tab.state.status_msg = busy.label.clone();
+                    ctx.tab.state.busy = Some(busy);
+                } else {
+                    log_worker_dispatch_error(ctx, "Pull");
+                }
             }
         }
     }
@@ -295,23 +299,28 @@ impl HandleUiAction for ConfirmCreateBranch {
 
 impl HandleUiAction for CreateTag {
     fn apply(self: Box<Self>, ctx: &mut TabActionContext<'_>) {
-        let tab = &mut ctx.tab;
-        if let Some(path) = tab.state.repo_path.clone() {
-            if tab.worker.is_busy() {
-                tab.state.status_msg = "Busy — please wait...".into();
-            } else if !git_ops::can_create_tag_on_branch(&tab.state.branch) {
-                tab.state.status_msg =
+        if let Some(path) = ctx.tab.state.repo_path.clone() {
+            if ctx.tab.worker.is_busy() {
+                ctx.tab.state.status_msg = "Busy — please wait...".into();
+            } else if !git_ops::can_create_tag_on_branch(&ctx.tab.state.branch) {
+                ctx.tab.state.status_msg =
                     "Tags can only be created from the main or master branch.".into();
-            } else if tab.state.has_github_https_origin && ctx.github_auth_session.is_none() {
-                tab.state.status_msg =
+            } else if ctx.tab.state.has_github_https_origin && ctx.github_auth_session.is_none() {
+                ctx.tab.state.status_msg =
                     "Sign in to GitHub before creating tags for this repository.".into();
             } else {
                 let busy =
                     BusyState::new(BusyAction::CreateTag, format!("Creating tag {}...", self.0));
-                tab.state.status_msg = busy.label.clone();
-                tab.state.busy = Some(busy);
-                tab.worker
-                    .create_tag(path, self.0, ctx.github_auth_session.clone());
+                if ctx
+                    .tab
+                    .worker
+                    .create_tag(path, self.0, ctx.github_auth_session.clone())
+                {
+                    ctx.tab.state.status_msg = busy.label.clone();
+                    ctx.tab.state.busy = Some(busy);
+                } else {
+                    log_worker_dispatch_error(ctx, "Create tag");
+                }
             }
         }
     }
@@ -335,18 +344,24 @@ impl HandleUiAction for LaunchPullRequest {
                     BusyAction::OpenPullRequest,
                     format!("Opening pull request #{}...", number),
                 );
-                ctx.tab.state.status_msg = busy.label.clone();
-                ctx.tab.state.busy = Some(busy);
-                ctx.tab.worker.open_pull_request(url);
+                if ctx.tab.worker.open_pull_request(url) {
+                    ctx.tab.state.status_msg = busy.label.clone();
+                    ctx.tab.state.busy = Some(busy);
+                } else {
+                    log_worker_dispatch_error(ctx, "Open PR");
+                }
             }
             PullRequestPrompt::Create { branch, url } => {
                 let busy = BusyState::new(
                     BusyAction::CreatePullRequest,
                     format!("Opening pull request creation for {}...", branch),
                 );
-                ctx.tab.state.status_msg = busy.label.clone();
-                ctx.tab.state.busy = Some(busy);
-                ctx.tab.worker.create_pull_request(url);
+                if ctx.tab.worker.create_pull_request(url) {
+                    ctx.tab.state.status_msg = busy.label.clone();
+                    ctx.tab.state.busy = Some(busy);
+                } else {
+                    log_worker_dispatch_error(ctx, "Create PR");
+                }
             }
         }
     }
@@ -415,19 +430,21 @@ impl HandleUiAction for OpenDiscardDialog {
 
 impl HandleUiAction for DiscardAndReset {
     fn apply(self: Box<Self>, ctx: &mut TabActionContext<'_>) {
-        let tab = &mut ctx.tab;
-        if let Some(path) = tab.state.repo_path.clone() {
-            if tab.worker.is_busy() {
-                tab.state.status_msg = "Busy — please wait...".into();
+        if let Some(path) = ctx.tab.state.repo_path.clone() {
+            if ctx.tab.worker.is_busy() {
+                ctx.tab.state.status_msg = "Busy — please wait...".into();
             } else {
                 let busy = BusyState::new(BusyAction::DiscardAndReset, "Resetting to remote...");
-                tab.state.status_msg = busy.label.clone();
-                tab.state.busy = Some(busy);
-                tab.worker.discard_and_reset(
+                if ctx.tab.worker.discard_and_reset(
                     path,
                     ctx.github_auth_session.clone(),
                     self.clean_untracked,
-                );
+                ) {
+                    ctx.tab.state.status_msg = busy.label.clone();
+                    ctx.tab.state.busy = Some(busy);
+                } else {
+                    log_worker_dispatch_error(ctx, "Discard & reset");
+                }
             }
         }
     }
@@ -491,6 +508,12 @@ fn clear_repo_selection(state: &mut AppState) {
 fn log_action_error(ctx: &mut TabActionContext<'_>, context: &str, detail: String) {
     ctx.tab.state.status_msg = helpers::status_message_for_error(context, &detail);
     ctx.logger.log_error(context, &detail);
+}
+
+fn log_worker_dispatch_error(ctx: &mut TabActionContext<'_>, context: &str) {
+    ctx.tab.state.status_msg = helpers::status_message_for_worker_dispatch(context);
+    ctx.logger
+        .log_error(context, helpers::WORKER_DISPATCH_ERROR_DETAIL);
 }
 
 fn refresh_tab(ctx: &mut TabActionContext<'_>) {

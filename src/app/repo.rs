@@ -82,8 +82,15 @@ impl GitGuiApp {
         if let Some(session) = self.github_auth_session.clone()
             && !self.welcome_worker.is_busy()
         {
-            self.clone_dialog.github_repos_loading = true;
-            self.welcome_worker.list_github_repos(session);
+            if self.welcome_worker.list_github_repos(session) {
+                self.clone_dialog.github_repos_loading = true;
+            } else {
+                let message = helpers::status_message_for_worker_dispatch("Load GitHub repos");
+                self.clone_dialog.status = message.clone();
+                self.logger
+                    .log_error("Load GitHub repos", helpers::WORKER_DISPATCH_ERROR_DETAIL);
+                self.set_status_message(message);
+            }
         }
     }
 
@@ -114,12 +121,22 @@ impl GitGuiApp {
         }
 
         self.github_auth_prompt = None;
-        self.publish_dialog.github_status = start_message.into();
-        self.publish_dialog.operation_status.clear();
-        self.welcome_status = start_message.into();
-        self.welcome_busy = Some(BusyState::new(BusyAction::GithubSignIn, start_message));
-        self.set_status_message(start_message.into());
-        self.welcome_worker
-            .login_github(GITHUB_OAUTH_CLIENT_ID.into());
+        if self
+            .welcome_worker
+            .login_github(GITHUB_OAUTH_CLIENT_ID.into())
+        {
+            self.publish_dialog.github_status = start_message.into();
+            self.publish_dialog.operation_status.clear();
+            self.welcome_status = start_message.into();
+            self.welcome_busy = Some(BusyState::new(BusyAction::GithubSignIn, start_message));
+            self.set_status_message(start_message.into());
+        } else {
+            let message = helpers::status_message_for_worker_dispatch("GitHub sign-in");
+            self.publish_dialog.github_status = message.clone();
+            self.logger
+                .log_error("GitHub sign-in", helpers::WORKER_DISPATCH_ERROR_DETAIL);
+            self.welcome_status = message.clone();
+            self.set_status_message(message);
+        }
     }
 }

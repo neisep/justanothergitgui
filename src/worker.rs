@@ -358,10 +358,13 @@ where
         }
     }
 
-    fn dispatch(&self, task: Task) {
-        if !self.is_busy() {
-            let _ = self.tx.send(task);
+    #[must_use]
+    fn dispatch(&self, task: Task) -> bool {
+        if self.is_busy() {
+            return false;
         }
+
+        self.tx.send(task).is_ok()
     }
 
     fn is_busy(&self) -> bool {
@@ -380,22 +383,26 @@ impl WelcomeWorker {
         Self(WorkerCore::new())
     }
 
-    pub fn login_github(&self, client_id: String) {
-        self.0.dispatch(WelcomeWorkerTask::GithubAuth { client_id });
+    #[must_use]
+    pub fn login_github(&self, client_id: String) -> bool {
+        self.0.dispatch(WelcomeWorkerTask::GithubAuth { client_id })
     }
 
-    pub fn create_github_repo(&self, request: CreateGithubRepoRequest) {
+    #[must_use]
+    pub fn create_github_repo(&self, request: CreateGithubRepoRequest) -> bool {
         self.0
-            .dispatch(WelcomeWorkerTask::CreateGithubRepo(request));
+            .dispatch(WelcomeWorkerTask::CreateGithubRepo(request))
     }
 
-    pub fn list_github_repos(&self, auth: GithubAuthSession) {
-        self.0.dispatch(WelcomeWorkerTask::ListGithubRepos { auth });
+    #[must_use]
+    pub fn list_github_repos(&self, auth: GithubAuthSession) -> bool {
+        self.0.dispatch(WelcomeWorkerTask::ListGithubRepos { auth })
     }
 
-    pub fn clone_repo(&self, url: String, dest: PathBuf, auth: Option<GithubAuthSession>) {
+    #[must_use]
+    pub fn clone_repo(&self, url: String, dest: PathBuf, auth: Option<GithubAuthSession>) -> bool {
         self.0
-            .dispatch(WelcomeWorkerTask::CloneRepo { url, dest, auth });
+            .dispatch(WelcomeWorkerTask::CloneRepo { url, dest, auth })
     }
 
     pub fn is_busy(&self) -> bool {
@@ -414,43 +421,49 @@ impl RepoWorker {
         Self(WorkerCore::new())
     }
 
-    pub fn push(&self, repo_path: PathBuf, auth: Option<GithubAuthSession>) {
-        self.0.dispatch(RepoWorkerTask::Push(repo_path, auth));
+    #[must_use]
+    pub fn push(&self, repo_path: PathBuf, auth: Option<GithubAuthSession>) -> bool {
+        self.0.dispatch(RepoWorkerTask::Push(repo_path, auth))
     }
 
-    pub fn pull(&self, repo_path: PathBuf, auth: Option<GithubAuthSession>) {
-        self.0.dispatch(RepoWorkerTask::Pull(repo_path, auth));
+    #[must_use]
+    pub fn pull(&self, repo_path: PathBuf, auth: Option<GithubAuthSession>) -> bool {
+        self.0.dispatch(RepoWorkerTask::Pull(repo_path, auth))
     }
 
+    #[must_use]
     pub fn create_tag(
         &self,
         repo_path: PathBuf,
         tag_name: String,
         auth: Option<GithubAuthSession>,
-    ) {
+    ) -> bool {
         self.0
-            .dispatch(RepoWorkerTask::CreateTag(repo_path, tag_name, auth));
+            .dispatch(RepoWorkerTask::CreateTag(repo_path, tag_name, auth))
     }
 
-    pub fn open_pull_request(&self, url: String) {
-        self.0.dispatch(RepoWorkerTask::OpenPullRequest(url));
+    #[must_use]
+    pub fn open_pull_request(&self, url: String) -> bool {
+        self.0.dispatch(RepoWorkerTask::OpenPullRequest(url))
     }
 
-    pub fn create_pull_request(&self, url: String) {
-        self.0.dispatch(RepoWorkerTask::CreatePullRequest(url));
+    #[must_use]
+    pub fn create_pull_request(&self, url: String) -> bool {
+        self.0.dispatch(RepoWorkerTask::CreatePullRequest(url))
     }
 
+    #[must_use]
     pub fn discard_and_reset(
         &self,
         repo_path: PathBuf,
         auth: Option<GithubAuthSession>,
         clean_untracked: bool,
-    ) {
+    ) -> bool {
         self.0.dispatch(RepoWorkerTask::DiscardAndReset {
             path: repo_path,
             auth,
             clean_untracked,
-        });
+        })
     }
 
     pub fn is_busy(&self) -> bool {
@@ -474,15 +487,15 @@ impl HandleRepoTaskResult for RepoNoopResult {
 
 #[cfg(test)]
 impl WelcomeWorker {
-    fn panic_for_test(&self) {
-        self.0.dispatch(WelcomeWorkerTask::Panic);
+    fn panic_for_test(&self) -> bool {
+        self.0.dispatch(WelcomeWorkerTask::Panic)
     }
 }
 
 #[cfg(test)]
 impl RepoWorker {
-    fn panic_for_test(&self) {
-        self.0.dispatch(RepoWorkerTask::Panic);
+    fn panic_for_test(&self) -> bool {
+        self.0.dispatch(RepoWorkerTask::Panic)
     }
 }
 
@@ -492,15 +505,44 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    enum TestTask {
+        Sleep(Duration),
+    }
+
+    #[derive(Clone, Copy)]
+    enum TestTaskKind {
+        Sleep,
+    }
+
+    impl WorkerTaskKind<()> for TestTaskKind {
+        fn panic_result(self, _message: String) {}
+    }
+
+    impl WorkerTaskSpec<()> for TestTask {
+        type Kind = TestTaskKind;
+
+        fn kind(&self) -> Self::Kind {
+            match self {
+                Self::Sleep(..) => TestTaskKind::Sleep,
+            }
+        }
+
+        fn run(self, _result_tx: &mpsc::Sender<()>) {
+            match self {
+                Self::Sleep(duration) => thread::sleep(duration),
+            }
+        }
+    }
+
     #[test]
     fn welcome_worker_recovers_after_task_panic() {
         let worker = WelcomeWorker::new();
 
-        worker.panic_for_test();
+        assert!(worker.panic_for_test());
         assert!(wait_until(|| worker.try_recv().is_some()));
         assert!(wait_until(|| !worker.is_busy()));
 
-        worker.panic_for_test();
+        assert!(worker.panic_for_test());
         assert!(wait_until(|| worker.try_recv().is_some()));
         assert!(wait_until(|| !worker.is_busy()));
     }
@@ -509,11 +551,22 @@ mod tests {
     fn repo_worker_recovers_after_task_panic() {
         let worker = RepoWorker::new();
 
-        worker.panic_for_test();
+        assert!(worker.panic_for_test());
         assert!(wait_until(|| worker.try_recv().is_some()));
         assert!(wait_until(|| !worker.is_busy()));
 
-        worker.panic_for_test();
+        assert!(worker.panic_for_test());
+        assert!(wait_until(|| worker.try_recv().is_some()));
+        assert!(wait_until(|| !worker.is_busy()));
+    }
+
+    #[test]
+    fn worker_dispatch_returns_false_while_busy() {
+        let worker = WorkerCore::<TestTask, ()>::new();
+
+        assert!(worker.dispatch(TestTask::Sleep(Duration::from_millis(50))));
+        assert!(wait_until(|| worker.is_busy()));
+        assert!(!worker.dispatch(TestTask::Sleep(Duration::from_millis(10))));
         assert!(wait_until(|| worker.try_recv().is_some()));
         assert!(wait_until(|| !worker.is_busy()));
     }

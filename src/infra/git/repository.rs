@@ -94,7 +94,14 @@ pub fn suggest_next_tag(repo: &Repository) -> String {
     match best {
         Some(([major, minor, patch, build], has_v_prefix)) => {
             let prefix = if has_v_prefix { "v" } else { "" };
-            format!("{}{}.{}.{}.{}", prefix, major, minor, patch, build + 1)
+            format!(
+                "{}{}.{}.{}.{}",
+                prefix,
+                major,
+                minor,
+                patch,
+                build.saturating_add(1)
+            )
         }
         None => "v1.0.0.0".to_string(),
     }
