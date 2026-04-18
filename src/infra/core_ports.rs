@@ -4,7 +4,8 @@ use git2::Repository;
 
 use crate::core::ports::{
     GitBranchReadPort, GitHubRemoteInfoPort, GitHubRepoCreationPort, GitRemoteAuth,
-    GitRemoteInfoPort, GitRemoteSyncPort, GitRepoBootstrapPort, GitTagPort, GitWorktreeCommitPort,
+    GitRemoteInfoPort, GitRemoteSyncPort, GitRepoBootstrapPort, GitTagPort, GitUndoCommitPort,
+    GitWorktreeCommitPort,
 };
 use crate::infra::git::{
     remotes as git_remotes, repository as git_repository, worktree as git_worktree,
@@ -141,6 +142,22 @@ impl GitWorktreeCommitPort for InfraGitPort {
         git_worktree::create_commit(&repo, message)
             .map(|_| ())
             .map_err(|error| format!("Commit error: {}", error))
+    }
+}
+
+impl GitUndoCommitPort for InfraGitPort {
+    fn outgoing_commit_count(&self, repo_path: &Path) -> Result<usize, String> {
+        let repo =
+            Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
+        git_repository::get_outgoing_commit_count(&repo)
+            .map_err(|error| format!("Outgoing commit count error: {}", error))
+    }
+
+    fn undo_last_commit(&self, repo_path: &Path) -> Result<String, String> {
+        let repo =
+            Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
+        git_worktree::undo_last_commit(&repo)
+            .map_err(|error| format!("Undo last commit error: {}", error))
     }
 }
 

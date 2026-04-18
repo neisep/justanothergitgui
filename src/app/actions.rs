@@ -34,6 +34,7 @@ struct OpenDiscardDialog;
 struct DiscardAndReset {
     clean_untracked: bool,
 }
+struct UndoLastCommit;
 struct SaveConflictResolution;
 
 impl UiAction {
@@ -118,6 +119,10 @@ impl UiAction {
 
     pub fn discard_and_reset(clean_untracked: bool) -> Self {
         Self::new(DiscardAndReset { clean_untracked })
+    }
+
+    pub fn undo_last_commit() -> Self {
+        Self::new(UndoLastCommit)
     }
 
     pub fn save_conflict_resolution() -> Self {
@@ -462,6 +467,24 @@ impl HandleUiAction for DiscardAndReset {
                     ctx.tab.state.ui.busy = Some(busy);
                 } else {
                     log_worker_dispatch_error(ctx, "Discard & reset");
+                }
+            }
+        }
+    }
+}
+
+impl HandleUiAction for UndoLastCommit {
+    fn apply(self: Box<Self>, ctx: &mut TabActionContext<'_>) {
+        if let Some(path) = ctx.tab.state.repo.path.clone() {
+            if ctx.tab.worker.is_busy() {
+                ctx.tab.state.ui.status_msg = "Busy — please wait...".into();
+            } else {
+                let busy = BusyState::new(BusyAction::UndoLastCommit, "Undoing last commit...");
+                if ctx.tab.worker.undo_last_commit(path) {
+                    ctx.tab.state.ui.status_msg = busy.label.clone();
+                    ctx.tab.state.ui.busy = Some(busy);
+                } else {
+                    log_worker_dispatch_error(ctx, "Undo last commit");
                 }
             }
         }

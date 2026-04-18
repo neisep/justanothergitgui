@@ -24,6 +24,8 @@ struct RepoToolbarModel {
     controls_width: f32,
     can_discard: bool,
     discard_tooltip: String,
+    can_undo_last_commit: bool,
+    undo_last_commit_tooltip: String,
     can_create_tag: bool,
     create_tag_tooltip: String,
     push_label: String,
@@ -75,6 +77,14 @@ impl RepoToolbarModel {
         } else {
             "Switch to main or master to create a tag".to_string()
         };
+        let can_undo_last_commit = has_repo && state.repo.outgoing_commit_count > 0;
+        let undo_last_commit_tooltip = if !has_repo {
+            "Open a repository before undoing commits".to_string()
+        } else if state.repo.outgoing_commit_count == 0 {
+            "No local-only commits to undo".to_string()
+        } else {
+            "Remove the most recent local-only commit and keep its changes staged".to_string()
+        };
         let push_label = if state.repo.outgoing_commit_count > 0 {
             format!("Push({})", state.repo.outgoing_commit_count)
         } else {
@@ -106,6 +116,8 @@ impl RepoToolbarModel {
             },
             can_discard,
             discard_tooltip,
+            can_undo_last_commit,
+            undo_last_commit_tooltip,
             can_create_tag,
             create_tag_tooltip,
             push_label,
@@ -387,6 +399,18 @@ impl GitGuiApp {
                 .clicked()
             {
                 state.ui.actions.push(UiAction::open_cleanup_branches());
+                ui.close();
+            }
+
+            if ui
+                .add_enabled(
+                    toolbar.can_undo_last_commit && !toolbar.repo_worker_busy,
+                    egui::Button::new("Undo Last Commit"),
+                )
+                .on_hover_text(&toolbar.undo_last_commit_tooltip)
+                .clicked()
+            {
+                state.ui.actions.push(UiAction::undo_last_commit());
                 ui.close();
             }
 

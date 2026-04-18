@@ -173,6 +173,37 @@ pub fn create_commit(repo: &Repository, message: &str) -> Result<git2::Oid, git2
     Ok(oid)
 }
 
+pub fn undo_last_commit(repo: &Repository) -> Result<String, git2::Error> {
+    let head = repo.head()?;
+    if !head.is_branch() {
+        return Err(git2::Error::from_str(
+            "Undo last commit requires a checked-out branch",
+        ));
+    }
+
+    let branch_name = head.shorthand().unwrap_or("HEAD").to_string();
+    let branch_ref_name = head
+        .name()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| git2::Error::from_str("Undo last commit requires a named branch"))?;
+    let head_commit = head.peel_to_commit()?;
+    let short_oid = head_commit.id().to_string()[..8].to_string();
+    drop(head);
+
+    if head_commit.parent_count() > 0 {
+        let parent = head_commit.parent(0)?;
+        repo.reset(parent.as_object(), git2::ResetType::Soft, None)?;
+    } else {
+        let mut branch = repo.find_reference(&branch_ref_name)?;
+        branch.delete()?;
+    }
+
+    Ok(format!(
+        "Removed commit {} from {} and kept its changes staged",
+        short_oid, branch_name
+    ))
+}
+
 pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<String, git2::Error> {
     let mut opts = git2::DiffOptions::new();
     opts.pathspec(path);
@@ -379,9 +410,11 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
 mod tests {
     use super::{
         clean_untracked_files, get_file_statuses, parse_conflict_markers, read_conflict_file,
+        stage_all, undo_last_commit,
     };
+    use crate::infra::git::repository::{get_commit_history, get_current_branch};
     use crate::shared::conflicts::{ConflictChoice, ConflictPart};
-    use git2::Repository;
+    use git2::{Repository, RepositoryInitOptions, Signature, Time};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(unix)]
@@ -407,7 +440,9 @@ mod tests {
                 unique
             ));
             std::fs::create_dir_all(&path).expect("create temp repo dir");
-            Repository::init(&path).expect("init temp repo");
+            let mut options = RepositoryInitOptions::new();
+            options.initial_head("main");
+            Repository::init_opts(&path, &options).expect("init temp repo");
             Self { path }
         }
 
@@ -420,6 +455,34 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    fn signature() -> Signature<'static> {
+        Signature::new(
+            "Test User",
+            "tester@example.com",
+            &Time::new(1_700_000_000, 0),
+        )
+        .expect("signature")
+    }
+
+    fn commit_all(repo: &Repository, message: &str) -> git2::Oid {
+        stage_all(repo).expect("stage all");
+        let tree_id = {
+            let mut index = repo.index().expect("index");
+            index.write_tree().expect("write tree")
+        };
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = signature();
+        let parents = repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let parent_refs = parents.iter().collect::<Vec<_>>();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
+            .expect("commit")
     }
 
     #[cfg(unix)]
@@ -534,5 +597,58 @@ mod tests {
         assert!(staged.is_empty());
         assert!(unstaged.iter().all(|file| !file.path.is_empty()));
         assert!(unstaged.is_empty());
+    }
+
+    #[test]
+    fn undo_last_commit_soft_resets_latest_commit_and_keeps_changes_staged() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+        let file_path = repo_dir.path().join("tracked.txt");
+
+        std::fs::write(&file_path, "first").expect("write first content");
+        let first_oid = commit_all(&repo, "first");
+
+        std::fs::write(&file_path, "second").expect("write second content");
+        let second_oid = commit_all(&repo, "second");
+
+        let message = undo_last_commit(&repo).expect("undo latest commit");
+
+        assert!(message.contains(&second_oid.to_string()[..8]));
+        assert!(message.contains("kept its changes staged"));
+        assert_eq!(repo.head().expect("head").target(), Some(first_oid));
+        assert_eq!(
+            std::fs::read_to_string(&file_path).expect("read file"),
+            "second"
+        );
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].path, "tracked.txt");
+    }
+
+    #[test]
+    fn undo_last_commit_supports_initial_commit_by_restoring_unborn_head() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+        let file_path = repo_dir.path().join("tracked.txt");
+
+        std::fs::write(&file_path, "first").expect("write first content");
+        let first_oid = commit_all(&repo, "first");
+
+        let message = undo_last_commit(&repo).expect("undo initial commit");
+
+        assert!(message.contains(&first_oid.to_string()[..8]));
+        assert_eq!(get_current_branch(&repo).expect("current branch"), "main");
+        assert!(get_commit_history(&repo, 10).expect("history").is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&file_path).expect("read file"),
+            "first"
+        );
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].path, "tracked.txt");
     }
 }

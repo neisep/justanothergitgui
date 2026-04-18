@@ -3,6 +3,7 @@ use crate::worker::{
     CloneRepoResult, CreateGithubRepoResult, CreatePullRequestResult, CreateTagResult,
     DiscardAndResetResult, GithubAuthPromptResult, GithubAuthResult, HandleRepoTaskResult,
     HandleWelcomeTaskResult, ListGithubReposResult, OpenPullRequestResult, PullResult, PushResult,
+    UndoLastCommitResult,
 };
 
 pub(crate) struct WelcomeWorkerContext<'a> {
@@ -273,6 +274,25 @@ impl HandleRepoTaskResult for DiscardAndResetResult {
                 ctx.tab.state.ui.status_msg =
                     helpers::status_message_for_error("Discard & reset", &msg);
                 ctx.log_error("Discard & reset", &msg);
+            }
+        }
+
+        ctx.request_refresh();
+    }
+}
+
+impl HandleRepoTaskResult for UndoLastCommitResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+        ctx.tab.state.ui.busy = None;
+
+        match self.0 {
+            Ok(msg) => {
+                ctx.tab.state.ui.status_msg = format!("Undo last commit: {}", msg);
+            }
+            Err(msg) => {
+                ctx.tab.state.ui.status_msg =
+                    helpers::status_message_for_error("Undo last commit", &msg);
+                ctx.log_error("Undo last commit", &msg);
             }
         }
 

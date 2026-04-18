@@ -13,8 +13,19 @@ pub fn open_repo(path: &Path) -> Result<Repository, git2::Error> {
 }
 
 pub fn get_current_branch(repo: &Repository) -> Result<String, git2::Error> {
-    let head = repo.head()?;
-    Ok(head.shorthand().unwrap_or("HEAD").to_string())
+    match repo.head() {
+        Ok(head) => Ok(head.shorthand().unwrap_or("HEAD").to_string()),
+        Err(error)
+            if matches!(
+                error.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            symbolic_head_branch_name(repo)
+                .ok_or_else(|| git2::Error::from_str("Repository has no checked-out branch"))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn get_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
@@ -451,6 +462,14 @@ pub(crate) fn current_branch_name(repo_path: &Path) -> Result<Option<String>, St
         Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))?;
     let head = match repo.head() {
         Ok(head) => head,
+        Err(error)
+            if matches!(
+                error.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            return Ok(symbolic_head_branch_name(&repo));
+        }
         Err(_) => return Ok(None),
     };
 
@@ -459,6 +478,12 @@ pub(crate) fn current_branch_name(repo_path: &Path) -> Result<Option<String>, St
     }
 
     Ok(head.shorthand().map(ToOwned::to_owned))
+}
+
+fn symbolic_head_branch_name(repo: &Repository) -> Option<String> {
+    let head = repo.find_reference("HEAD").ok()?;
+    let target = head.symbolic_target()?;
+    target.strip_prefix("refs/heads/").map(ToOwned::to_owned)
 }
 
 pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 4], bool)> {
@@ -505,7 +530,7 @@ fn format_relative_time(now: i64, then: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::get_commit_history;
+    use super::{get_commit_history, get_current_branch};
     use git2::{Repository, RepositoryInitOptions, Signature, Time};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -644,5 +669,15 @@ mod tests {
         let history = get_commit_history(&repo, 10).expect("history");
 
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn get_current_branch_returns_symbolic_branch_for_unborn_head() {
+        let repo_dir = TestRepoDir::new();
+        let repo = init_repo(repo_dir.path());
+
+        let branch = get_current_branch(&repo).expect("current branch");
+
+        assert_eq!(branch, "main");
     }
 }

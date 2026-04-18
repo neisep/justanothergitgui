@@ -239,6 +239,11 @@ impl AppRepoWorkerOps {
         let github = InfraGitHubPort;
         sync::service::discard_and_reset_to_remote(repo_path, auth, clean_untracked, &git, &github)
     }
+
+    pub(crate) fn undo_last_commit(repo_path: &Path) -> Result<String, String> {
+        let git = InfraGitPort;
+        sync::service::undo_last_commit(repo_path, &git)
+    }
 }
 
 pub(super) struct AppGitHubAuth;

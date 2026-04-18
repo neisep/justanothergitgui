@@ -34,6 +34,7 @@ pub enum BusyAction {
     OpenPullRequest,
     CreatePullRequest,
     DiscardAndReset,
+    UndoLastCommit,
     GithubSignIn,
     PublishRepository,
     CloneRepository,

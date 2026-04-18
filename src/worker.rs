@@ -31,6 +31,7 @@ pub(crate) struct CreateGithubRepoResult(pub(crate) Result<CreateGithubRepoSucce
 pub(crate) struct OpenPullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct CreatePullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct DiscardAndResetResult(pub(crate) Result<String, String>);
+pub(crate) struct UndoLastCommitResult(pub(crate) Result<String, String>);
 pub(crate) struct ListGithubReposResult(pub(crate) Result<Vec<GithubRepoSummary>, String>);
 pub(crate) struct CloneRepoResult(pub(crate) Result<PathBuf, String>);
 #[cfg(test)]
@@ -102,6 +103,10 @@ impl RepoTaskResult {
         Self::new(DiscardAndResetResult(result))
     }
 
+    fn undo_last_commit(result: Result<String, String>) -> Self {
+        Self::new(UndoLastCommitResult(result))
+    }
+
     #[cfg(test)]
     fn noop() -> Self {
         Self::new(RepoNoopResult)
@@ -150,6 +155,7 @@ enum RepoWorkerTask {
         auth: Option<GithubAuthSession>,
         clean_untracked: bool,
     },
+    UndoLastCommit(PathBuf),
     #[cfg(test)]
     Panic,
 }
@@ -162,6 +168,7 @@ enum RepoWorkerTaskKind {
     OpenPullRequest,
     CreatePullRequest,
     DiscardAndReset,
+    UndoLastCommit,
     #[cfg(test)]
     Panic,
 }
@@ -199,6 +206,7 @@ impl WorkerTaskKind<RepoTaskResult> for RepoWorkerTaskKind {
             Self::OpenPullRequest => RepoTaskResult::open_pull_request(Err(message)),
             Self::CreatePullRequest => RepoTaskResult::create_pull_request(Err(message)),
             Self::DiscardAndReset => RepoTaskResult::discard_and_reset(Err(message)),
+            Self::UndoLastCommit => RepoTaskResult::undo_last_commit(Err(message)),
             #[cfg(test)]
             Self::Panic => RepoTaskResult::noop(),
         }
@@ -256,6 +264,7 @@ impl WorkerTaskSpec<RepoTaskResult> for RepoWorkerTask {
             Self::OpenPullRequest(..) => RepoWorkerTaskKind::OpenPullRequest,
             Self::CreatePullRequest(..) => RepoWorkerTaskKind::CreatePullRequest,
             Self::DiscardAndReset { .. } => RepoWorkerTaskKind::DiscardAndReset,
+            Self::UndoLastCommit(..) => RepoWorkerTaskKind::UndoLastCommit,
             #[cfg(test)]
             Self::Panic => RepoWorkerTaskKind::Panic,
         }
@@ -287,6 +296,9 @@ impl WorkerTaskSpec<RepoTaskResult> for RepoWorkerTask {
                 auth.as_ref(),
                 clean_untracked,
             )),
+            RepoWorkerTask::UndoLastCommit(path) => {
+                RepoTaskResult::undo_last_commit(AppRepoWorkerOps::undo_last_commit(&path))
+            }
             #[cfg(test)]
             RepoWorkerTask::Panic => panic!("panic task"),
         }
@@ -472,6 +484,11 @@ impl RepoWorker {
             auth,
             clean_untracked,
         })
+    }
+
+    #[must_use]
+    pub fn undo_last_commit(&self, repo_path: PathBuf) -> bool {
+        self.0.dispatch(RepoWorkerTask::UndoLastCommit(repo_path))
     }
 
     pub fn is_busy(&self) -> bool {
