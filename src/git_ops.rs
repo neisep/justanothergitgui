@@ -4,7 +4,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -415,9 +415,22 @@ pub fn repo_name_from_clone_url(url: &str) -> Option<String> {
         .find(|s| !s.is_empty())?;
     let segment = segment.trim();
     if segment.is_empty() {
-        None
-    } else {
-        Some(segment.to_string())
+        return None;
+    }
+    if segment.contains('\\') || segment.contains('\0') {
+        return None;
+    }
+    let path = Path::new(segment);
+    let mut components = path.components();
+    let Some(first) = components.next() else {
+        return None;
+    };
+    if components.next().is_some() {
+        return None;
+    }
+    match first {
+        Component::Normal(os) if os == segment => Some(segment.to_string()),
+        _ => None,
     }
 }
 
@@ -1962,6 +1975,16 @@ mod tests {
         );
         assert_eq!(repo_name_from_clone_url(""), None);
         assert_eq!(repo_name_from_clone_url("   "), None);
+    }
+
+    #[test]
+    fn repo_name_rejects_traversal_segments() {
+        assert_eq!(repo_name_from_clone_url("https://example.com/a/."), None);
+        assert_eq!(repo_name_from_clone_url("https://example.com/a/.."), None);
+        assert_eq!(repo_name_from_clone_url("https://example.com/a/../b/."), None);
+        assert_eq!(repo_name_from_clone_url("https://example.com/a/..git"), None);
+        assert_eq!(repo_name_from_clone_url("/"), None);
+        assert_eq!(repo_name_from_clone_url("https://example.com/a/foo\\bar"), None);
     }
 
     #[test]
