@@ -42,7 +42,10 @@ pub fn push_with_git2(
     sync_remote_tracking_branch(&repo, branch_name)?;
 
     if let Err(error) = repair_branch_upstream(&repo, branch_name) {
-        return Err(format!("Upstream configuration error: {}", error));
+        return Ok(format!(
+            "Push successful (warning: upstream configuration error: {})",
+            error
+        ));
     }
 
     Ok("Push successful".into())
