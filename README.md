@@ -33,7 +33,7 @@ This project aims to be a simple, fast, user-friendly Git desktop app without de
 The application combines:
 
 - a native Rust desktop UI with `eframe` / `egui`
-- local Git operations through `git2`, with Git CLI use limited to history rendering
+- local Git operations through `git2`
 - direct GitHub API integration for repository publishing and pull request actions
 - secure GitHub session persistence through the operating system keychain / credential store
 
@@ -197,18 +197,34 @@ If an operation fails, the UI shows a short message and writes sanitized details
 
 ```text
 src/
-├── main.rs              # Application entry point and native window setup
-├── app.rs               # Main app orchestration, dialogs, toolbar, GitHub flow
-├── git_ops.rs           # Git and GitHub operations
-├── state.rs             # Shared UI state and actions
-├── worker.rs            # Background worker for long-running operations
-└── ui/
-    ├── bottom_bar.rs    # Status bar
-    ├── commit_panel.rs  # Commit editor panel
-    ├── diff_panel.rs    # Diff view and conflict resolution UI
-    ├── file_panel.rs    # Staged / unstaged file lists
-    └── history_panel.rs # Commit history and graph lane
+├── main.rs              # Native entry point and window setup
+├── app.rs               # Top-level egui app and tab orchestration
+├── app/                 # App shell helpers, actions, dialogs, worker events, app-facing ports
+├── core/                # Reusable publish, sync, and tagging services plus service traits
+├── infra/               # Git, GitHub, browser, and keychain implementations
+├── shared/              # Shared Git/GitHub data types and UI actions
+├── state.rs             # Focused app substates for repo, worktree, inspector, commit, dialogs, and UI
+├── ui/                  # Focused panels, dialogs, and status views
+├── worker.rs            # Background workers for repo and welcome-screen operations
+├── commit_rules.rs      # Commit message rules, validation, and suggestions
+├── settings.rs          # Persisted app settings
+├── logging.rs           # Sanitized in-app logging
+└── git_ops.rs           # Compatibility shim around the newer core/infra flow
 ```
+
+---
+
+## Architecture at a Glance
+
+For contributors, the codebase is organized in a light layered style:
+
+- `app`, `ui`, and `state` handle the desktop UX and tab/panel state
+- `app/ports.rs` provides app-facing facades for repository reads/writes, worker operations, and GitHub auth
+- `core` contains reusable workflows such as publish, sync, and tag creation behind focused traits
+- `infra` contains the concrete Git, GitHub, browser, and keychain adapters used by those workflows
+- `shared` holds the common data models passed between layers
+
+That keeps UI code relatively small while preserving the existing `git_ops.rs` surface for compatibility.
 
 ---
 
