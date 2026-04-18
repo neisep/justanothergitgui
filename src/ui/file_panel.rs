@@ -1,12 +1,20 @@
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use crate::state::{AppState, DragFile, FileEntry, UiAction};
+use crate::shared::actions::UiAction;
+use crate::shared::git::FileEntry;
+use crate::state::{DragFile, InspectorState, UiState, WorktreeState};
 
 const STATUS_COL_WIDTH: f32 = 72.0;
 const ACTION_COL_WIDTH: f32 = 72.0;
 
-pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
+pub struct FilePanelState<'a> {
+    pub worktree: &'a WorktreeState,
+    pub inspector: &'a mut InspectorState,
+    pub ui_state: &'a mut UiState,
+}
+
+pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
     let mut unstaged_rect = egui::Rect::NOTHING;
     let mut staged_rect = egui::Rect::NOTHING;
 
@@ -15,58 +23,58 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         .min_size(200.0)
         .show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong(format!("Unstaged ({})", state.unstaged.len()));
+                ui.strong(format!("Unstaged ({})", state.worktree.unstaged.len()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !state.unstaged.is_empty()
+                    if !state.worktree.unstaged.is_empty()
                         && ui
                             .small_button("Stage All")
                             .on_hover_text("Stage all changes")
                             .clicked()
                     {
-                        state.actions.push(UiAction::StageAll);
+                        state.ui_state.actions.push(UiAction::stage_all());
                     }
                 });
             });
             ui.separator();
 
             let first_list_height = (ui.available_height() - 8.0).max(0.0) / 2.0;
-            unstaged_rect = render_file_table(ui, state, false, first_list_height);
+            unstaged_rect = render_file_table(ui, &mut state, false, first_list_height);
 
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
-                ui.strong(format!("Staged ({})", state.staged.len()));
+                ui.strong(format!("Staged ({})", state.worktree.staged.len()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !state.staged.is_empty()
+                    if !state.worktree.staged.is_empty()
                         && ui
                             .small_button("Unstage All")
                             .on_hover_text("Unstage all changes")
                             .clicked()
                     {
-                        state.actions.push(UiAction::UnstageAll);
+                        state.ui_state.actions.push(UiAction::unstage_all());
                     }
                 });
             });
             ui.separator();
 
-            staged_rect = render_file_table(ui, state, true, ui.available_height());
+            staged_rect = render_file_table(ui, &mut state, true, ui.available_height());
 
-            handle_drop(ui, state, unstaged_rect, staged_rect);
+            handle_drop(ui, &mut state, unstaged_rect, staged_rect);
         });
 
-    show_drag_ghost(ui.ctx(), state);
+    show_drag_ghost(ui.ctx(), &state);
 }
 
 fn render_file_table(
     ui: &mut egui::Ui,
-    state: &mut AppState,
+    state: &mut FilePanelState<'_>,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
     let files = if staged {
-        state.staged.clone()
+        state.worktree.staged.clone()
     } else {
-        state.unstaged.clone()
+        state.worktree.unstaged.clone()
     };
     let row_height = ui.spacing().interact_size.y.max(28.0);
 
@@ -106,9 +114,13 @@ fn render_file_table(
         .body(|body| {
             body.rows(row_height, files.len(), |mut row| {
                 let file = &files[row.index()];
-                let is_selected = state.selected_file.as_ref().is_some_and(|selected| {
-                    selected.path == file.path && selected.staged == staged
-                });
+                let is_selected = state
+                    .inspector
+                    .selected_file
+                    .as_ref()
+                    .is_some_and(|selected| {
+                        selected.path == file.path && selected.staged == staged
+                    });
                 row.set_selected(is_selected);
 
                 let mut action_clicked = false;
@@ -144,7 +156,7 @@ fn render_file_table(
                             });
                         if handle.drag_started() {
                             drag_started = true;
-                            state.dragging = Some(DragFile {
+                            state.inspector.dragging = Some(DragFile {
                                 path: file.path.clone(),
                                 from_staged: staged,
                             });
@@ -168,9 +180,15 @@ fn render_file_table(
                         {
                             action_clicked = true;
                             if staged {
-                                state.actions.push(UiAction::UnstageFile(file.path.clone()));
+                                state
+                                    .ui_state
+                                    .actions
+                                    .push(UiAction::unstage_file(file.path.clone()));
                             } else {
-                                state.actions.push(UiAction::StageFile(file.path.clone()));
+                                state
+                                    .ui_state
+                                    .actions
+                                    .push(UiAction::stage_file(file.path.clone()));
                             }
                         }
                     });
@@ -182,10 +200,10 @@ fn render_file_table(
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                 if row_response.clicked() && !action_clicked && !drag_started {
-                    state.actions.push(UiAction::SelectFile {
-                        path: file.path.clone(),
-                        staged,
-                    });
+                    state
+                        .ui_state
+                        .actions
+                        .push(UiAction::select_file(file.path.clone(), staged));
                 }
             });
         })
@@ -194,12 +212,12 @@ fn render_file_table(
 
 fn render_empty_section(
     ui: &mut egui::Ui,
-    state: &AppState,
+    state: &FilePanelState<'_>,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
     let (title, hint) = if staged {
-        if state.unstaged.is_empty() {
+        if state.worktree.unstaged.is_empty() {
             (
                 "Nothing staged yet",
                 "Edit a file in your project — changes will show up here.",
@@ -210,7 +228,7 @@ fn render_empty_section(
                 "Click Stage, or drag a file from Unstaged above.",
             )
         }
-    } else if state.staged.is_empty() {
+    } else if state.worktree.staged.is_empty() {
         (
             "Working tree is clean",
             "Edit any file in your project to see it here.",
@@ -224,10 +242,7 @@ fn render_empty_section(
 
     let width = ui.available_width();
     let height = max_height.clamp(72.0, 140.0);
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(width, height),
-        egui::Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
 
     let painter = ui.painter_at(rect);
     let weak = ui.visuals().weak_text_color();
@@ -307,14 +322,14 @@ fn drag_handle(ui: &mut egui::Ui) -> egui::Response {
 
 fn handle_drop(
     ui: &mut egui::Ui,
-    state: &mut AppState,
+    state: &mut FilePanelState<'_>,
     unstaged_rect: egui::Rect,
     staged_rect: egui::Rect,
 ) {
     let pointer_released = ui.input(|i| i.pointer.any_released());
     let hover_pos = ui.input(|i| i.pointer.hover_pos());
 
-    let drag_info = state.dragging.clone();
+    let drag_info = state.inspector.dragging.clone();
 
     if let Some(drag) = &drag_info {
         let target_rect = if drag.from_staged {
@@ -323,51 +338,56 @@ fn handle_drop(
             staged_rect
         };
 
-        if let Some(pos) = hover_pos {
-            if target_rect.contains(pos) {
-                ui.painter().rect_stroke(
-                    target_rect,
-                    4.0,
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 80)),
-                    egui::StrokeKind::Outside,
-                );
-            }
+        if let Some(pos) = hover_pos
+            && target_rect.contains(pos)
+        {
+            ui.painter().rect_stroke(
+                target_rect,
+                4.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 80)),
+                egui::StrokeKind::Outside,
+            );
         }
 
-        if pointer_released {
-            if let Some(pos) = hover_pos {
-                if target_rect.contains(pos) {
-                    if drag.from_staged {
-                        state.actions.push(UiAction::UnstageFile(drag.path.clone()));
-                    } else {
-                        state.actions.push(UiAction::StageFile(drag.path.clone()));
-                    }
-                }
+        if pointer_released
+            && let Some(pos) = hover_pos
+            && target_rect.contains(pos)
+        {
+            if drag.from_staged {
+                state
+                    .ui_state
+                    .actions
+                    .push(UiAction::unstage_file(drag.path.clone()));
+            } else {
+                state
+                    .ui_state
+                    .actions
+                    .push(UiAction::stage_file(drag.path.clone()));
             }
         }
     }
 
     if pointer_released {
-        state.dragging = None;
+        state.inspector.dragging = None;
     }
 }
 
-fn show_drag_ghost(ctx: &egui::Context, state: &AppState) {
-    if let Some(drag) = &state.dragging {
-        if let Some(pos) = ctx.pointer_hover_pos() {
-            egui::Area::new(egui::Id::new("drag_ghost"))
-                .order(egui::Order::Tooltip)
-                .fixed_pos(pos + egui::vec2(12.0, 12.0))
-                .show(ctx, |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        let arrow = if drag.from_staged {
-                            "\u{2191} "
-                        } else {
-                            "\u{2193} "
-                        };
-                        ui.label(format!("{}{}", arrow, &drag.path));
-                    });
+fn show_drag_ghost(ctx: &egui::Context, state: &FilePanelState<'_>) {
+    if let Some(drag) = &state.inspector.dragging
+        && let Some(pos) = ctx.pointer_hover_pos()
+    {
+        egui::Area::new(egui::Id::new("drag_ghost"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(pos + egui::vec2(12.0, 12.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    let arrow = if drag.from_staged {
+                        "\u{2191} "
+                    } else {
+                        "\u{2193} "
+                    };
+                    ui.label(format!("{}{}", arrow, &drag.path));
                 });
-        }
+            });
     }
 }

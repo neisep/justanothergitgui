@@ -1,8 +1,11 @@
 mod app;
 mod commit_rules;
+mod core;
 mod git_ops;
+mod infra;
 mod logging;
 mod settings;
+mod shared;
 mod state;
 mod ui;
 mod worker;

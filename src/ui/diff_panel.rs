@@ -1,49 +1,65 @@
 use eframe::egui;
 
-use crate::state::{AppState, CenterView, ConflictChoice, ConflictPart, UiAction};
+use crate::shared::actions::UiAction;
+use crate::shared::conflicts::{ConflictChoice, ConflictPart};
+use crate::state::{CenterView, InspectorState, RepoState, UiState, WorktreeState};
 
-pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
-    // View toggle
+pub struct DiffPanelState<'a> {
+    pub repo: &'a RepoState,
+    pub worktree: &'a WorktreeState,
+    pub inspector: &'a mut InspectorState,
+    pub ui_state: &'a mut UiState,
+}
+
+pub fn show(ui: &mut egui::Ui, mut state: DiffPanelState<'_>) {
     ui.horizontal(|ui| {
         if ui
-            .selectable_label(state.center_view == CenterView::Diff, "Changes")
+            .selectable_label(state.inspector.center_view == CenterView::Diff, "Changes")
             .clicked()
         {
-            state.actions.push(UiAction::ShowDiff);
+            state.ui_state.actions.push(UiAction::show_diff());
         }
         if ui
-            .selectable_label(state.center_view == CenterView::History, "History")
+            .selectable_label(
+                state.inspector.center_view == CenterView::History,
+                "History",
+            )
             .clicked()
         {
-            state.actions.push(UiAction::ShowHistory);
+            state.ui_state.actions.push(UiAction::show_history());
         }
     });
     ui.separator();
 
-    let view = state.center_view.clone();
-    match view {
-        CenterView::Diff => show_diff_or_conflict(ui, state),
-        CenterView::History => super::history_panel::show(ui, state),
+    match state.inspector.center_view.clone() {
+        CenterView::Diff => show_diff_or_conflict(ui, &mut state),
+        CenterView::History => super::history_panel::show(
+            ui,
+            super::history_panel::HistoryPanelView {
+                repo_path: state.repo.path.as_deref(),
+                commit_history: &state.repo.commit_history,
+            },
+        ),
     }
 }
 
-fn show_diff_or_conflict(ui: &mut egui::Ui, state: &mut AppState) {
-    if state.conflict_data.is_some() {
+fn show_diff_or_conflict(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
+    if state.inspector.conflict_data.is_some() {
         show_conflict_view(ui, state);
-    } else if state.selected_file.is_some() {
+    } else if state.inspector.selected_file.is_some() {
         show_diff_view(ui, state);
     } else {
         show_diff_empty_state(ui, state);
     }
 }
 
-fn show_diff_empty_state(ui: &mut egui::Ui, state: &AppState) {
-    let (title, hint) = if state.repo_path.is_none() {
+fn show_diff_empty_state(ui: &mut egui::Ui, state: &DiffPanelState<'_>) {
+    let (title, hint) = if state.repo.path.is_none() {
         (
             "No repository open",
             "Use the top bar to open, clone, or init a repository.",
         )
-    } else if state.unstaged.is_empty() && state.staged.is_empty() {
+    } else if state.worktree.unstaged.is_empty() && state.worktree.staged.is_empty() {
         (
             "Nothing to show",
             "Edit a file in your project — changes will appear on the left.",
@@ -64,9 +80,9 @@ fn show_diff_empty_state(ui: &mut egui::Ui, state: &AppState) {
     });
 }
 
-fn show_diff_view(ui: &mut egui::Ui, state: &mut AppState) {
-    if let Some(sel) = &state.selected_file {
-        let rows = parse_diff_rows(&state.diff_content);
+fn show_diff_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
+    if let Some(sel) = &state.inspector.selected_file {
+        let rows = parse_diff_rows(&state.inspector.diff_content);
         let added_lines = rows
             .iter()
             .filter(|row| row.kind == DiffLineKind::Added)
@@ -82,7 +98,7 @@ fn show_diff_view(ui: &mut egui::Ui, state: &mut AppState) {
             ui.separator();
             ui.weak(format!("+{} / -{}", added_lines, removed_lines));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut state.diff_wrap, "Wrap lines");
+                ui.checkbox(&mut state.inspector.diff_wrap, "Wrap lines");
             });
         });
         ui.separator();
@@ -90,21 +106,21 @@ fn show_diff_view(ui: &mut egui::Ui, state: &mut AppState) {
         egui::ScrollArea::both()
             .id_salt("diff_scroll")
             .show(ui, |ui| {
-                if state.diff_content.is_empty() {
+                if state.inspector.diff_content.is_empty() {
                     ui.weak("No diff available (file may be binary or new)");
                     return;
                 }
 
-                show_diff_table(ui, &rows, state.diff_wrap);
+                show_diff_table(ui, &rows, state.inspector.diff_wrap);
             });
     }
 }
 
-fn show_conflict_view(ui: &mut egui::Ui, state: &mut AppState) {
+fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
     let mut save_clicked = false;
     let mut all_resolved = true;
 
-    if let Some(data) = &mut state.conflict_data {
+    if let Some(data) = &mut state.inspector.conflict_data {
         ui.horizontal(|ui| {
             ui.strong(format!("Conflict: {}", &data.path));
             ui.colored_label(
@@ -135,7 +151,6 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut AppState) {
 
                             ui.add_space(4.0);
 
-                            // Ours block
                             let ours_frame = egui::Frame::new()
                                 .fill(egui::Color32::from_rgba_premultiplied(0, 80, 0, 40))
                                 .corner_radius(4.0)
@@ -151,7 +166,6 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut AppState) {
                                 }
                             });
 
-                            // Theirs block
                             let theirs_frame = egui::Frame::new()
                                 .fill(egui::Color32::from_rgba_premultiplied(80, 0, 0, 40))
                                 .corner_radius(4.0)
@@ -167,7 +181,6 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut AppState) {
                                 }
                             });
 
-                            // Resolution buttons
                             ui.horizontal(|ui| {
                                 let is = |c: &ConflictChoice, t: ConflictChoice| *c == t;
                                 if ui
@@ -223,7 +236,10 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     if save_clicked {
-        state.actions.push(UiAction::SaveConflictResolution);
+        state
+            .ui_state
+            .actions
+            .push(UiAction::save_conflict_resolution());
     }
 }
 

@@ -33,29 +33,110 @@ pub enum CommitMessageRuleSet {
     ConventionalCommits,
 }
 
+pub trait CommitMessageRules: Send + Sync {
+    fn display_name(&self) -> &'static str;
+    fn description(&self) -> Option<&'static str>;
+    fn default_initial_summary(&self) -> &'static str;
+    fn validate(&self, message: &str) -> Result<(), String>;
+    fn prefix_suggestions(
+        &self,
+        message: &str,
+        inferred_scopes: &[String],
+        custom_scopes: &[String],
+    ) -> Vec<String>;
+    fn apply_prefix(&self, message: &mut String, prefix: &str);
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct OffCommitMessageRules;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ConventionalCommitMessageRules;
+
+static OFF_RULES: OffCommitMessageRules = OffCommitMessageRules;
+static CONVENTIONAL_COMMITS_RULES: ConventionalCommitMessageRules = ConventionalCommitMessageRules;
+
 impl CommitMessageRuleSet {
-    pub fn display_name(self) -> &'static str {
+    pub fn runtime(self) -> &'static dyn CommitMessageRules {
         match self {
-            Self::Off => "Off",
-            Self::ConventionalCommits => "Conventional Commits",
+            Self::Off => &OFF_RULES,
+            Self::ConventionalCommits => &CONVENTIONAL_COMMITS_RULES,
         }
     }
 
+    pub fn display_name(self) -> &'static str {
+        self.runtime().display_name()
+    }
+
     pub fn description(self) -> Option<&'static str> {
-        match self {
-            Self::Off => None,
-            Self::ConventionalCommits => Some(
-                "Require the first line to look like `feat: add search` or `fix(parser): handle empty input`.",
-            ),
-        }
+        self.runtime().description()
+    }
+}
+
+impl CommitMessageRules for OffCommitMessageRules {
+    fn display_name(&self) -> &'static str {
+        "Off"
+    }
+
+    fn description(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn default_initial_summary(&self) -> &'static str {
+        "Initial commit"
+    }
+
+    fn validate(&self, _message: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn prefix_suggestions(
+        &self,
+        _message: &str,
+        _inferred_scopes: &[String],
+        _custom_scopes: &[String],
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn apply_prefix(&self, _message: &mut String, _prefix: &str) {}
+}
+
+impl CommitMessageRules for ConventionalCommitMessageRules {
+    fn display_name(&self) -> &'static str {
+        "Conventional Commits"
+    }
+
+    fn description(&self) -> Option<&'static str> {
+        Some(
+            "Require the first line to look like `feat: add search` or `fix(parser): handle empty input`.",
+        )
+    }
+
+    fn default_initial_summary(&self) -> &'static str {
+        "chore: initial commit"
+    }
+
+    fn validate(&self, message: &str) -> Result<(), String> {
+        validate_conventional_commit(message)
+    }
+
+    fn prefix_suggestions(
+        &self,
+        message: &str,
+        inferred_scopes: &[String],
+        custom_scopes: &[String],
+    ) -> Vec<String> {
+        conventional_prefix_suggestions(message, inferred_scopes, custom_scopes)
+    }
+
+    fn apply_prefix(&self, message: &mut String, prefix: &str) {
+        apply_conventional_prefix(message, prefix);
     }
 }
 
 pub fn default_initial_commit_summary(ruleset: CommitMessageRuleSet) -> &'static str {
-    match ruleset {
-        CommitMessageRuleSet::Off => "Initial commit",
-        CommitMessageRuleSet::ConventionalCommits => "chore: initial commit",
-    }
+    ruleset.runtime().default_initial_summary()
 }
 
 pub fn build_message(summary: &str, body: &str) -> String {
@@ -79,17 +160,11 @@ pub fn validation_error(ruleset: CommitMessageRuleSet, message: &str) -> Option<
 }
 
 pub fn validate_for_submit(ruleset: CommitMessageRuleSet, message: &str) -> Result<(), String> {
-    match ruleset {
-        CommitMessageRuleSet::Off => Ok(()),
-        CommitMessageRuleSet::ConventionalCommits => validate_conventional_commit(message),
-    }
+    ruleset.runtime().validate(message)
 }
 
 pub fn apply_prefix(ruleset: CommitMessageRuleSet, message: &mut String, prefix: &str) {
-    match ruleset {
-        CommitMessageRuleSet::Off => {}
-        CommitMessageRuleSet::ConventionalCommits => apply_conventional_prefix(message, prefix),
-    }
+    ruleset.runtime().apply_prefix(message, prefix)
 }
 
 pub fn parse_custom_scopes(input: &str) -> Result<Vec<String>, String> {
@@ -153,12 +228,9 @@ pub fn prefix_suggestions(
     inferred_scopes: &[String],
     custom_scopes: &[String],
 ) -> Vec<String> {
-    match ruleset {
-        CommitMessageRuleSet::Off => Vec::new(),
-        CommitMessageRuleSet::ConventionalCommits => {
-            conventional_prefix_suggestions(message, inferred_scopes, custom_scopes)
-        }
-    }
+    ruleset
+        .runtime()
+        .prefix_suggestions(message, inferred_scopes, custom_scopes)
 }
 
 fn validate_conventional_commit(message: &str) -> Result<(), String> {
@@ -409,6 +481,26 @@ mod tests {
         let scopes = parse_custom_scopes("ui, settings, ui, worker/core").unwrap();
 
         assert_eq!(scopes, vec!["ui", "settings", "worker/core"]);
+    }
+
+    #[test]
+    fn keeps_ruleset_serialization_compatible() {
+        assert_eq!(
+            serde_json::to_string(&CommitMessageRuleSet::ConventionalCommits).unwrap(),
+            "\"conventional_commits\""
+        );
+        assert_eq!(
+            serde_json::from_str::<CommitMessageRuleSet>("\"off\"").unwrap(),
+            CommitMessageRuleSet::Off
+        );
+    }
+
+    #[test]
+    fn resolves_runtime_rules_from_selector() {
+        let rules = CommitMessageRuleSet::ConventionalCommits.runtime();
+
+        assert_eq!(rules.display_name(), "Conventional Commits");
+        assert_eq!(rules.default_initial_summary(), "chore: initial commit");
     }
 
     #[test]

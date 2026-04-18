@@ -1,7 +1,8 @@
 use eframe::egui;
 
 use crate::commit_rules::{self, CommitMessageRuleSet};
-use crate::state::{AppState, UiAction};
+use crate::shared::actions::UiAction;
+use crate::state::AppState;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -17,20 +18,20 @@ pub fn show(
             ui.separator();
 
             ui.label("Summary:");
-            let inferred_scopes = state.inferred_commit_scopes.clone();
+            let inferred_scopes = state.commit.inferred_commit_scopes.clone();
             let response = ui.add(
-                egui::TextEdit::singleline(&mut state.commit_summary)
+                egui::TextEdit::singleline(&mut state.commit.commit_summary)
                     .desired_width(f32::INFINITY)
                     .hint_text("Describe your changes..."),
             );
-            if state.focus_commit_summary_requested {
+            if state.commit.focus_commit_summary_requested {
                 response.request_focus();
-                state.focus_commit_summary_requested = false;
+                state.commit.focus_commit_summary_requested = false;
             }
             show_prefix_suggestions(
                 ui,
                 &response,
-                &mut state.commit_summary,
+                &mut state.commit.commit_summary,
                 ruleset,
                 &inferred_scopes,
                 custom_scopes,
@@ -39,15 +40,17 @@ pub fn show(
             ui.add_space(8.0);
             ui.label("Body (optional):");
             ui.add(
-                egui::TextEdit::multiline(&mut state.commit_body)
+                egui::TextEdit::multiline(&mut state.commit.commit_body)
                     .desired_width(f32::INFINITY)
                     .hint_text("Explain what changed and why...")
                     .desired_rows(4),
             );
 
             ui.add_space(8.0);
-            let commit_message =
-                commit_rules::build_message(&state.commit_summary, &state.commit_body);
+            let commit_message = commit_rules::build_message(
+                &state.commit.commit_summary,
+                &state.commit.commit_body,
+            );
             let validation_error = commit_rules::validation_error(ruleset, &commit_message);
 
             if let Some(error) = &validation_error {
@@ -58,8 +61,8 @@ pub fn show(
                 ui.add_space(8.0);
             }
 
-            let can_commit = !state.staged.is_empty()
-                && !state.commit_summary.trim().is_empty()
+            let can_commit = !state.worktree.staged.is_empty()
+                && !state.commit.commit_summary.trim().is_empty()
                 && validation_error.is_none();
 
             ui.add_enabled_ui(can_commit, |ui| {
@@ -69,20 +72,20 @@ pub fn show(
                         "Create a commit with staged changes\nShortcut: Ctrl/Cmd+Enter"
                     } else if validation_error.is_some() {
                         "Fix the commit message format first"
-                    } else if state.staged.is_empty() {
+                    } else if state.worktree.staged.is_empty() {
                         "Stage files first"
                     } else {
                         "Enter a commit summary"
                     })
                     .clicked()
                 {
-                    state.actions.push(UiAction::Commit);
+                    state.ui.actions.push(UiAction::commit());
                 }
             });
 
             ui.add_space(16.0);
             ui.separator();
-            ui.weak(format!("{} file(s) staged", state.staged.len()));
+            ui.weak(format!("{} file(s) staged", state.worktree.staged.len()));
         });
 }
 
