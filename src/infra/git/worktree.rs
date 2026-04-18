@@ -187,7 +187,7 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
         .map_err(|error| error.to_string())?
         .join(path);
     let content = std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
-    let sections = parse_conflict_markers(&content);
+    let sections = parse_conflict_markers(&content)?;
     Ok(ConflictData {
         path: path.to_string(),
         sections,
@@ -292,7 +292,7 @@ fn status_label_unstaged(status: Status) -> &'static str {
     }
 }
 
-fn parse_conflict_markers(content: &str) -> Vec<ConflictPart> {
+fn parse_conflict_markers(content: &str) -> Result<Vec<ConflictPart>, String> {
     let mut sections = Vec::new();
     let mut common = String::new();
     let mut ours = String::new();
@@ -334,14 +334,102 @@ fn parse_conflict_markers(content: &str) -> Vec<ConflictPart> {
         }
     }
 
+    if in_ours || in_theirs {
+        return Err("Unbalanced conflict markers".into());
+    }
+
     if !common.is_empty() {
         sections.push(ConflictPart::Common(common));
     }
 
-    sections
+    Ok(sections)
 }
 
 fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
     repo.workdir()
         .ok_or_else(|| git2::Error::from_str("Bare repositories are not supported"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_conflict_markers, read_conflict_file};
+    use crate::shared::conflicts::{ConflictChoice, ConflictPart};
+    use git2::Repository;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestRepoDir {
+        path: PathBuf,
+    }
+
+    impl TestRepoDir {
+        fn init() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "justanothergitgui-worktree-test-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            std::fs::create_dir_all(&path).expect("create temp repo dir");
+            Repository::init(&path).expect("init temp repo");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestRepoDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn parses_complete_conflict_markers() {
+        let sections = parse_conflict_markers(
+            "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\nafter",
+        )
+        .expect("parse complete conflict markers");
+
+        assert_eq!(sections.len(), 3);
+        assert!(matches!(sections[0], ConflictPart::Common(ref text) if text == "before"));
+        assert!(matches!(
+            sections[1],
+            ConflictPart::Conflict {
+                ref ours,
+                ref theirs,
+                resolution: ConflictChoice::Unresolved,
+            } if ours == "ours" && theirs == "theirs"
+        ));
+        assert!(matches!(sections[2], ConflictPart::Common(ref text) if text == "after"));
+    }
+
+    #[test]
+    fn rejects_unbalanced_conflict_markers_at_eof() {
+        let error = parse_conflict_markers("<<<<<<< HEAD\nours\n=======\ntheirs")
+            .expect_err("unbalanced conflict markers should fail");
+
+        assert!(error.contains("Unbalanced conflict markers"));
+    }
+
+    #[test]
+    fn read_conflict_file_rejects_malformed_markers() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+        std::fs::write(
+            repo_dir.path().join("conflicted.txt"),
+            "<<<<<<< HEAD\nours\n=======\ntheirs",
+        )
+        .expect("write conflict file");
+
+        let error = read_conflict_file(&repo, "conflicted.txt")
+            .expect_err("malformed conflict file should fail");
+
+        assert!(error.contains("Unbalanced conflict markers"));
+    }
 }
