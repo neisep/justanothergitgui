@@ -1836,7 +1836,10 @@ impl GitGuiApp {
                     {
                         clone_clicked = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui
+                        .add_enabled(!worker_busy, egui::Button::new("Cancel"))
+                        .clicked()
+                    {
                         cancel_clicked = true;
                     }
                     if let Some(busy) = &welcome_busy {
@@ -1861,6 +1864,10 @@ impl GitGuiApp {
 
         if cancel_clicked {
             keep_open = false;
+        }
+
+        if worker_busy {
+            keep_open = true;
         }
 
         self.clone_dialog.show = keep_open;
