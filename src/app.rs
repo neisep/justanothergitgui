@@ -6,7 +6,6 @@ mod repo;
 mod shell;
 mod worker_events;
 
-pub(crate) use actions::TabActionContext;
 use ports::{AppGitHubAuth, AppRepoRead, AppRepoWrite};
 pub(crate) use ports::{AppRepoWorkerOps, AppWelcomeWorkerOps};
 pub(crate) use worker_events::{RepoWorkerContext, WelcomeWorkerContext};
