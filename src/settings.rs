@@ -69,6 +69,11 @@ fn settings_path() -> PathBuf {
     settings_dir().join("settings.json")
 }
 
+/// Per-user config directory shared by settings and session persistence.
+pub fn config_dir() -> PathBuf {
+    settings_dir()
+}
+
 fn settings_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {

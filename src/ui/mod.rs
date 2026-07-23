@@ -4,6 +4,7 @@ pub mod dialogs;
 pub mod diff_panel;
 pub mod file_panel;
 pub mod history_panel;
+pub mod tab_bar;
 
 use eframe::egui;
 

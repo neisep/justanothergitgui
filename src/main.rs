@@ -9,6 +9,7 @@ mod core;
 mod git_ops;
 mod infra;
 mod logging;
+mod session;
 mod settings;
 mod shared;
 mod state;

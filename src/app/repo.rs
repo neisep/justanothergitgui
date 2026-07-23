@@ -31,6 +31,7 @@ impl GitGuiApp {
         {
             self.active_tab = index;
             self.tabs[index].state.ui.status_msg = "Repository already open".into();
+            self.persist_session();
             return;
         }
 
@@ -75,6 +76,98 @@ impl GitGuiApp {
         });
         self.active_tab = self.tabs.len() - 1;
         self.welcome_status = "Open a Git repository to get started.".into();
+        self.persist_session();
+    }
+
+    /// Restore the tabs saved from the previous run. Repositories that can no
+    /// longer be opened (moved/deleted) are skipped and logged. If there is no
+    /// saved session, fall back to opening the current directory when it is a
+    /// repository, preserving the original first-run behaviour.
+    pub(super) fn restore_previous_session(&mut self) {
+        let saved = match crate::session::load_session() {
+            Ok(saved) => saved,
+            Err(message) => {
+                self.logger.log_error("Session", &message);
+                crate::session::SessionState::default()
+            }
+        };
+
+        if saved.open_repos.is_empty() {
+            if let Ok(repo) = AppRepoRead::open(Path::new(".")) {
+                self.add_repo_tab(repo);
+            }
+            return;
+        }
+
+        for path in &saved.open_repos {
+            match AppRepoRead::open(path) {
+                Ok(repo) => self.add_repo_tab(repo),
+                Err(error) => self.logger.log_error(
+                    "Restore session",
+                    &format!("Skipped {}: {}", path.display(), error),
+                ),
+            }
+        }
+
+        if let Some(active) = &saved.active_repo
+            && let Some(index) = self
+                .tabs
+                .iter()
+                .position(|tab| tab.state.repo.path.as_ref() == Some(active))
+        {
+            self.active_tab = index;
+        }
+    }
+
+    /// Write the current open tabs and active repository to disk so they can be
+    /// restored next launch. No-op until construction finishes (`session_ready`).
+    pub(super) fn persist_session(&mut self) {
+        if !self.session_ready {
+            return;
+        }
+
+        let open_repos = self
+            .tabs
+            .iter()
+            .filter_map(|tab| tab.state.repo.path.clone())
+            .collect();
+        let active_repo = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.state.repo.path.clone());
+
+        let session = crate::session::SessionState {
+            open_repos,
+            active_repo,
+        };
+        if let Err(message) = crate::session::save_session(&session) {
+            self.logger.log_error("Session", &message);
+        }
+    }
+
+    pub(super) fn close_repo_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        // Defensive: closing a tab drops its worker thread. Refuse while a
+        // network op is in flight so we do not abandon a push/pull mid-flight.
+        if self.tabs[index].worker.is_busy() {
+            self.tabs[index].state.ui.status_msg =
+                "Busy — finish or wait before closing this tab".into();
+            return;
+        }
+
+        self.tabs.remove(index);
+
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len().saturating_sub(1);
+        } else if index < self.active_tab {
+            // A tab to the left was removed; keep the same repo focused.
+            self.active_tab -= 1;
+        }
+
+        self.persist_session();
     }
 
     pub(super) fn set_status_message(&mut self, message: String) {
