@@ -530,66 +530,16 @@ fn format_relative_time(now: i64, then: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_commit_history, get_current_branch};
-    use git2::{Repository, RepositoryInitOptions, Signature, Time};
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    struct TestRepoDir {
-        path: PathBuf,
-    }
-
-    impl TestRepoDir {
-        fn new() -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "justanothergitgui-repository-test-{}-{}",
-                std::process::id(),
-                unique
-            ));
-            std::fs::create_dir_all(&path).expect("create temp repo dir");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TestRepoDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
-
-    fn init_repo(path: &Path) -> Repository {
-        let mut options = RepositoryInitOptions::new();
-        options.initial_head("main");
-        Repository::init_opts(path, &options).expect("init temp repo")
-    }
-
-    fn empty_tree(repo: &Repository) -> git2::Tree<'_> {
-        let tree_id = {
-            let mut index = repo.index().expect("index");
-            index.write_tree().expect("write tree")
-        };
-        repo.find_tree(tree_id).expect("find tree")
-    }
-
-    fn signature(name: &str, timestamp: i64) -> Signature<'static> {
-        Signature::new(name, "tester@example.com", &Time::new(timestamp, 0)).expect("signature")
-    }
+    use super::{get_commit_history, get_current_branch, get_outgoing_commit_count};
+    use crate::testutil::{TestRepoDir, commit_all, empty_tree, signature_named};
 
     #[test]
     fn get_commit_history_uses_git2_revwalk_and_keeps_labels() {
-        let repo_dir = TestRepoDir::new();
-        let repo = init_repo(repo_dir.path());
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
         let tree = empty_tree(&repo);
 
-        let base_sig = signature("Base Author", 1_700_000_000);
+        let base_sig = signature_named("Base Author", 1_700_000_000);
         let base_oid = repo
             .commit(Some("HEAD"), &base_sig, &base_sig, "base", &tree, &[])
             .expect("base commit");
@@ -598,7 +548,7 @@ mod tests {
         repo.branch("feature", &base_commit, false)
             .expect("create feature branch");
 
-        let feature_sig = signature("Feature Author", 1_700_000_100);
+        let feature_sig = signature_named("Feature Author", 1_700_000_100);
         let feature_oid = repo
             .commit(
                 Some("refs/heads/feature"),
@@ -611,7 +561,7 @@ mod tests {
             .expect("feature commit");
         let feature_commit = repo.find_commit(feature_oid).expect("find feature");
 
-        let main_sig = signature("Main Author", 1_700_000_200);
+        let main_sig = signature_named("Main Author", 1_700_000_200);
         let main_oid = repo
             .commit(
                 Some("HEAD"),
@@ -624,7 +574,7 @@ mod tests {
             .expect("main commit");
         let main_commit = repo.find_commit(main_oid).expect("find main");
 
-        let merge_sig = signature("Merge Author", 1_700_000_300);
+        let merge_sig = signature_named("Merge Author", 1_700_000_300);
         let merge_oid = repo
             .commit(
                 Some("HEAD"),
@@ -663,8 +613,8 @@ mod tests {
 
     #[test]
     fn get_commit_history_returns_empty_for_unborn_head() {
-        let repo_dir = TestRepoDir::new();
-        let repo = init_repo(repo_dir.path());
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
 
         let history = get_commit_history(&repo, 10).expect("history");
 
@@ -673,11 +623,54 @@ mod tests {
 
     #[test]
     fn get_current_branch_returns_symbolic_branch_for_unborn_head() {
-        let repo_dir = TestRepoDir::new();
-        let repo = init_repo(repo_dir.path());
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
 
         let branch = get_current_branch(&repo).expect("current branch");
 
         assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn get_outgoing_commit_count_is_zero_for_unborn_head() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+
+        assert_eq!(
+            get_outgoing_commit_count(&repo).expect("outgoing count"),
+            0
+        );
+    }
+
+    #[test]
+    fn get_outgoing_commit_count_counts_local_commits_without_remote() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+
+        repo_dir.write("a.txt", "one");
+        commit_all(&repo, "first");
+        repo_dir.write("b.txt", "two");
+        commit_all(&repo, "second");
+
+        // No remote-tracking refs exist, so every local commit is outgoing.
+        assert_eq!(
+            get_outgoing_commit_count(&repo).expect("outgoing count"),
+            2
+        );
+    }
+
+    #[test]
+    fn get_outgoing_commit_count_is_zero_for_detached_head() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+
+        repo_dir.write("a.txt", "one");
+        let oid = commit_all(&repo, "first");
+        repo.set_head_detached(oid).expect("detach head");
+
+        assert_eq!(
+            get_outgoing_commit_count(&repo).expect("outgoing count"),
+            0
+        );
     }
 }
