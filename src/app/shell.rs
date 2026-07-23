@@ -3,6 +3,7 @@ use super::{helpers, *};
 #[derive(Default)]
 struct RepoTabsUiOutput {
     next_active: Option<usize>,
+    closed_tab: Option<usize>,
     open_clicked: bool,
     settings_clicked: bool,
     show_logs_clicked: bool,
@@ -21,7 +22,6 @@ struct RepoToolbarModel {
     has_origin_remote: bool,
     needs_github_sign_in: bool,
     repo_worker_busy: bool,
-    controls_width: f32,
     can_discard: bool,
     discard_tooltip: String,
     can_undo_last_commit: bool,
@@ -109,11 +109,6 @@ impl RepoToolbarModel {
             has_origin_remote,
             needs_github_sign_in,
             repo_worker_busy: repo_busy.is_some(),
-            controls_width: if state.repo.branch.is_empty() {
-                380.0
-            } else {
-                560.0
-            },
             can_discard,
             discard_tooltip,
             can_undo_last_commit,
@@ -316,18 +311,30 @@ impl GitGuiApp {
         let mut output = RepoTabsUiOutput::default();
 
         egui::Panel::top("repo_tabs").show_inside(ui, |ui| {
+            let response = ui::tab_bar::show(
+                ui,
+                &ui::tab_bar::TabBarView {
+                    labels: tab_labels,
+                    active: active_index,
+                },
+            );
+            output.next_active = response.selected;
+            output.closed_tab = response.closed;
+            if response.open_new {
+                output.open_clicked = true;
+            }
+        });
+
+        egui::Panel::top("repo_toolbar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 Self::show_repo_menu(ui, state, toolbar, &mut output);
 
-                if !toolbar.publish_dialog_open {
-                    if let Some(busy) = &toolbar.welcome_busy {
-                        ui::show_inline_busy(ui, &busy.label);
-                    }
+                if !toolbar.publish_dialog_open
+                    && let Some(busy) = &toolbar.welcome_busy
+                {
+                    ui::show_inline_busy(ui, &busy.label);
                 }
 
-                ui.separator();
-                Self::show_repo_tab_strip(ui, active_index, tab_labels, toolbar, &mut output);
-                ui.separator();
                 Self::show_repo_toolbar_actions(ui, state, toolbar);
             });
         });
@@ -445,35 +452,6 @@ impl GitGuiApp {
                 ui.close();
             }
         });
-    }
-
-    fn show_repo_tab_strip(
-        ui: &mut egui::Ui,
-        active_index: usize,
-        tab_labels: &[(String, Option<String>)],
-        toolbar: &RepoToolbarModel,
-        output: &mut RepoTabsUiOutput,
-    ) {
-        let tabs_width = (ui.available_width() - toolbar.controls_width).max(120.0);
-
-        egui::ScrollArea::horizontal()
-            .id_salt("repo_tabs_scroll")
-            .max_width(tabs_width)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (index, (label, tooltip)) in tab_labels.iter().enumerate() {
-                        let mut response = ui.selectable_label(index == active_index, label);
-
-                        if let Some(path) = tooltip {
-                            response = response.on_hover_text(path);
-                        }
-
-                        if response.clicked() {
-                            output.next_active = Some(index);
-                        }
-                    }
-                });
-            });
     }
 
     fn show_repo_toolbar_actions(
@@ -601,6 +579,10 @@ impl GitGuiApp {
     fn apply_repo_tabs_output(&mut self, active_index: usize, output: RepoTabsUiOutput) {
         if let Some(index) = output.next_active {
             self.active_tab = index;
+            self.persist_session();
+        }
+        if let Some(index) = output.closed_tab {
+            self.close_repo_tab(index);
         }
         if output.open_clicked {
             self.open_repo_dialog();

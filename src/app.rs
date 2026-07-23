@@ -118,6 +118,9 @@ pub struct GitGuiApp {
     github_auth_prompt: Option<GithubAuthPrompt>,
     logger: AppLogger,
     show_log_viewer: bool,
+    /// Gate that suppresses session writes while tabs are being restored at
+    /// startup; flipped to `true` once construction is complete.
+    session_ready: bool,
 }
 
 impl PublishRepoDialogState {
@@ -225,11 +228,12 @@ impl GitGuiApp {
             github_auth_prompt: None,
             logger,
             show_log_viewer: false,
+            session_ready: false,
         };
 
-        if let Ok(repo) = AppRepoRead::open(Path::new(".")) {
-            app.add_repo_tab(repo);
-        }
+        app.restore_previous_session();
+        app.session_ready = true;
+        app.persist_session();
 
         app.refresh_github_auth_status();
         if let Some(message) = startup_status {
