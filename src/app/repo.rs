@@ -60,8 +60,9 @@ impl GitGuiApp {
                 &repo,
             )
         };
+        let logger = AppLogger::for_repo(&repo_path);
         if let Some(detail) = refresh_error {
-            self.logger.log_error("Refresh", &detail);
+            logger.log_error("Refresh", &detail);
         } else {
             state.ui.status_msg = format!(
                 "Repository loaded: {}",
@@ -73,6 +74,7 @@ impl GitGuiApp {
             state,
             repo,
             worker: crate::worker::RepoWorker::new(),
+            logger,
         });
         self.active_tab = self.tabs.len() - 1;
         self.welcome_status = "Open a Git repository to get started.".into();

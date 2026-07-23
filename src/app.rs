@@ -43,6 +43,7 @@ struct RepoTab {
     state: AppState,
     repo: Repository,
     worker: RepoWorker,
+    logger: AppLogger,
 }
 
 pub(crate) struct PublishRepoDialogState {
@@ -250,6 +251,15 @@ impl GitGuiApp {
             .map(|last_index| self.active_tab.min(last_index))
     }
 
+    /// The logger whose entries the "View Logs" dialog should show: the given
+    /// tab's per-repository logger, or the app-level logger when no tab is set.
+    fn log_target(&self, tab_index: Option<usize>) -> &AppLogger {
+        tab_index
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| &tab.logger)
+            .unwrap_or(&self.logger)
+    }
+
     fn normalize_active_tab(&mut self) -> Option<usize> {
         let active_index = self.active_tab_index()?;
         self.active_tab = active_index;
@@ -292,7 +302,7 @@ impl eframe::App for GitGuiApp {
             self.process_actions();
             return;
         };
-        let has_logs = self.logger.has_entries();
+        let has_logs = self.tabs[active_index].logger.has_entries();
         let commit_message_ruleset = self.settings.commit_message_ruleset;
         let commit_message_custom_scopes = &self.settings.commit_message_custom_scopes;
 

@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -16,8 +18,19 @@ pub struct AppLogger {
 }
 
 impl AppLogger {
+    /// App-level logger for events not tied to a specific repository
+    /// (settings, GitHub sign-in, clone/publish, session).
     pub fn new() -> Self {
-        let path = default_log_path();
+        Self::with_path(default_log_path())
+    }
+
+    /// Per-repository logger so each open tab keeps its own log file and the
+    /// "View Logs" button only surfaces logs for the repository in view.
+    pub fn for_repo(repo_path: &Path) -> Self {
+        Self::with_path(log_dir().join(repo_log_file_name(repo_path)))
+    }
+
+    fn with_path(path: PathBuf) -> Self {
         let logger = Self {
             path,
             fallback_entries: Mutex::new(VecDeque::new()),
@@ -265,6 +278,36 @@ fn default_log_path() -> PathBuf {
     log_dir().join("app.log")
 }
 
+/// Build a stable, filesystem-safe log file name for a repository. The path
+/// hash keeps distinct repositories separate even when they share a folder
+/// name, while the readable slug makes the file easy to identify on disk.
+fn repo_log_file_name(repo_path: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    repo_path.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let slug = repo_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(sanitize_file_component)
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or_else(|| "repo".to_string());
+
+    format!("repo-{slug}-{hash:016x}.log")
+}
+
+fn sanitize_file_component(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn log_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -301,12 +344,52 @@ fn log_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::AppLogger;
+    use super::{AppLogger, repo_log_file_name};
     use std::collections::VecDeque;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn repo_log_file_name_differs_per_repository() {
+        let a = repo_log_file_name(Path::new("/home/me/project-a"));
+        let b = repo_log_file_name(Path::new("/home/me/project-b"));
+
+        assert_ne!(a, b);
+        assert!(a.starts_with("repo-project-a-"));
+        assert!(a.ends_with(".log"));
+    }
+
+    #[test]
+    fn repo_log_file_name_is_stable_for_same_repository() {
+        let path = Path::new("/home/me/project");
+        assert_eq!(repo_log_file_name(path), repo_log_file_name(path));
+    }
+
+    #[test]
+    fn repo_log_file_name_distinguishes_same_folder_name_in_different_paths() {
+        let a = repo_log_file_name(Path::new("/home/me/work/app"));
+        let b = repo_log_file_name(Path::new("/home/me/personal/app"));
+
+        // Same readable slug, but the path hash keeps the files separate.
+        assert_ne!(a, b);
+        assert!(a.starts_with("repo-app-"));
+        assert!(b.starts_with("repo-app-"));
+    }
+
+    #[test]
+    fn repo_log_file_name_sanitizes_unsafe_characters() {
+        let name = repo_log_file_name(Path::new("/tmp/weird name!/repo@#"));
+
+        assert!(name.starts_with("repo-repo__-"));
+        let slug_and_hash = name.trim_start_matches("repo-").trim_end_matches(".log");
+        assert!(
+            slug_and_hash
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        );
+    }
 
     #[test]
     fn clear_entries_removes_log_file() {
