@@ -109,42 +109,8 @@ mod tests {
         repo_name_from_clone_url, suggest_next_tag,
     };
     use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
+    use crate::testutil::TestRepoDir;
     use git2::Repository;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    struct TestRepoDir {
-        path: PathBuf,
-    }
-
-    impl TestRepoDir {
-        fn init_with_origin(origin_url: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "justanothergitgui-git-ops-test-{}-{}",
-                std::process::id(),
-                unique
-            ));
-            std::fs::create_dir_all(&path).expect("create temp repo dir");
-            let repo = Repository::init(&path).expect("init temp repo");
-            repo.remote("origin", origin_url)
-                .expect("add origin remote");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TestRepoDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
 
     #[test]
     fn treats_https_github_remotes_as_app_auth_candidates() {

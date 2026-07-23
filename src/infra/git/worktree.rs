@@ -421,81 +421,21 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_untracked_files, get_file_statuses, parse_conflict_markers, read_conflict_file,
-        short_object_id, stage_all, undo_last_commit,
+        clean_untracked_files, create_commit, get_file_diff, get_file_statuses,
+        parse_conflict_markers, read_conflict_file, short_object_id, stage_all, stage_file,
+        unstage_all, unstage_file, undo_last_commit,
     };
     use crate::infra::git::repository::{get_commit_history, get_current_branch};
     use crate::shared::conflicts::{ConflictChoice, ConflictPart};
-    use git2::{Repository, RepositoryInitOptions, Signature, Time};
+    use crate::testutil::{TestRepoDir, commit_all, signature};
+    use git2::{Repository, RepositoryState};
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(unix)]
     use std::{
         ffi::OsStr,
         fs::Permissions,
         os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     };
-
-    struct TestRepoDir {
-        path: PathBuf,
-    }
-
-    impl TestRepoDir {
-        fn init() -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "justanothergitgui-worktree-test-{}-{}",
-                std::process::id(),
-                unique
-            ));
-            std::fs::create_dir_all(&path).expect("create temp repo dir");
-            let mut options = RepositoryInitOptions::new();
-            options.initial_head("main");
-            Repository::init_opts(&path, &options).expect("init temp repo");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TestRepoDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
-
-    fn signature() -> Signature<'static> {
-        Signature::new(
-            "Test User",
-            "tester@example.com",
-            &Time::new(1_700_000_000, 0),
-        )
-        .expect("signature")
-    }
-
-    fn commit_all(repo: &Repository, message: &str) -> git2::Oid {
-        stage_all(repo).expect("stage all");
-        let tree_id = {
-            let mut index = repo.index().expect("index");
-            index.write_tree().expect("write tree")
-        };
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        let sig = signature();
-        let parents = repo
-            .head()
-            .ok()
-            .and_then(|head| head.peel_to_commit().ok())
-            .into_iter()
-            .collect::<Vec<_>>();
-        let parent_refs = parents.iter().collect::<Vec<_>>();
-        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
-            .expect("commit")
-    }
 
     #[cfg(unix)]
     struct PermissionsGuard {
@@ -662,5 +602,323 @@ mod tests {
         assert!(unstaged.is_empty());
         assert_eq!(staged.len(), 1);
         assert_eq!(staged[0].path, "tracked.txt");
+    }
+
+    // --- get_file_statuses classification ---------------------------------
+
+    #[test]
+    fn get_file_statuses_reports_untracked_file_as_unstaged() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("new.txt", "hello");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+
+        assert!(staged.is_empty());
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].path, "new.txt");
+        assert_eq!(unstaged[0].display_status, "untracked");
+    }
+
+    #[test]
+    fn get_file_statuses_reports_staged_new_file() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("new.txt", "hello");
+        stage_file(&repo, "new.txt").expect("stage new file");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].path, "new.txt");
+        assert_eq!(staged[0].display_status, "new");
+    }
+
+    #[test]
+    fn get_file_statuses_reports_unstaged_modification() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "add tracked");
+        repo_dir.write("tracked.txt", "v2");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+
+        assert!(staged.is_empty());
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].display_status, "modified");
+    }
+
+    #[test]
+    fn get_file_statuses_lists_partially_staged_file_in_both_sets() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "add tracked");
+
+        // Stage one version, then edit again without staging.
+        repo_dir.write("tracked.txt", "v2");
+        stage_file(&repo, "tracked.txt").expect("stage v2");
+        repo_dir.write("tracked.txt", "v3");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].display_status, "modified");
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].display_status, "modified");
+    }
+
+    #[test]
+    fn get_file_statuses_reports_worktree_deletion() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "add tracked");
+        std::fs::remove_file(repo_dir.path().join("tracked.txt")).expect("remove file");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+
+        assert!(staged.is_empty());
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].display_status, "deleted");
+    }
+
+    #[test]
+    fn get_file_statuses_reports_staged_deletion() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "add tracked");
+        std::fs::remove_file(repo_dir.path().join("tracked.txt")).expect("remove file");
+        stage_file(&repo, "tracked.txt").expect("stage deletion");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].display_status, "deleted");
+    }
+
+    // --- stage_file / unstage_file ----------------------------------------
+
+    #[test]
+    fn stage_file_moves_new_file_into_staged() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("new.txt", "hello");
+
+        stage_file(&repo, "new.txt").expect("stage new file");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].path, "new.txt");
+    }
+
+    #[test]
+    fn stage_file_stages_deletion_of_tracked_file() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "add tracked");
+        std::fs::remove_file(repo_dir.path().join("tracked.txt")).expect("remove file");
+
+        stage_file(&repo, "tracked.txt").expect("stage deletion");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].display_status, "deleted");
+    }
+
+    #[test]
+    fn unstage_file_restores_modified_file_to_head_index() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "add tracked");
+
+        repo_dir.write("tracked.txt", "v2");
+        stage_file(&repo, "tracked.txt").expect("stage v2");
+
+        unstage_file(&repo, "tracked.txt").expect("unstage");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(staged.is_empty(), "modification should leave the index");
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].display_status, "modified");
+        // The working-tree edit is preserved.
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("tracked.txt")).expect("read"),
+            "v2"
+        );
+    }
+
+    #[test]
+    fn unstage_file_removes_newly_added_file_from_index() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("base.txt", "base");
+        commit_all(&repo, "base commit");
+
+        repo_dir.write("new.txt", "hello");
+        stage_file(&repo, "new.txt").expect("stage new file");
+
+        unstage_file(&repo, "new.txt").expect("unstage");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(staged.is_empty());
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].path, "new.txt");
+        assert_eq!(unstaged[0].display_status, "untracked");
+    }
+
+    // --- stage_all / unstage_all ------------------------------------------
+
+    #[test]
+    fn stage_all_stages_new_modified_and_deleted() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("keep.txt", "v1");
+        repo_dir.write("remove.txt", "gone");
+        commit_all(&repo, "base commit");
+
+        repo_dir.write("keep.txt", "v2"); // modified
+        repo_dir.write("added.txt", "new"); // new
+        std::fs::remove_file(repo_dir.path().join("remove.txt")).expect("remove file"); // deleted
+
+        stage_all(&repo).expect("stage all");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        let mut labels: Vec<_> = staged
+            .iter()
+            .map(|f| (f.path.clone(), f.display_status.clone()))
+            .collect();
+        labels.sort();
+        assert_eq!(
+            labels,
+            vec![
+                ("added.txt".to_string(), "new".to_string()),
+                ("keep.txt".to_string(), "modified".to_string()),
+                ("remove.txt".to_string(), "deleted".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unstage_all_clears_staged_but_keeps_worktree_changes() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("base.txt", "v1");
+        commit_all(&repo, "base commit");
+
+        repo_dir.write("base.txt", "v2");
+        repo_dir.write("added.txt", "new");
+        stage_all(&repo).expect("stage all");
+
+        unstage_all(&repo).expect("unstage all");
+
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(staged.is_empty(), "nothing should remain staged");
+        assert_eq!(unstaged.len(), 2, "worktree changes are preserved");
+    }
+
+    // --- create_commit ----------------------------------------------------
+
+    #[test]
+    fn create_commit_advances_head_with_parent_and_message() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("file.txt", "v1");
+        let first = commit_all(&repo, "first");
+
+        repo_dir.write("file.txt", "v2");
+        stage_all(&repo).expect("stage all");
+        let second = create_commit(&repo, "second").expect("create commit");
+
+        let commit = repo.find_commit(second).expect("find commit");
+        assert_eq!(commit.message(), Some("second"));
+        assert_eq!(commit.parent_count(), 1);
+        assert_eq!(commit.parent_id(0).expect("parent"), first);
+        assert_eq!(repo.head().expect("head").target(), Some(second));
+
+        // Nothing left to commit.
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn create_commit_with_merge_head_records_two_parents_and_clears_state() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("file.txt", "v1");
+        let base = commit_all(&repo, "base");
+        let base_commit = repo.find_commit(base).expect("find base");
+
+        // A second, divergent commit to stand in as the merged-in branch tip.
+        let sig = signature();
+        let tree = base_commit.tree().expect("base tree");
+        let other = repo
+            .commit(
+                Some("refs/heads/other"),
+                &sig,
+                &sig,
+                "other",
+                &tree,
+                &[&base_commit],
+            )
+            .expect("other commit");
+
+        // Put the repository into a merge state.
+        std::fs::write(repo.path().join("MERGE_HEAD"), format!("{}\n", other))
+            .expect("write MERGE_HEAD");
+        assert_eq!(repo.state(), RepositoryState::Merge);
+
+        repo_dir.write("file.txt", "merged");
+        stage_all(&repo).expect("stage all");
+        let merge = create_commit(&repo, "merge commit").expect("create merge commit");
+
+        let commit = repo.find_commit(merge).expect("find merge commit");
+        assert_eq!(commit.parent_count(), 2);
+        let parents: Vec<_> = commit.parent_ids().collect();
+        assert!(parents.contains(&base));
+        assert!(parents.contains(&other));
+        assert_eq!(repo.state(), RepositoryState::Clean, "merge state cleared");
+    }
+
+    // --- get_file_diff ----------------------------------------------------
+
+    #[test]
+    fn get_file_diff_returns_staged_patch() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("file.txt", "line1\n");
+        commit_all(&repo, "base");
+
+        repo_dir.write("file.txt", "line1\nline2\n");
+        stage_file(&repo, "file.txt").expect("stage");
+
+        let diff = get_file_diff(&repo, "file.txt", true).expect("staged diff");
+        assert!(diff.contains("file.txt"), "diff names the file");
+        assert!(diff.contains("+line2"), "diff shows the added line");
+    }
+
+    #[test]
+    fn get_file_diff_returns_unstaged_patch() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("file.txt", "line1\n");
+        commit_all(&repo, "base");
+
+        // Modify the working tree only; do not stage.
+        repo_dir.write("file.txt", "line1\nline2\n");
+
+        let diff = get_file_diff(&repo, "file.txt", false).expect("unstaged diff");
+        assert!(diff.contains("file.txt"), "diff names the file");
+        assert!(diff.contains("+line2"), "diff shows the added line");
     }
 }

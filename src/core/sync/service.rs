@@ -135,14 +135,25 @@ mod tests {
 
     use crate::shared::github::PullRequestPrompt;
 
+    fn auth_mode(auth: &GitRemoteAuth<'_>) -> &'static str {
+        match auth {
+            GitRemoteAuth::GitHub(_) => "github",
+            GitRemoteAuth::System => "system",
+        }
+    }
+
     #[derive(Default)]
     struct FakeGitPort {
         branch_name: Option<String>,
         outgoing_commit_count: usize,
         push_message: String,
         undo_message: String,
+        pull_message: String,
+        reset_message: String,
         push_calls: std::cell::RefCell<Vec<(PathBuf, String, &'static str)>>,
         undo_calls: std::cell::RefCell<Vec<PathBuf>>,
+        pull_calls: std::cell::RefCell<Vec<(PathBuf, String, &'static str)>>,
+        reset_calls: std::cell::RefCell<Vec<(PathBuf, &'static str, bool)>>,
     }
 
     impl GitBranchReadPort for FakeGitPort {
@@ -172,20 +183,30 @@ mod tests {
 
         fn pull(
             &self,
-            _repo_path: &Path,
-            _branch_name: &str,
-            _auth: GitRemoteAuth<'_>,
+            repo_path: &Path,
+            branch_name: &str,
+            auth: GitRemoteAuth<'_>,
         ) -> Result<String, String> {
-            unreachable!()
+            self.pull_calls.borrow_mut().push((
+                repo_path.to_path_buf(),
+                branch_name.to_string(),
+                auth_mode(&auth),
+            ));
+            Ok(self.pull_message.clone())
         }
 
         fn reset_to_remote(
             &self,
-            _repo_path: &Path,
-            _auth: GitRemoteAuth<'_>,
-            _clean_untracked: bool,
+            repo_path: &Path,
+            auth: GitRemoteAuth<'_>,
+            clean_untracked: bool,
         ) -> Result<String, String> {
-            unreachable!()
+            self.reset_calls.borrow_mut().push((
+                repo_path.to_path_buf(),
+                auth_mode(&auth),
+                clean_untracked,
+            ));
+            Ok(self.reset_message.clone())
         }
     }
 
@@ -229,6 +250,7 @@ mod tests {
             undo_message: String::new(),
             push_calls: std::cell::RefCell::new(Vec::new()),
             undo_calls: std::cell::RefCell::new(Vec::new()),
+            ..Default::default()
         };
         let github = FakeGitHubPort {
             https_origin: false,
@@ -264,6 +286,7 @@ mod tests {
             undo_message: String::new(),
             push_calls: std::cell::RefCell::new(Vec::new()),
             undo_calls: std::cell::RefCell::new(Vec::new()),
+            ..Default::default()
         };
         let github = FakeGitHubPort {
             https_origin: true,
@@ -292,6 +315,7 @@ mod tests {
             undo_message: "Undid commit".into(),
             push_calls: std::cell::RefCell::new(Vec::new()),
             undo_calls: std::cell::RefCell::new(Vec::new()),
+            ..Default::default()
         };
 
         let error =
@@ -310,6 +334,7 @@ mod tests {
             undo_message: "Undid commit".into(),
             push_calls: std::cell::RefCell::new(Vec::new()),
             undo_calls: std::cell::RefCell::new(Vec::new()),
+            ..Default::default()
         };
 
         let error = undo_last_commit(Path::new("/virtual/repo"), &git)
@@ -331,6 +356,7 @@ mod tests {
             undo_message: "Removed commit abc12345 from main and kept its changes staged".into(),
             push_calls: std::cell::RefCell::new(Vec::new()),
             undo_calls: std::cell::RefCell::new(Vec::new()),
+            ..Default::default()
         };
 
         let result = undo_last_commit(Path::new("/virtual/repo"), &git).expect("undo");
@@ -343,5 +369,143 @@ mod tests {
             git.undo_calls.borrow().as_slice(),
             &[PathBuf::from("/virtual/repo")]
         );
+    }
+
+    fn app_auth() -> GithubAuthSession {
+        GithubAuthSession {
+            access_token: "token".into(),
+            login: "octocat".into(),
+        }
+    }
+
+    #[test]
+    fn pull_uses_system_auth_for_non_github_origin() {
+        let git = FakeGitPort {
+            branch_name: Some("main".into()),
+            pull_message: "Pull complete".into(),
+            ..Default::default()
+        };
+        let github = FakeGitHubPort {
+            https_origin: false,
+            prompt: None,
+        };
+
+        let message = pull(Path::new("/virtual/repo"), None, &git, &github).expect("pull");
+
+        assert_eq!(message, "Pull complete");
+        assert_eq!(
+            git.pull_calls.borrow().as_slice(),
+            &[(PathBuf::from("/virtual/repo"), "main".into(), "system")]
+        );
+    }
+
+    #[test]
+    fn pull_uses_github_auth_for_https_origin() {
+        let git = FakeGitPort {
+            branch_name: Some("main".into()),
+            pull_message: "Pull complete".into(),
+            ..Default::default()
+        };
+        let github = FakeGitHubPort {
+            https_origin: true,
+            prompt: None,
+        };
+        let auth = app_auth();
+
+        let message = pull(Path::new("/virtual/repo"), Some(&auth), &git, &github).expect("pull");
+
+        assert_eq!(message, "Pull complete");
+        assert_eq!(
+            git.pull_calls.borrow().as_slice(),
+            &[(PathBuf::from("/virtual/repo"), "main".into(), "github")]
+        );
+    }
+
+    #[test]
+    fn pull_https_origin_requires_app_auth() {
+        let git = FakeGitPort {
+            branch_name: Some("main".into()),
+            ..Default::default()
+        };
+        let github = FakeGitHubPort {
+            https_origin: true,
+            prompt: None,
+        };
+
+        let error = pull(Path::new("/virtual/repo"), None, &git, &github)
+            .expect_err("https origin should require app auth");
+
+        assert!(error.contains("GitHub pull requires the app's GitHub sign-in"));
+        assert!(git.pull_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn discard_and_reset_threads_clean_untracked_and_system_auth() {
+        let git = FakeGitPort {
+            reset_message: "Reset complete".into(),
+            ..Default::default()
+        };
+        let github = FakeGitHubPort {
+            https_origin: false,
+            prompt: None,
+        };
+
+        let message = discard_and_reset_to_remote(
+            Path::new("/virtual/repo"),
+            None,
+            true,
+            &git,
+            &github,
+        )
+        .expect("reset");
+
+        assert_eq!(message, "Reset complete");
+        assert_eq!(
+            git.reset_calls.borrow().as_slice(),
+            &[(PathBuf::from("/virtual/repo"), "system", true)]
+        );
+    }
+
+    #[test]
+    fn discard_and_reset_uses_github_auth_for_https_origin() {
+        let git = FakeGitPort {
+            reset_message: "Reset complete".into(),
+            ..Default::default()
+        };
+        let github = FakeGitHubPort {
+            https_origin: true,
+            prompt: None,
+        };
+        let auth = app_auth();
+
+        discard_and_reset_to_remote(
+            Path::new("/virtual/repo"),
+            Some(&auth),
+            false,
+            &git,
+            &github,
+        )
+        .expect("reset");
+
+        assert_eq!(
+            git.reset_calls.borrow().as_slice(),
+            &[(PathBuf::from("/virtual/repo"), "github", false)]
+        );
+    }
+
+    #[test]
+    fn discard_and_reset_https_origin_requires_app_auth() {
+        let git = FakeGitPort::default();
+        let github = FakeGitHubPort {
+            https_origin: true,
+            prompt: None,
+        };
+
+        let error =
+            discard_and_reset_to_remote(Path::new("/virtual/repo"), None, false, &git, &github)
+                .expect_err("https origin should require app auth");
+
+        assert!(error.contains("Reset requires the app's GitHub sign-in"));
+        assert!(git.reset_calls.borrow().is_empty());
     }
 }

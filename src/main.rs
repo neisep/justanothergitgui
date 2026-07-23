@@ -12,6 +12,8 @@ mod logging;
 mod settings;
 mod shared;
 mod state;
+#[cfg(test)]
+mod testutil;
 mod ui;
 mod worker;
 
