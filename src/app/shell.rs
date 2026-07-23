@@ -153,7 +153,7 @@ impl GitGuiApp {
                 if let Some(detail) = refresh_result {
                     self.tabs[active_index].state.ui.status_msg =
                         helpers::status_message_for_error("Refresh", &detail);
-                    self.logger.log_error("Refresh", &detail);
+                    self.tabs[active_index].logger.log_error("Refresh", &detail);
                 } else {
                     self.tabs[active_index].state.ui.status_msg =
                         "Refreshed repository status".into();
@@ -164,7 +164,7 @@ impl GitGuiApp {
                 let detail = error.to_string();
                 self.tabs[active_index].state.ui.status_msg =
                     helpers::status_message_for_error("Refresh", &detail);
-                self.logger.log_error("Refresh", &detail);
+                self.tabs[active_index].logger.log_error("Refresh", &detail);
             }
         }
     }
@@ -246,13 +246,18 @@ impl GitGuiApp {
             return;
         }
 
-        let log_path = self.logger.path().display().to_string();
-        let mut contents = self.logger.read_entries();
+        // Show the active repository's log when one is open; otherwise fall
+        // back to the app-level log (settings, GitHub, clone/publish).
+        let active = self.active_tab_index();
+        let (log_path, mut contents) = {
+            let logger = self.log_target(active);
+            (logger.path().display().to_string(), logger.read_entries())
+        };
         let output =
             ui::dialogs::log_viewer::show(ctx, self.show_log_viewer, &log_path, &mut contents);
 
         if output.clear_clicked {
-            let result = self.logger.clear_entries();
+            let result = self.log_target(active).clear_entries();
             match result {
                 Ok(()) => self.set_status_message("Logs cleared.".into()),
                 Err(error) => {
@@ -269,6 +274,7 @@ impl GitGuiApp {
             return;
         };
         let tab_labels = self.repo_tab_labels();
+        let has_logs = self.tabs[active_index].logger.has_entries();
         let output = {
             let state = &mut self.tabs[active_index].state;
             let toolbar = RepoToolbarModel::from_state(
@@ -277,7 +283,7 @@ impl GitGuiApp {
                 self.welcome_worker.is_busy(),
                 self.github_auth_session.is_some(),
                 self.publish_dialog.show,
-                self.logger.has_entries(),
+                has_logs,
             );
             Self::show_repo_tabs_panel(ui, active_index, state, &tab_labels, &toolbar)
         };

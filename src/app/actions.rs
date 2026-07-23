@@ -5,7 +5,6 @@ struct TabActionContext<'a> {
     tab: &'a mut RepoTab,
     settings: &'a AppSettings,
     github_auth_session: &'a Option<GithubAuthSession>,
-    logger: &'a mut AppLogger,
 }
 
 impl UiAction {
@@ -381,14 +380,12 @@ impl GitGuiApp {
             tabs,
             settings,
             github_auth_session,
-            logger,
             ..
         } = self;
         let mut ctx = TabActionContext {
             tab: &mut tabs[active_index],
             settings,
             github_auth_session,
-            logger,
         };
 
         for action in actions {
@@ -405,12 +402,13 @@ fn clear_repo_selection(inspector_state: &mut InspectorState) {
 
 fn log_action_error(ctx: &mut TabActionContext<'_>, context: &str, detail: String) {
     ctx.tab.state.ui.status_msg = helpers::status_message_for_error(context, &detail);
-    ctx.logger.log_error(context, &detail);
+    ctx.tab.logger.log_error(context, &detail);
 }
 
 fn log_worker_dispatch_error(ctx: &mut TabActionContext<'_>, context: &str) {
     ctx.tab.state.ui.status_msg = helpers::status_message_for_worker_dispatch(context);
-    ctx.logger
+    ctx.tab
+        .logger
         .log_error(context, helpers::WORKER_DISPATCH_ERROR_DETAIL);
 }
 
@@ -425,6 +423,6 @@ fn refresh_tab(ctx: &mut TabActionContext<'_>) {
         ui_state,
         &ctx.tab.repo,
     ) {
-        ctx.logger.log_error("Refresh", &detail);
+        ctx.tab.logger.log_error("Refresh", &detail);
     }
 }

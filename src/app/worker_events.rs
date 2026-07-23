@@ -12,7 +12,6 @@ pub(crate) struct WelcomeWorkerContext<'a> {
 
 pub(crate) struct RepoWorkerContext<'a> {
     tab: &'a mut RepoTab,
-    logger: &'a mut AppLogger,
     refresh_requested: &'a mut bool,
 }
 
@@ -28,7 +27,7 @@ impl<'a> RepoWorkerContext<'a> {
     }
 
     fn log_error(&mut self, context: &str, detail: &str) {
-        self.logger.log_error(context, detail);
+        self.tab.logger.log_error(context, detail);
     }
 }
 
@@ -308,7 +307,6 @@ impl GitGuiApp {
         }
 
         let mut any_busy = self.welcome_worker.is_busy();
-        let logger = &mut self.logger;
 
         for tab in &mut self.tabs {
             let mut refresh_requested = false;
@@ -316,7 +314,6 @@ impl GitGuiApp {
             while let Some(result) = tab.worker.try_recv() {
                 let mut ctx = RepoWorkerContext {
                     tab,
-                    logger,
                     refresh_requested: &mut refresh_requested,
                 };
                 result.apply(&mut ctx);
@@ -327,7 +324,7 @@ impl GitGuiApp {
             }
 
             if refresh_requested {
-                refresh_repo_tab(tab, logger);
+                refresh_repo_tab(tab);
             }
         }
 
@@ -335,7 +332,7 @@ impl GitGuiApp {
     }
 }
 
-fn refresh_repo_tab(tab: &mut RepoTab, logger: &mut AppLogger) {
+fn refresh_repo_tab(tab: &mut RepoTab) {
     let Some(path) = tab.state.repo.path.clone() else {
         return;
     };
@@ -355,14 +352,14 @@ fn refresh_repo_tab(tab: &mut RepoTab, logger: &mut AppLogger) {
                 )
             };
             if let Some(detail) = refresh_result {
-                logger.log_error("Refresh", &detail);
+                tab.logger.log_error("Refresh", &detail);
             }
             tab.repo = repo;
         }
         Err(error) => {
             let detail = error.to_string();
             tab.state.ui.status_msg = helpers::status_message_for_error("Refresh", &detail);
-            logger.log_error("Refresh", &detail);
+            tab.logger.log_error("Refresh", &detail);
         }
     }
 }
