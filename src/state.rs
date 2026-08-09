@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::shared::actions::UiAction;
 use crate::shared::conflicts::ConflictData;
 use crate::shared::git::{
-    CommitEntry, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
+    CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
 use crate::shared::github::PullRequestPrompt;
 
@@ -11,6 +11,24 @@ use crate::shared::github::PullRequestPrompt;
 pub struct SelectedFile {
     pub path: String,
     pub staged: bool,
+}
+
+/// The commit currently open in the History tab's read-only commit view.
+///
+/// Holds everything that view renders, so it can be dropped in one move when the
+/// user goes back to the list or the history it came from changes.
+#[derive(Clone, Debug)]
+pub struct SelectedCommit {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author: String,
+    pub time: String,
+    pub files: Vec<CommitFileChange>,
+    pub selected_path: Option<String>,
+    pub diff_content: String,
+    /// Shared vertical scroll offset for the two read-only diff panes.
+    pub scroll: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -118,6 +136,8 @@ pub struct InspectorState {
     pub conflict_edit: Option<ConflictEdit>,
     /// Shared vertical scroll offset for the two top merge-editor panes.
     pub conflict_scroll: f32,
+    /// Commit opened from the History tab, or `None` while the list is showing.
+    pub selected_commit: Option<SelectedCommit>,
     pub dragging: Option<DragFile>,
 }
 
@@ -135,6 +155,12 @@ impl InspectorState {
         self.conflict_data = data;
         self.conflict_edit = None;
         self.conflict_scroll = 0.0;
+    }
+
+    /// Open (or close) the read-only commit view. The whole view state travels
+    /// with the commit, so nothing leaks between commits.
+    pub fn set_commit(&mut self, commit: Option<SelectedCommit>) {
+        self.selected_commit = commit;
     }
 }
 

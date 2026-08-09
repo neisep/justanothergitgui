@@ -71,6 +71,7 @@ src/
 │   ├── core_ports.rs
 │   ├── git/
 │   │   ├── clone.rs
+│   │   ├── commits.rs
 │   │   ├── mod.rs
 │   │   ├── remotes.rs
 │   │   ├── repository.rs
@@ -87,13 +88,16 @@ src/
 ├── shared/
 │   ├── actions.rs
 │   ├── conflicts.rs
+│   ├── diff.rs
 │   ├── git.rs
 │   ├── github.rs
 │   └── mod.rs
 ├── ui/
 │   ├── bottom_bar.rs
 │   ├── commit_panel.rs
+│   ├── commit_view.rs
 │   ├── diff_panel.rs
+│   ├── diff_view.rs
 │   ├── file_panel.rs
 │   ├── history_panel.rs
 │   ├── mod.rs
@@ -135,10 +139,12 @@ src/
 | `src/core/tags/service.rs` | Tag workflow orchestration | Validates branch/tag rules, pushes via injected ports, rolls back failed remote pushes | Branch eligibility and tag suggestion helpers still partly live below the core service boundary |
 | `src/core/publish/service.rs` | Publish workflow orchestration | Bootstraps repo, stages/commits if needed, creates remote repo, then reuses sync push logic | Still uses shared GitHub DTOs directly instead of a larger dedicated publish boundary module |
 | `src/infra/core_ports.rs` | Concrete port adapters | `InfraGitPort` and `InfraGitHubPort` implement the focused core traits | Opens repositories per operation; acceptable for now, but still adapter glue rather than a richer gateway layer |
-| `src/infra/git/*` | Low-level git adapters | Repository/worktree/remotes/clone behavior is split by IO concern | Some functions still power both new ports and the legacy `git_ops` shim |
+| `src/infra/git/*` | Low-level git adapters | Repository/worktree/remotes/clone/commits behavior is split by IO concern; `commits.rs` is read-only history diffing (commit vs first parent) | Some functions still power both new ports and the legacy `git_ops` shim |
 | `src/infra/github/auth.rs` / `repos.rs` / `pulls.rs` | GitHub HTTP + auth adapters | Auth persistence, repo APIs, and PR prompt detection are separated; PR lookup derives owner/repo from the repo's origin remote | Still tightly coupled to current GitHub API shapes; no separate request/response modules yet |
 | `src/infra/system/*` | Browser/keychain adapters | Keeps desktop side effects out of `app/` and `core/` | Likely stable as-is |
-| `src/ui/bottom_bar.rs`, `file_panel.rs`, `diff_panel.rs`, `history_panel.rs` | Narrowed render modules | Already consume focused view/state structs instead of the whole `AppState` | Good pattern to copy elsewhere |
+| `src/ui/bottom_bar.rs`, `file_panel.rs`, `diff_panel.rs`, `history_panel.rs`, `commit_view.rs` | Narrowed render modules | Already consume focused view/state structs instead of the whole `AppState` | Good pattern to copy elsewhere |
+| `src/ui/diff_view.rs` | State-free diff renderers | Unified patch table, side-by-side panes, and the status badge shared by the file list and commit view | Only the commit view uses the side-by-side renderer so far; the Changes tab still shows the unified table |
+| `src/shared/diff.rs` | Patch parsing and pairing | Unified-diff parsing and side-by-side pairing live outside `ui/`, with unit tests | — |
 | `src/ui/commit_panel.rs` and `src/ui/dialogs/{branch,cleanup_branches,discard,tag}.rs` | Older UI seams | Still render-only and emit actions/output | Still take broad `AppState` access and are the next UI narrowing candidates |
 | `src/shared/*` | Cross-layer contracts | Holds `UiAction`, git summaries, conflict models, auth/repo/PR DTOs | Stable boundary; keep app-specific state out |
 | `src/git_ops.rs` | Compatibility facade | Re-exports old helpers and forwards service calls into the new core/infra structure | Still present for compatibility/tests; should keep shrinking until callers can stop depending on it |

@@ -4,12 +4,12 @@ use git2::Repository;
 
 use crate::core::{publish, sync, tags};
 use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
-use crate::infra::git::{clone, repository, worktree};
+use crate::infra::git::{clone, commits, repository, worktree};
 use crate::infra::github::{auth, pulls, repos};
 use crate::infra::system::browser;
 use crate::shared::conflicts::ConflictData;
 use crate::shared::git::{
-    CommitEntry, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
+    CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
 use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthCheck, GithubAuthPrompt,
@@ -73,6 +73,21 @@ impl AppRepoRead {
         staged: bool,
     ) -> Result<String, git2::Error> {
         worktree::get_file_diff(repo, path, staged)
+    }
+
+    pub(super) fn commit_changed_files(
+        repo: &Repository,
+        oid: &str,
+    ) -> Result<Vec<CommitFileChange>, git2::Error> {
+        commits::commit_changed_files(repo, oid)
+    }
+
+    pub(super) fn commit_file_diff(
+        repo: &Repository,
+        oid: &str,
+        path: &str,
+    ) -> Result<String, git2::Error> {
+        commits::commit_file_diff(repo, oid, path)
     }
 
     pub(super) fn repo_name_from_clone_url(url: &str) -> Option<String> {

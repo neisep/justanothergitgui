@@ -1,8 +1,8 @@
 use super::*;
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
-    DiscardDialogState, InspectorState, RepoState, SelectedFile, TagDialogState, UiState,
-    WorktreeState,
+    DiscardDialogState, InspectorState, RepoState, SelectedCommit, SelectedFile, TagDialogState,
+    UiState, WorktreeState,
 };
 
 pub(super) fn refresh_status(
@@ -72,6 +72,7 @@ pub(super) fn refresh_status(
     }
     sync_pull_request_prompt(repo_state);
     sync_selected_file(worktree_state, inspector_state, repo);
+    sync_selected_commit(repo_state, inspector_state);
     if errors.is_empty() {
         None
     } else {
@@ -110,6 +111,7 @@ pub(super) fn reset_inspector_state(inspector_state: &mut InspectorState) {
     inspector_state.diff_wrap = false;
     inspector_state.center_view = CenterView::Diff;
     inspector_state.set_conflict(None);
+    inspector_state.set_commit(None);
     inspector_state.dragging = None;
 }
 
@@ -189,6 +191,72 @@ pub(super) fn load_selected_file(
     inspector_state.selected_file = Some(SelectedFile { path, staged });
 }
 
+/// Open a commit in the read-only commit view.
+///
+/// Metadata comes from the `CommitEntry` already loaded into `repo_state`, so
+/// only the changed files and the first file's patch are read from git here.
+pub(super) fn load_selected_commit(
+    repo_state: &RepoState,
+    inspector_state: &mut InspectorState,
+    repo: &Repository,
+    oid: String,
+) {
+    let Some(entry) = repo_state
+        .commit_history
+        .iter()
+        .find(|commit| commit.oid == oid)
+    else {
+        inspector_state.set_commit(None);
+        return;
+    };
+
+    let mut commit = SelectedCommit {
+        oid: entry.oid.clone(),
+        short_oid: entry.short_oid.clone(),
+        summary: entry.message.clone(),
+        author: entry.author.clone(),
+        time: entry.time.clone(),
+        files: Vec::new(),
+        selected_path: None,
+        diff_content: String::new(),
+        scroll: 0.0,
+    };
+
+    match AppRepoRead::commit_changed_files(repo, &commit.oid) {
+        Ok(files) => commit.files = files,
+        Err(error) => commit.diff_content = format!("Error loading commit: {}", error),
+    }
+
+    inspector_state.set_commit(Some(commit));
+
+    let first_path = inspector_state
+        .selected_commit
+        .as_ref()
+        .and_then(|commit| commit.files.first())
+        .map(|file| file.path.clone());
+    if let Some(path) = first_path {
+        load_commit_file_diff(inspector_state, repo, path);
+    }
+}
+
+/// Load one file's patch inside the currently open commit.
+pub(super) fn load_commit_file_diff(
+    inspector_state: &mut InspectorState,
+    repo: &Repository,
+    path: String,
+) {
+    let Some(commit) = inspector_state.selected_commit.as_mut() else {
+        return;
+    };
+
+    commit.diff_content = match AppRepoRead::commit_file_diff(repo, &commit.oid, &path) {
+        Ok(diff) => diff,
+        Err(error) => format!("Error loading diff: {}", error),
+    };
+    commit.selected_path = Some(path);
+    commit.scroll = 0.0;
+}
+
 pub(super) fn repo_root_path(repo: &Repository) -> PathBuf {
     repo.workdir()
         .map(|path| path.to_path_buf())
@@ -230,6 +298,22 @@ fn sync_pull_request_prompt(repo_state: &mut RepoState) {
 
     if !keep_prompt {
         repo_state.pull_request_prompt = None;
+    }
+}
+
+/// Drop the open commit when it is no longer part of the refreshed history —
+/// e.g. after a branch switch, a reset, or undoing the last commit.
+fn sync_selected_commit(repo_state: &RepoState, inspector_state: &mut InspectorState) {
+    let Some(selected) = inspector_state.selected_commit.as_ref() else {
+        return;
+    };
+
+    let still_present = repo_state
+        .commit_history
+        .iter()
+        .any(|commit| commit.oid == selected.oid);
+    if !still_present {
+        inspector_state.set_commit(None);
     }
 }
 

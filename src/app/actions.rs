@@ -26,6 +26,9 @@ impl UiAction {
             Self::LaunchPullRequest => launch_pull_request(ctx),
             Self::ShowDiff => show_diff(ctx),
             Self::ShowHistory => show_history(ctx),
+            Self::SelectCommit(oid) => select_commit(ctx, oid),
+            Self::SelectCommitFile(path) => select_commit_file(ctx, path),
+            Self::CloseCommit => close_commit(ctx),
             Self::OpenCleanupBranches => open_cleanup_branches(ctx),
             Self::DeleteStaleBranches(names) => delete_stale_branches(ctx, names),
             Self::OpenDiscardDialog => open_discard_dialog(ctx),
@@ -271,6 +274,21 @@ fn show_history(ctx: &mut TabActionContext<'_>) {
     ctx.tab.state.inspector.center_view = CenterView::History;
 }
 
+fn select_commit(ctx: &mut TabActionContext<'_>, oid: String) {
+    let state = &mut ctx.tab.state;
+    state.inspector.center_view = CenterView::History;
+    helpers::load_selected_commit(&state.repo, &mut state.inspector, &ctx.tab.repo, oid);
+}
+
+fn select_commit_file(ctx: &mut TabActionContext<'_>, path: String) {
+    let state = &mut ctx.tab.state;
+    helpers::load_commit_file_diff(&mut state.inspector, &ctx.tab.repo, path);
+}
+
+fn close_commit(ctx: &mut TabActionContext<'_>) {
+    ctx.tab.state.inspector.set_commit(None);
+}
+
 fn open_cleanup_branches(ctx: &mut TabActionContext<'_>) {
     match AppRepoWrite::list_stale_branches(&ctx.tab.repo) {
         Ok(stale) => {
@@ -406,6 +424,7 @@ fn clear_repo_selection(inspector_state: &mut InspectorState) {
     inspector_state.selected_file = None;
     inspector_state.diff_content.clear();
     inspector_state.set_conflict(None);
+    inspector_state.set_commit(None);
 }
 
 fn log_action_error(ctx: &mut TabActionContext<'_>, context: &str, detail: String) {

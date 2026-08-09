@@ -417,6 +417,7 @@ fn build_commit_entry(
         .unwrap_or_else(|| oid.to_string());
 
     Ok(CommitEntry {
+        oid: oid.to_string(),
         short_oid,
         message: commit.summary().unwrap_or_default().to_string(),
         author: commit.author().name().unwrap_or_default().to_string(),
