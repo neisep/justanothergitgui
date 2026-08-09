@@ -635,10 +635,7 @@ mod tests {
         let repo_dir = TestRepoDir::init();
         let repo = repo_dir.open();
 
-        assert_eq!(
-            get_outgoing_commit_count(&repo).expect("outgoing count"),
-            0
-        );
+        assert_eq!(get_outgoing_commit_count(&repo).expect("outgoing count"), 0);
     }
 
     #[test]
@@ -652,10 +649,7 @@ mod tests {
         commit_all(&repo, "second");
 
         // No remote-tracking refs exist, so every local commit is outgoing.
-        assert_eq!(
-            get_outgoing_commit_count(&repo).expect("outgoing count"),
-            2
-        );
+        assert_eq!(get_outgoing_commit_count(&repo).expect("outgoing count"), 2);
     }
 
     #[test]
@@ -667,9 +661,6 @@ mod tests {
         let oid = commit_all(&repo, "first");
         repo.set_head_detached(oid).expect("detach head");
 
-        assert_eq!(
-            get_outgoing_commit_count(&repo).expect("outgoing count"),
-            0
-        );
+        assert_eq!(get_outgoing_commit_count(&repo).expect("outgoing count"), 0);
     }
 }

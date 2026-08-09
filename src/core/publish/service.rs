@@ -199,7 +199,11 @@ mod tests {
         }
     }
 
-    fn request(dir: &TestRepoDir, repo_name: &str, commit_message: &str) -> CreateGithubRepoRequest {
+    fn request(
+        dir: &TestRepoDir,
+        repo_name: &str,
+        commit_message: &str,
+    ) -> CreateGithubRepoRequest {
         CreateGithubRepoRequest {
             folder_path: dir.path().to_path_buf(),
             repo_name: repo_name.into(),
@@ -275,8 +279,9 @@ mod tests {
             clone_url: "https://example.com/my-repo.git".into(),
         };
 
-        let success = create_github_repo(&request(&dir, "my-repo", "Initial commit"), &git, &github)
-            .expect("publish");
+        let success =
+            create_github_repo(&request(&dir, "my-repo", "Initial commit"), &git, &github)
+                .expect("publish");
 
         assert_eq!(
             success.message,

@@ -450,14 +450,9 @@ mod tests {
             prompt: None,
         };
 
-        let message = discard_and_reset_to_remote(
-            Path::new("/virtual/repo"),
-            None,
-            true,
-            &git,
-            &github,
-        )
-        .expect("reset");
+        let message =
+            discard_and_reset_to_remote(Path::new("/virtual/repo"), None, true, &git, &github)
+                .expect("reset");
 
         assert_eq!(message, "Reset complete");
         assert_eq!(
