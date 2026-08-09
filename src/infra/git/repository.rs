@@ -366,11 +366,9 @@ fn collect_commit_labels(repo: &Repository) -> HashMap<git2::Oid, Vec<String>> {
     let mut labels: HashMap<git2::Oid, Vec<String>> = HashMap::new();
 
     if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
-        for branch in branches {
-            if let Ok((branch, _)) = branch {
-                if let (Ok(Some(name)), Some(target)) = (branch.name(), branch.get().target()) {
-                    labels.entry(target).or_default().push(name.to_string());
-                }
+        for (branch, _) in branches.flatten() {
+            if let (Ok(Some(name)), Some(target)) = (branch.name(), branch.get().target()) {
+                labels.entry(target).or_default().push(name.to_string());
             }
         }
     }
