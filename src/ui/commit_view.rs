@@ -142,7 +142,10 @@ fn render_diff(ui: &mut egui::Ui, commit: &mut SelectedCommit) {
     ui.horizontal(|ui| {
         ui.add(egui::Label::new(egui::RichText::new(&path).strong()).truncate());
         ui.separator();
-        ui.weak(format!("+{} / -{}", commit.added_lines, commit.removed_lines));
+        ui.weak(format!(
+            "+{} / -{}",
+            commit.added_lines, commit.removed_lines
+        ));
     });
     ui.separator();
 

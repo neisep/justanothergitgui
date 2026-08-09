@@ -1,9 +1,7 @@
 use git2::{Repository, Status, StatusOptions};
 use std::path::Path;
 
-use crate::shared::conflicts::{
-    ConflictChoice, ConflictData, ConflictPart, Eol, FileStyle, diff3,
-};
+use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, Eol, FileStyle, diff3};
 use crate::shared::git::FileEntry;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -255,8 +253,7 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
             let full_path = repo_workdir(repo)
                 .map_err(|error| error.to_string())?
                 .join(path);
-            let content =
-                std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
+            let content = std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
             let style = FileStyle::detect(&content);
             (parse_conflict_markers(&content, style.eol)?, style)
         }
@@ -567,7 +564,8 @@ mod tests {
         let repo_dir = TestRepoDir::init();
         let repo = Repository::open(repo_dir.path()).expect("open temp repo");
 
-        write_resolved_content(&repo, "crlf.txt", "one\r\ntwo\r\n").expect("write resolved content");
+        write_resolved_content(&repo, "crlf.txt", "one\r\ntwo\r\n")
+            .expect("write resolved content");
 
         let written = std::fs::read(repo_dir.path().join("crlf.txt")).expect("read written file");
         assert_eq!(written, b"one\r\ntwo\r\n");

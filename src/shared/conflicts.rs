@@ -486,10 +486,7 @@ impl ConflictData {
     ///
     /// The segments are borrowed from the cache; only the mask is built per
     /// call, and that is linear in the conflict's line count.
-    pub fn conflict_segments(
-        &self,
-        section_index: usize,
-    ) -> Option<(&[MergeSegment], Vec<bool>)> {
+    pub fn conflict_segments(&self, section_index: usize) -> Option<(&[MergeSegment], Vec<bool>)> {
         let Some(ConflictPart::Conflict { resolution, .. }) = self.sections.get(section_index)
         else {
             return None;
@@ -663,9 +660,7 @@ mod tests {
         sections
             .iter()
             .filter_map(|section| match section {
-                ConflictPart::Conflict { ours, theirs, .. } => {
-                    Some((ours.clone(), theirs.clone()))
-                }
+                ConflictPart::Conflict { ours, theirs, .. } => Some((ours.clone(), theirs.clone())),
                 ConflictPart::Common(_) => None,
             })
             .collect()
@@ -678,8 +673,7 @@ mod tests {
         let sections = diff3_lf("a\nb\nc", "a\nb\nc", "a\nB\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData::new("f".into(), sections, RAW_LF)
-            .compose(),
+            ConflictData::new("f".into(), sections, RAW_LF).compose(),
             "a\nB\nc"
         );
 
@@ -695,8 +689,7 @@ mod tests {
         let sections = diff3_lf("a\nb", "a\nb", "a\nb\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData::new("f".into(), sections, RAW_LF)
-            .compose(),
+            ConflictData::new("f".into(), sections, RAW_LF).compose(),
             "a\nb\nc"
         );
     }
@@ -724,8 +717,7 @@ mod tests {
         let sections = diff3_lf("a\nb", "a\nZ", "a\nZ");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData::new("f".into(), sections, RAW_LF)
-            .compose(),
+            ConflictData::new("f".into(), sections, RAW_LF).compose(),
             "a\nZ"
         );
     }
@@ -774,9 +766,13 @@ mod tests {
     fn compose_restores_crlf_line_endings() {
         // A CRLF file must come back out as CRLF: resolving one conflict may not
         // silently rewrite every other line in the file.
-        let sections = super::diff3("a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\n", "a\r\nb\r\nc\r\n", Eol::Crlf);
-        let composed = ConflictData::new("f".into(), sections, RAW_CRLF)
-        .compose();
+        let sections = super::diff3(
+            "a\r\nb\r\nc\r\n",
+            "a\r\nB\r\nc\r\n",
+            "a\r\nb\r\nc\r\n",
+            Eol::Crlf,
+        );
+        let composed = ConflictData::new("f".into(), sections, RAW_CRLF).compose();
 
         assert_eq!(composed, "a\r\nB\r\nc");
         assert!(!composed.contains("\n\r"), "no stray bare LF: {composed:?}");
@@ -944,4 +940,3 @@ mod tests {
         assert_eq!(kept, vec!["yours"]);
     }
 }
-
