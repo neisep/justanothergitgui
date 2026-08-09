@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::shared::actions::UiAction;
 use crate::shared::conflicts::ConflictData;
-use crate::shared::diff::SideBySideEntry;
+use crate::shared::diff::{DiffLineKind, ParsedDiffLine, SideBySideEntry, parse_diff_rows};
 use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
@@ -14,11 +14,47 @@ pub struct SelectedFile {
     pub staged: bool,
 }
 
+/// A working-tree patch parsed for rendering: the rows the table paints plus the
+/// tallies its header shows.
+///
+/// Built once per file selection. The Changes tab repaints many times a second
+/// while the patch only changes when the selection does, and parsing allocates a
+/// `String` per line — far too much to redo on the render path.
+#[derive(Debug, Default)]
+pub struct ParsedDiff {
+    pub rows: Vec<ParsedDiffLine>,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+}
+
+impl ParsedDiff {
+    fn from_patch(content: &str) -> Self {
+        let rows = parse_diff_rows(content);
+        let added_lines = rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::Added)
+            .count();
+        let removed_lines = rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::Removed)
+            .count();
+
+        Self {
+            rows,
+            added_lines,
+            removed_lines,
+        }
+    }
+}
+
 /// The commit currently open in the History tab's read-only commit view.
 ///
 /// Holds everything that view renders, so it can be dropped in one move when the
 /// user goes back to the list or the history it came from changes.
-#[derive(Clone, Debug)]
+///
+/// Deliberately not `Clone`: it owns the whole parsed patch, and nothing needs a
+/// second copy — `set_commit` moves it in and out.
+#[derive(Debug)]
 pub struct SelectedCommit {
     pub oid: String,
     pub short_oid: String,
@@ -39,6 +75,12 @@ pub struct SelectedCommit {
     /// Added/removed line counts for the header, tallied with the parse.
     pub added_lines: usize,
     pub removed_lines: usize,
+    /// Why the commit's file list could not be read, if it could not.
+    ///
+    /// An empty `files` is also what a genuinely empty commit looks like, so the
+    /// failure has to be recorded separately or the view reports a git error as
+    /// "this commit changed no files".
+    pub load_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -138,6 +180,9 @@ pub struct WorktreeState {
 pub struct InspectorState {
     pub selected_file: Option<SelectedFile>,
     pub diff_content: String,
+    /// `diff_content` parsed for the Changes tab. Kept in step with it by
+    /// [`Self::set_diff`] / [`Self::clear_diff`], which are the only two ways in.
+    pub parsed_diff: ParsedDiff,
     pub diff_wrap: bool,
     pub center_view: CenterView,
     pub conflict_data: Option<ConflictData>,
@@ -159,6 +204,18 @@ pub struct ConflictEdit {
 }
 
 impl InspectorState {
+    /// Replace the working-tree patch, reparsing it in the same move so the two
+    /// can never disagree about what is on screen.
+    pub fn set_diff(&mut self, content: String) {
+        self.parsed_diff = ParsedDiff::from_patch(&content);
+        self.diff_content = content;
+    }
+
+    pub fn clear_diff(&mut self) {
+        self.diff_content.clear();
+        self.parsed_diff = ParsedDiff::default();
+    }
+
     /// Set (or clear) the active conflict, resetting the inline-edit slot and
     /// shared scroll offset so no state leaks between files.
     pub fn set_conflict(&mut self, data: Option<ConflictData>) {

@@ -277,7 +277,12 @@ fn show_history(ctx: &mut TabActionContext<'_>) {
 fn select_commit(ctx: &mut TabActionContext<'_>, oid: String) {
     let state = &mut ctx.tab.state;
     state.inspector.center_view = CenterView::History;
-    helpers::load_selected_commit(&state.repo, &mut state.inspector, &ctx.tab.repo, oid);
+    let failure =
+        helpers::load_selected_commit(&state.repo, &mut state.inspector, &ctx.tab.repo, oid);
+
+    if let Some(detail) = failure {
+        log_action_error(ctx, "Open commit", detail);
+    }
 }
 
 fn select_commit_file(ctx: &mut TabActionContext<'_>, path: String) {
@@ -396,7 +401,7 @@ fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
             ctx.tab.state.inspector.selected_file = Some(SelectedFile { path, staged: true });
             ctx.tab.state.inspector.set_conflict(None);
         }
-        Err(error) => log_action_error(ctx, "Save resolution", error),
+        Err(error) => log_action_error(ctx, "Save resolution", error.to_string()),
     }
 
     refresh_tab(ctx);
@@ -428,7 +433,7 @@ impl GitGuiApp {
 
 fn clear_repo_selection(inspector_state: &mut InspectorState) {
     inspector_state.selected_file = None;
-    inspector_state.diff_content.clear();
+    inspector_state.clear_diff();
     inspector_state.set_conflict(None);
     inspector_state.set_commit(None);
 }

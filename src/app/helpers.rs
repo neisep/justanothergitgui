@@ -1,5 +1,6 @@
 use super::*;
 use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
+
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
     DiscardDialogState, InspectorState, RepoState, SelectedCommit, SelectedFile, TagDialogState,
@@ -108,7 +109,7 @@ pub(super) fn reset_commit_state(commit_state: &mut CommitState) {
 
 pub(super) fn reset_inspector_state(inspector_state: &mut InspectorState) {
     inspector_state.selected_file = None;
-    inspector_state.diff_content.clear();
+    inspector_state.clear_diff();
     inspector_state.diff_wrap = false;
     inspector_state.center_view = CenterView::Diff;
     inspector_state.set_conflict(None);
@@ -174,11 +175,11 @@ pub(super) fn load_selected_file(
         match AppRepoRead::read_conflict_file(repo, &path) {
             Ok(conflict_data) => {
                 inspector_state.set_conflict(Some(conflict_data));
-                inspector_state.diff_content.clear();
+                inspector_state.clear_diff();
             }
             Err(error) => {
                 inspector_state.set_conflict(None);
-                inspector_state.diff_content = format!("Error loading conflict data: {}", error);
+                inspector_state.set_diff(format!("Error loading conflict data: {error}"));
             }
         }
         return;
@@ -186,8 +187,8 @@ pub(super) fn load_selected_file(
 
     inspector_state.set_conflict(None);
     match AppRepoRead::file_diff(repo, &path, staged) {
-        Ok(diff) => inspector_state.diff_content = diff,
-        Err(error) => inspector_state.diff_content = format!("Error loading diff: {}", error),
+        Ok(diff) => inspector_state.set_diff(diff),
+        Err(error) => inspector_state.set_diff(format!("Error loading diff: {error}")),
     }
     inspector_state.selected_file = Some(SelectedFile { path, staged });
 }
@@ -196,19 +197,22 @@ pub(super) fn load_selected_file(
 ///
 /// Metadata comes from the `CommitEntry` already loaded into `repo_state`, so
 /// only the changed files and the first file's patch are read from git here.
+/// Returns the failure detail when the commit's file list could not be read, so
+/// the caller can log it — the view shows its own copy via
+/// [`SelectedCommit::load_error`].
 pub(super) fn load_selected_commit(
     repo_state: &RepoState,
     inspector_state: &mut InspectorState,
     repo: &Repository,
     oid: String,
-) {
+) -> Option<String> {
     let Some(entry) = repo_state
         .commit_history
         .iter()
         .find(|commit| commit.oid == oid)
     else {
         inspector_state.set_commit(None);
-        return;
+        return Some(format!("commit {oid} is no longer in the loaded history"));
     };
 
     let mut commit = SelectedCommit {
@@ -224,12 +228,22 @@ pub(super) fn load_selected_commit(
         scroll: 0.0,
         added_lines: 0,
         removed_lines: 0,
+        load_error: None,
     };
 
-    match AppRepoRead::commit_changed_files(repo, &commit.oid) {
-        Ok(files) => commit.files = files,
-        Err(error) => commit.diff_content = format!("Error loading commit: {}", error),
-    }
+    // An empty file list is a real outcome (an empty commit), so a failure here
+    // has to be recorded rather than left to look like one.
+    let detail = match AppRepoRead::commit_changed_files(repo, &commit.oid) {
+        Ok(files) => {
+            commit.files = files;
+            None
+        }
+        Err(error) => {
+            let detail = error.to_string();
+            commit.load_error = Some(detail.clone());
+            Some(detail)
+        }
+    };
 
     inspector_state.set_commit(Some(commit));
 
@@ -241,6 +255,8 @@ pub(super) fn load_selected_commit(
     if let Some(path) = first_path {
         load_commit_file_diff(inspector_state, repo, path);
     }
+
+    detail
 }
 
 /// Load one file's patch inside the currently open commit, parsed and paired
@@ -359,7 +375,7 @@ fn sync_selected_file(
 
     if !in_unstaged && !in_staged {
         inspector_state.selected_file = None;
-        inspector_state.diff_content.clear();
+        inspector_state.clear_diff();
         inspector_state.set_conflict(None);
         return;
     }

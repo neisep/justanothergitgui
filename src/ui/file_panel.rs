@@ -2,6 +2,7 @@ use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
 use crate::shared::actions::UiAction;
+use crate::shared::git::FileEntry;
 use crate::state::{DragFile, InspectorState, UiState, WorktreeState};
 
 use super::HoveredRow;
@@ -40,7 +41,7 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
             ui.separator();
 
             let first_list_height = (ui.available_height() - 8.0).max(0.0) / 2.0;
-            unstaged_rect = render_file_table(ui, &mut state, false, first_list_height);
+            unstaged_rect = show_file_list(ui, &mut state, false, first_list_height);
 
             ui.add_space(8.0);
 
@@ -59,7 +60,7 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
             });
             ui.separator();
 
-            staged_rect = render_file_table(ui, &mut state, true, ui.available_height());
+            staged_rect = show_file_list(ui, &mut state, true, ui.available_height());
 
             handle_drop(ui, &mut state, unstaged_rect, staged_rect);
         });
@@ -67,22 +68,63 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
     show_drag_ghost(ui.ctx(), &state);
 }
 
-fn render_file_table(
+/// Pick the list for this half of the panel and render it, empty state included.
+fn show_file_list(
     ui: &mut egui::Ui,
     state: &mut FilePanelState<'_>,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
+    // Copy the shared reference out of `state` first: taking the slice straight
+    // from `state.worktree` would keep `state` borrowed and block the exclusive
+    // borrows the table needs.
+    let worktree = state.worktree;
     let files = if staged {
-        state.worktree.staged.clone()
+        &worktree.staged
     } else {
-        state.worktree.unstaged.clone()
+        &worktree.unstaged
     };
-    let row_height = ui.spacing().interact_size.y.max(28.0);
 
     if files.is_empty() {
-        return render_empty_section(ui, state, staged, max_height);
+        return render_empty_section(ui, worktree, staged, max_height);
     }
+
+    render_file_table(
+        ui,
+        FileTable {
+            files,
+            inspector: state.inspector,
+            ui_state: state.ui_state,
+        },
+        staged,
+        max_height,
+    )
+}
+
+/// The file list borrowed apart, so the table can hold the entries and mutate the
+/// inspector at the same time.
+///
+/// Taking `&mut FilePanelState` instead would force a clone of the whole entry
+/// list on every frame just to get past the borrow checker — and this runs twice
+/// per frame, once per list.
+struct FileTable<'a> {
+    files: &'a [FileEntry],
+    inspector: &'a mut InspectorState,
+    ui_state: &'a mut UiState,
+}
+
+fn render_file_table(
+    ui: &mut egui::Ui,
+    table: FileTable<'_>,
+    staged: bool,
+    max_height: f32,
+) -> egui::Rect {
+    let FileTable {
+        files,
+        inspector,
+        ui_state,
+    } = table;
+    let row_height = ui.spacing().interact_size.y.max(28.0);
 
     let scope_id = if staged {
         "staged_file_rows"
@@ -127,14 +169,9 @@ fn render_file_table(
                 body.rows(row_height, files.len(), |mut row| {
                     let index = row.index();
                     let file = &files[index];
-                    let is_selected =
-                        state
-                            .inspector
-                            .selected_file
-                            .as_ref()
-                            .is_some_and(|selected| {
-                                selected.path == file.path && selected.staged == staged
-                            });
+                    let is_selected = inspector.selected_file.as_ref().is_some_and(|selected| {
+                        selected.path == file.path && selected.staged == staged
+                    });
                     row.set_selected(is_selected);
                     row.set_hovered(hover.is_hovered(index));
 
@@ -176,7 +213,7 @@ fn render_file_table(
                                 });
                             if handle.drag_started() {
                                 drag_started = true;
-                                state.inspector.dragging = Some(DragFile {
+                                inspector.dragging = Some(DragFile {
                                     path: file.path.clone(),
                                     from_staged: staged,
                                 });
@@ -200,13 +237,11 @@ fn render_file_table(
                             {
                                 action_clicked = true;
                                 if staged {
-                                    state
-                                        .ui_state
+                                    ui_state
                                         .actions
                                         .push(UiAction::unstage_file(file.path.clone()));
                                 } else {
-                                    state
-                                        .ui_state
+                                    ui_state
                                         .actions
                                         .push(UiAction::stage_file(file.path.clone()));
                                 }
@@ -221,8 +256,7 @@ fn render_file_table(
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                     if row_response.clicked() && !action_clicked && !drag_started {
-                        state
-                            .ui_state
+                        ui_state
                             .actions
                             .push(UiAction::select_file(file.path.clone(), staged));
                     }
@@ -238,12 +272,12 @@ fn render_file_table(
 
 fn render_empty_section(
     ui: &mut egui::Ui,
-    state: &FilePanelState<'_>,
+    worktree: &WorktreeState,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
     let (title, hint) = if staged {
-        if state.worktree.unstaged.is_empty() {
+        if worktree.unstaged.is_empty() {
             (
                 "Nothing staged yet",
                 "Edit a file in your project — changes will show up here.",
@@ -254,7 +288,7 @@ fn render_empty_section(
                 "Click Stage, or drag a file from Unstaged above.",
             )
         }
-    } else if state.worktree.staged.is_empty() {
+    } else if worktree.staged.is_empty() {
         (
             "Working tree is clean",
             "Edit any file in your project to see it here.",

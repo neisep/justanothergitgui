@@ -4,6 +4,7 @@ use git2::Repository;
 
 use crate::core::{publish, sync, tags};
 use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
+use crate::infra::git::error::ConflictError;
 use crate::infra::git::{clone, commits, repository, worktree};
 use crate::infra::github::{auth, pulls, repos};
 use crate::infra::system::browser;
@@ -63,7 +64,7 @@ impl AppRepoRead {
     pub(super) fn read_conflict_file(
         repo: &Repository,
         path: &str,
-    ) -> Result<ConflictData, String> {
+    ) -> Result<ConflictData, ConflictError> {
         worktree::read_conflict_file(repo, path)
     }
 
@@ -164,7 +165,7 @@ impl AppRepoWrite {
         repo: &Repository,
         path: &str,
         content: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), ConflictError> {
         worktree::write_resolved_content(repo, path, content)
     }
 }

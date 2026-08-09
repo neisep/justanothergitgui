@@ -8,20 +8,88 @@ use eframe::egui;
 use crate::shared::diff::{DiffLineKind, ParsedDiffLine, SideBySideEntry, SideCell};
 
 const LINE_NUMBER_WIDTH: f32 = 44.0;
+/// Vertical inset inside a change badge's frame, on each side.
+const BADGE_VERTICAL_MARGIN: f32 = 2.0;
 
 /// The classic unified patch table: old / new / change badge / content.
+///
+/// Owns its scroll area, because only from in here can the unwrapped case be
+/// virtualized: rows are pinned to one height, so a scroll offset maps onto a
+/// row index and a patch of any size costs the same handful of widgets. Wrapped
+/// rows have no single height, so that mode still paints the whole patch.
 pub(crate) fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_lines: bool) {
-    egui::Grid::new("diff_grid")
+    let row_height = diff_row_height(ui);
+    // `show_rows` wants the height *without* spacing and adds the `Ui`'s own
+    // `item_spacing.y` back — so the grid has to be spaced by that same value, or
+    // the rows it lays out and the rows the scroll area counts drift apart and
+    // the viewport ends up part empty.
+    let row_spacing = ui.spacing().item_spacing.y;
+
+    // Above the scroll area, so the column labels stay put while the patch moves.
+    egui::Grid::new("diff_header")
         .num_columns(4)
-        .spacing([8.0, 3.0])
-        .striped(true)
+        .spacing([8.0, row_spacing])
+        .min_row_height(row_height)
+        .min_col_width(LINE_NUMBER_WIDTH)
         .show(ui, |ui| {
             ui.weak(egui::RichText::new("old").monospace());
             ui.weak(egui::RichText::new("new").monospace());
             ui.weak(egui::RichText::new("chg").monospace());
             ui.weak(egui::RichText::new("content").monospace());
             ui.end_row();
+        });
+    ui.separator();
 
+    let scroll = egui::ScrollArea::both()
+        .id_salt("diff_scroll")
+        .auto_shrink([false, false]);
+
+    if wrap_lines {
+        scroll.show(ui, |ui| {
+            render_diff_rows(ui, rows, 0, row_height, wrap_lines)
+        });
+        return;
+    }
+
+    scroll.show_rows(ui, row_height, rows.len(), |ui, range| {
+        render_diff_rows(
+            ui,
+            &rows[range.clone()],
+            range.start,
+            row_height,
+            wrap_lines,
+        );
+    });
+}
+
+/// One height for every row of the table, badge rows included.
+///
+/// The change badge is a framed `small` label, so it is the tallest thing a row
+/// can hold; taking the larger of the two and pinning the grid to it is what
+/// makes the rows uniform enough to virtualize.
+fn diff_row_height(ui: &egui::Ui) -> f32 {
+    let text = ui.text_style_height(&egui::TextStyle::Monospace);
+    let badge = ui.text_style_height(&egui::TextStyle::Small) + BADGE_VERTICAL_MARGIN * 2.0;
+    text.max(badge)
+}
+
+fn render_diff_rows(
+    ui: &mut egui::Ui,
+    rows: &[ParsedDiffLine],
+    start_row: usize,
+    row_height: f32,
+    wrap_lines: bool,
+) {
+    egui::Grid::new("diff_grid")
+        .num_columns(4)
+        .spacing([8.0, ui.spacing().item_spacing.y])
+        .striped(true)
+        // Keeps the stripe phase tied to the absolute row index, so the banding
+        // does not invert as the range scrolls.
+        .start_row(start_row)
+        .min_row_height(row_height)
+        .min_col_width(LINE_NUMBER_WIDTH)
+        .show(ui, |ui| {
             for row in rows {
                 render_line_number(ui, row.old_line_number);
                 render_line_number(ui, row.new_line_number);
@@ -209,7 +277,7 @@ pub(crate) fn render_diff_badge(ui: &mut egui::Ui, kind: DiffLineKind) {
     egui::Frame::new()
         .fill(fill)
         .corner_radius(4.0)
-        .inner_margin(egui::Margin::symmetric(6, 2))
+        .inner_margin(egui::Margin::symmetric(6, BADGE_VERTICAL_MARGIN as i8))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(label)

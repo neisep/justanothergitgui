@@ -30,6 +30,20 @@ impl Eol {
             Self::Crlf => "\r\n",
         }
     }
+
+    /// Rewrite every terminator in `text` to this one, whatever it used before.
+    ///
+    /// Text that reaches the model from outside — most of all a hand-typed
+    /// resolution, since a multiline text box only ever inserts `\n` — has to be
+    /// brought onto the file's own terminator before it is stored, or composing
+    /// would splice bare LF lines into a CRLF file.
+    pub fn normalize(self, text: &str) -> String {
+        let lf = text.replace("\r\n", "\n");
+        match self {
+            Self::Lf => lf,
+            Self::Crlf => lf.replace('\n', "\r\n"),
+        }
+    }
 }
 
 /// How the source file was formatted, so a resolved write matches it rather
@@ -262,9 +276,22 @@ pub fn diff3(base: &str, ours: &str, theirs: &str, eol: Eol) -> Vec<ConflictPart
         in_b[oi] = Some(bi);
     }
 
+    // The base lines both sides still carry, in increasing order. These are the
+    // only candidates for the end of a change region, and because `lcs_pairs`
+    // yields its matches in increasing order on both sides, `ak` and `bk` both
+    // rise with the base index — so a cursor that only moves forward can never
+    // skip an anchor a later region still wanted.
+    let anchors: Vec<(usize, usize, usize)> = (0..o.len())
+        .filter_map(|k| match (in_a[k], in_b[k]) {
+            (Some(ak), Some(bk)) => Some((k, ak, bk)),
+            _ => None,
+        })
+        .collect();
+
     let mut parts: Vec<ConflictPart> = Vec::new();
     let mut common: Vec<&str> = Vec::new();
     let (mut oi, mut ai, mut bi) = (0usize, 0usize, 0usize);
+    let mut next_anchor = 0usize;
 
     while oi < o.len() || ai < a.len() || bi < b.len() {
         // Sitting on a line all three still agree on: pure common context.
@@ -278,16 +305,16 @@ pub fn diff3(base: &str, ours: &str, theirs: &str, eol: Eol) -> Vec<ConflictPart
 
         // Otherwise collect the change region up to the next line common to all
         // three sides (or the end of every input if none remains).
-        let (mut o2, mut a2, mut b2) = (o.len(), a.len(), b.len());
-        for k in oi..o.len() {
-            if let (Some(ak), Some(bk)) = (in_a[k], in_b[k])
-                && ak >= ai
-                && bk >= bi
-            {
-                (o2, a2, b2) = (k, ak, bk);
-                break;
-            }
+        while anchors
+            .get(next_anchor)
+            .is_some_and(|&(k, ak, bk)| k < oi || ak < ai || bk < bi)
+        {
+            next_anchor += 1;
         }
+        let (o2, a2, b2) = anchors
+            .get(next_anchor)
+            .copied()
+            .unwrap_or((o.len(), a.len(), b.len()));
 
         let o_slice = &o[oi..o2];
         let a_slice = &a[ai..a2];
@@ -382,14 +409,32 @@ pub struct ConflictData {
     /// these three times per conflict; recomputing the LCS there dominated
     /// frame time outright.
     segments: Vec<Vec<MergeSegment>>,
+    /// Keep/drop mask per section, keyed the same way and empty for `Common`
+    /// ones.
+    ///
+    /// Unlike the segments this *does* move with the resolution, so it is
+    /// rebuilt by the two methods that can change one — which is cheap, because
+    /// that happens on a click rather than on a frame. Deriving it on demand
+    /// instead meant a `Vec<bool>` allocated three times per conflict per frame,
+    /// for the result document and both input panes.
+    masks: Vec<Vec<bool>>,
 }
 
 impl ConflictData {
     pub fn new(path: String, sections: Vec<ConflictPart>, style: FileStyle) -> Self {
-        let segments = sections
+        let segments: Vec<Vec<MergeSegment>> = sections
             .iter()
             .map(|section| match section {
                 ConflictPart::Conflict { ours, theirs, .. } => merge_segments(ours, theirs),
+                ConflictPart::Common(_) => Vec::new(),
+            })
+            .collect();
+
+        let masks = sections
+            .iter()
+            .zip(segments.iter())
+            .map(|(section, segments)| match section {
+                ConflictPart::Conflict { resolution, .. } => mask_for(segments, resolution),
                 ConflictPart::Common(_) => Vec::new(),
             })
             .collect();
@@ -399,6 +444,7 @@ impl ConflictData {
             style,
             sections,
             segments,
+            masks,
         }
     }
 
@@ -409,11 +455,36 @@ impl ConflictData {
 
     /// Record the user's choice for one conflict. The only sanctioned mutation:
     /// it leaves `ours`/`theirs` — and therefore the cached segments — intact.
+    ///
+    /// A `Custom` resolution is brought onto the file's own terminator on the way
+    /// in. It is the one choice whose text comes from outside the parsed file —
+    /// an inline text box, which only ever inserts `\n` — so this is where that
+    /// text stops being the editor's and starts being the file's.
     pub fn set_resolution(&mut self, section_index: usize, choice: ConflictChoice) {
+        let choice = match choice {
+            ConflictChoice::Custom(text) => ConflictChoice::Custom(self.style.eol.normalize(&text)),
+            other => other,
+        };
+
         if let Some(ConflictPart::Conflict { resolution, .. }) =
             self.sections.get_mut(section_index)
         {
             *resolution = choice;
+        }
+
+        self.refresh_mask(section_index);
+    }
+
+    /// Bring one section's cached mask back in step with its resolution.
+    fn refresh_mask(&mut self, section_index: usize) {
+        let Some(ConflictPart::Conflict { resolution, .. }) = self.sections.get(section_index)
+        else {
+            return;
+        };
+
+        let mask = mask_for(self.segments_at(section_index), resolution);
+        if let Some(slot) = self.masks.get_mut(section_index) {
+            *slot = mask;
         }
     }
     /// Render the sections back into the file's exact text, in the source
@@ -481,43 +552,46 @@ impl ConflictData {
             .map_or(&[], |segments| segments.as_slice())
     }
 
+    /// Cached mask for a section; empty for `Common` ones and out-of-range
+    /// indices, matching [`Self::segments_at`].
+    fn mask_at(&self, section_index: usize) -> &[bool] {
+        self.masks
+            .get(section_index)
+            .map_or(&[], |mask| mask.as_slice())
+    }
+
     /// The line segments of a conflict section plus its current keep/drop mask,
     /// for rendering the per-line picker. `None` if the index is not a conflict.
     ///
-    /// The segments are borrowed from the cache; only the mask is built per
-    /// call, and that is linear in the conflict's line count.
-    pub fn conflict_segments(&self, section_index: usize) -> Option<(&[MergeSegment], Vec<bool>)> {
-        let Some(ConflictPart::Conflict { resolution, .. }) = self.sections.get(section_index)
-        else {
+    /// Both halves are borrowed from the cache, so calling this on every frame —
+    /// which the merge editor does, three times per conflict — allocates nothing.
+    pub fn conflict_segments(&self, section_index: usize) -> Option<(&[MergeSegment], &[bool])> {
+        let Some(ConflictPart::Conflict { .. }) = self.sections.get(section_index) else {
             return None;
         };
 
-        let segments = self.segments_at(section_index);
-        Some((segments, mask_for(segments, resolution)))
+        Some((self.segments_at(section_index), self.mask_at(section_index)))
     }
 
     /// Toggle whether one line of a conflict is kept, switching that conflict
     /// into `Picked` mode. `Common` lines are always kept and ignore toggles.
     pub fn toggle_segment(&mut self, section_index: usize, segment_index: usize) {
-        // Disjoint fields, so the shared borrow of `segments` coexists with the
-        // exclusive borrow of `sections`.
-        let segments = self
-            .segments
-            .get(section_index)
-            .map_or(&[][..], |segments| segments.as_slice());
-        let Some(ConflictPart::Conflict { resolution, .. }) = self.sections.get_mut(section_index)
-        else {
+        let Some(ConflictPart::Conflict { .. }) = self.sections.get(section_index) else {
             return;
         };
 
-        let mut mask = mask_for(segments, resolution);
-        if let (Some(segment), Some(flag)) =
-            (segments.get(segment_index), mask.get_mut(segment_index))
+        let mut mask = self.mask_at(section_index).to_vec();
+        let segment = self
+            .segments
+            .get(section_index)
+            .and_then(|segments| segments.get(segment_index));
+        if let (Some(segment), Some(flag)) = (segment, mask.get_mut(segment_index))
             && segment.origin != SegmentOrigin::Common
         {
             *flag = !*flag;
         }
-        *resolution = ConflictChoice::Picked(mask);
+
+        self.set_resolution(section_index, ConflictChoice::Picked(mask));
     }
 
     /// Number of conflict sections still left `Unresolved`.
@@ -763,6 +837,28 @@ mod tests {
     }
 
     #[test]
+    fn masks_are_cached_and_track_the_resolution() {
+        // Same guarantee as the segments: the merge editor asks three times per
+        // conflict per frame, so the mask must be borrowed, not rebuilt — and it
+        // must still follow every resolution change.
+        let mut data = conflict(ConflictChoice::Ours);
+        let (_, first) = data.conflict_segments(1).expect("conflict at index 1");
+        let (_, second) = data.conflict_segments(1).expect("conflict at index 1");
+        assert!(std::ptr::eq(first, second));
+        // ours "mine" / theirs "yours" share nothing: [Ours, Theirs].
+        assert_eq!(first, [true, false]);
+
+        data.set_resolution(1, ConflictChoice::Theirs);
+        let (_, after) = data.conflict_segments(1).expect("conflict at index 1");
+        assert_eq!(after, [false, true]);
+
+        data.toggle_segment(1, 0);
+        let (_, toggled) = data.conflict_segments(1).expect("conflict at index 1");
+        assert_eq!(toggled, [true, true]);
+        assert_eq!(data.compose(), "top\nmine\nyours\nbottom");
+    }
+
+    #[test]
     fn compose_restores_crlf_line_endings() {
         // A CRLF file must come back out as CRLF: resolving one conflict may not
         // silently rewrite every other line in the file.
@@ -851,6 +947,35 @@ mod tests {
     }
 
     #[test]
+    fn eol_normalize_rewrites_every_terminator() {
+        assert_eq!(Eol::Crlf.normalize("a\nb\r\nc"), "a\r\nb\r\nc");
+        assert_eq!(Eol::Lf.normalize("a\r\nb\nc"), "a\nb\nc");
+        // Already in the target style: unchanged, and no doubled `\r`.
+        assert_eq!(Eol::Crlf.normalize("a\r\nb"), "a\r\nb");
+    }
+
+    #[test]
+    fn set_resolution_puts_a_custom_edit_on_the_files_terminator() {
+        // The inline editor is a text box: it only ever produces `\n`. Storing
+        // that verbatim would splice bare LF lines into a CRLF file, because
+        // `compose` emits a custom resolution exactly as given.
+        let mut data = ConflictData::new(
+            "f".into(),
+            vec![ConflictPart::Conflict {
+                ours: "mine".into(),
+                theirs: "yours".into(),
+                resolution: ConflictChoice::Unresolved,
+            }],
+            RAW_CRLF,
+        );
+        data.set_resolution(0, ConflictChoice::Custom("one\ntwo".into()));
+
+        let composed = data.compose();
+        assert_eq!(composed, "one\r\ntwo");
+        assert!(!composed.contains("\n\r"), "no stray bare LF: {composed:?}");
+    }
+
+    #[test]
     fn eol_detect_reads_the_dominant_terminator() {
         assert_eq!(Eol::detect("a\r\nb\r\n"), Eol::Crlf);
         assert_eq!(Eol::detect("a\nb\n"), Eol::Lf);
@@ -913,15 +1038,15 @@ mod tests {
         assert_eq!(data.compose(), "keep\nX!\ntail");
     }
 
+    /// Goes through `set_resolution` rather than reaching into `sections`, so the
+    /// cached mask stays in step — the same guarantee production code relies on.
     fn set_only_conflict(data: &mut ConflictData, choice: ConflictChoice) {
-        let section = data
-            .sections
-            .iter_mut()
-            .find(|section| matches!(section, ConflictPart::Conflict { .. }))
+        let index = data
+            .sections()
+            .iter()
+            .position(|section| matches!(section, ConflictPart::Conflict { .. }))
             .expect("exactly one conflict in the fixture");
-        if let ConflictPart::Conflict { resolution, .. } = section {
-            *resolution = choice;
-        }
+        data.set_resolution(index, choice);
     }
 
     #[test]

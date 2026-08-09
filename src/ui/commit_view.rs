@@ -15,6 +15,7 @@ use super::diff_view::{self, SideBySideView};
 
 const FILE_LIST_WIDTH: f32 = 240.0;
 const STATUS_COL_WIDTH: f32 = 88.0;
+const LOAD_ERROR: egui::Color32 = egui::Color32::from_rgb(240, 140, 120);
 
 pub struct CommitViewState<'a> {
     pub commit: &'a mut SelectedCommit,
@@ -62,6 +63,18 @@ fn render_file_list(ui: &mut egui::Ui, commit: &SelectedCommit, ui_state: &mut U
         ui.strong(format!("Files ({})", commit.files.len()));
     });
     ui.separator();
+
+    // A read failure and an empty commit both leave `files` empty, so the error
+    // has to win — otherwise a git error reads as "nothing changed here".
+    if let Some(error) = &commit.load_error {
+        ui.colored_label(LOAD_ERROR, "Could not read this commit's files.");
+        ui.label(
+            egui::RichText::new(error)
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        return;
+    }
 
     if commit.files.is_empty() {
         ui.weak("This commit changed no files.");

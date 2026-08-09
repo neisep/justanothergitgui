@@ -2,9 +2,8 @@ use eframe::egui;
 
 use crate::shared::actions::UiAction;
 use crate::shared::conflicts::{
-    ConflictChoice, ConflictData, ConflictPart, MergeSegment, SegmentOrigin,
+    ConflictChoice, ConflictData, ConflictPart, Eol, MergeSegment, SegmentOrigin,
 };
-use crate::shared::diff::{DiffLineKind, parse_diff_rows};
 use crate::state::{CenterView, ConflictEdit, InspectorState, RepoState, UiState, WorktreeState};
 
 use super::diff_view;
@@ -106,37 +105,33 @@ fn show_diff_empty_state(ui: &mut egui::Ui, state: &DiffPanelState<'_>) {
 
 fn show_diff_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
     if let Some(sel) = &state.inspector.selected_file {
-        let rows = parse_diff_rows(&state.inspector.diff_content);
-        let added_lines = rows
-            .iter()
-            .filter(|row| row.kind == DiffLineKind::Added)
-            .count();
-        let removed_lines = rows
-            .iter()
-            .filter(|row| row.kind == DiffLineKind::Removed)
-            .count();
+        // Already parsed when the file was selected — this only paints.
+        let parsed = &state.inspector.parsed_diff;
 
         ui.horizontal(|ui| {
             ui.strong(&sel.path);
             ui.weak(if sel.staged { "(staged)" } else { "(unstaged)" });
             ui.separator();
-            ui.weak(format!("+{} / -{}", added_lines, removed_lines));
+            ui.weak(format!(
+                "+{} / -{}",
+                parsed.added_lines, parsed.removed_lines
+            ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.checkbox(&mut state.inspector.diff_wrap, "Wrap lines");
             });
         });
         ui.separator();
 
-        egui::ScrollArea::both()
-            .id_salt("diff_scroll")
-            .show(ui, |ui| {
-                if state.inspector.diff_content.is_empty() {
-                    ui.weak("No diff available (file may be binary or new)");
-                    return;
-                }
+        if state.inspector.diff_content.is_empty() {
+            ui.weak("No diff available (file may be binary or new)");
+            return;
+        }
 
-                diff_view::show_diff_table(ui, &rows, state.inspector.diff_wrap);
-            });
+        diff_view::show_diff_table(
+            ui,
+            &state.inspector.parsed_diff.rows,
+            state.inspector.diff_wrap,
+        );
     }
 }
 
@@ -411,7 +406,7 @@ fn render_custom_zone(
                 if ui.small_button("Edit").clicked() {
                     *conflict_edit = Some(ConflictEdit {
                         index,
-                        buffer: text.to_string(),
+                        buffer: edit_buffer(text),
                     });
                 }
                 if ui
@@ -475,6 +470,16 @@ fn render_edit_zone(
 
 fn line_or_space(line: &str) -> &str {
     if line.is_empty() { " " } else { line }
+}
+
+/// Seed text for the inline editor.
+///
+/// The multiline text box only ever inserts `\n`, so the buffer is kept in LF
+/// throughout and put back on the file's own terminator when the edit is stored
+/// (see `ConflictData::set_resolution`). Feeding it CRLF would leave stray `\r`
+/// characters sitting in the text the user is typing into.
+fn edit_buffer(text: &str) -> String {
+    Eol::Lf.normalize(text)
 }
 
 /// A rounded card outlined in a conflict zone's accent color.
@@ -542,7 +547,7 @@ fn render_input_pane(
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 render_input_conflict_lines(
-                                    ui, index, segments, &mask, mine, text_color, action,
+                                    ui, index, segments, mask, mine, text_color, action,
                                 );
                                 ui.add_space(2.0);
                                 render_input_buttons(
@@ -640,6 +645,8 @@ fn render_input_buttons(
             .on_hover_text("Type a custom resolution")
             .clicked()
         {
+            // Segment text is terminator-free, so joining with LF is already the
+            // editor's own format; `set_resolution` restores the file's on apply.
             let current = segments
                 .iter()
                 .map(|segment| segment.text.as_str())

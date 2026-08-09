@@ -3,6 +3,8 @@
 //! Pure text handling: no egui, no git2. Consumers are the diff renderers in
 //! `ui/`, which turn these rows into widgets.
 
+use std::rc::Rc;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffLineKind {
     Context,
@@ -19,7 +21,11 @@ pub struct ParsedDiffLine {
     pub old_line_number: Option<usize>,
     pub new_line_number: Option<usize>,
     pub kind: DiffLineKind,
-    pub content: String,
+    /// Shared rather than owned: [`to_side_by_side`] hands the same line to a
+    /// [`SideCell`], and a context line goes to two of them. Copying the text
+    /// there would leave the paired document holding a second and third copy of
+    /// the whole patch.
+    pub content: Rc<str>,
 }
 
 /// One side of a side-by-side row: either a real line or padding opposite an
@@ -30,7 +36,7 @@ pub enum SideCell {
     Line {
         number: Option<usize>,
         kind: DiffLineKind,
-        content: String,
+        content: Rc<str>,
     },
 }
 
@@ -72,7 +78,7 @@ pub fn parse_diff_rows(diff_content: &str) -> Vec<ParsedDiffLine> {
                     old_line_number: old,
                     new_line_number: new,
                     kind,
-                    content: line[1..].to_string(),
+                    content: line[1..].into(),
                 }
             }
             DiffLineKind::Added => {
@@ -82,7 +88,7 @@ pub fn parse_diff_rows(diff_content: &str) -> Vec<ParsedDiffLine> {
                     old_line_number: None,
                     new_line_number: new,
                     kind,
-                    content: line[1..].to_string(),
+                    content: line[1..].into(),
                 }
             }
             DiffLineKind::Removed => {
@@ -92,14 +98,14 @@ pub fn parse_diff_rows(diff_content: &str) -> Vec<ParsedDiffLine> {
                     old_line_number: old,
                     new_line_number: None,
                     kind,
-                    content: line[1..].to_string(),
+                    content: line[1..].into(),
                 }
             }
             _ => ParsedDiffLine {
                 old_line_number: None,
                 new_line_number: None,
                 kind,
-                content: line.to_string(),
+                content: line.into(),
             },
         };
 
@@ -191,7 +197,7 @@ pub fn to_side_by_side(rows: &[ParsedDiffLine]) -> Vec<SideBySideEntry> {
             }
             _ => {
                 flush_pairs(&mut entries, &mut removed, &mut added);
-                entries.push(SideBySideEntry::Header(row.content.clone()));
+                entries.push(SideBySideEntry::Header(row.content.to_string()));
             }
         }
     }
@@ -278,7 +284,7 @@ mod tests {
             old_line_number: old,
             new_line_number: new,
             kind,
-            content: content.to_string(),
+            content: content.into(),
         }
     }
 
