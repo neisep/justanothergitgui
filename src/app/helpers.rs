@@ -1,4 +1,5 @@
 use super::*;
+use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
     DiscardDialogState, InspectorState, RepoState, SelectedCommit, SelectedFile, TagDialogState,
@@ -219,7 +220,10 @@ pub(super) fn load_selected_commit(
         files: Vec::new(),
         selected_path: None,
         diff_content: String::new(),
+        diff_entries: Vec::new(),
         scroll: 0.0,
+        added_lines: 0,
+        removed_lines: 0,
     };
 
     match AppRepoRead::commit_changed_files(repo, &commit.oid) {
@@ -239,7 +243,8 @@ pub(super) fn load_selected_commit(
     }
 }
 
-/// Load one file's patch inside the currently open commit.
+/// Load one file's patch inside the currently open commit, parsed and paired
+/// ready for rendering.
 pub(super) fn load_commit_file_diff(
     inspector_state: &mut InspectorState,
     repo: &Repository,
@@ -253,6 +258,22 @@ pub(super) fn load_commit_file_diff(
         Ok(diff) => diff,
         Err(error) => format!("Error loading diff: {}", error),
     };
+
+    let mut rows = parse_diff_rows(&commit.diff_content);
+    commit.added_lines = rows
+        .iter()
+        .filter(|row| row.kind == DiffLineKind::Added)
+        .count();
+    commit.removed_lines = rows
+        .iter()
+        .filter(|row| row.kind == DiffLineKind::Removed)
+        .count();
+    // The patch preamble (`diff --git`, `index`, `---`, `+++`) describes the
+    // file as a whole and the path is already in the view's header, so drop it
+    // and let both panes start at the first hunk.
+    rows.retain(|row| row.kind != DiffLineKind::FileHeader);
+    commit.diff_entries = to_side_by_side(&rows);
+
     commit.selected_path = Some(path);
     commit.scroll = 0.0;
 }

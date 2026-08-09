@@ -100,23 +100,34 @@ impl Side {
 
 /// Rows are never wrapped: both panes must produce identical row heights for the
 /// two sides to stay aligned, so long lines scroll horizontally instead.
+///
+/// Only the visible rows are built. A commit touching a few thousand lines would
+/// otherwise spend every frame emitting widgets for rows nobody can see, twice
+/// over — once per pane.
 fn render_pane(ui: &mut egui::Ui, entries: &[SideBySideEntry], scroll: f32, side: Side) -> f32 {
     ui.push_id(side.scroll_id(), |ui| {
         ui.weak(side.title());
         ui.separator();
 
+        // Every row is one unwrapped monospace line, so this is exact — which is
+        // what `show_rows` needs to map a scroll offset to a row range.
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+
         let output = egui::ScrollArea::both()
             .id_salt(side.scroll_id())
             .auto_shrink([false, false])
             .vertical_scroll_offset(scroll)
-            .show(ui, |ui| {
+            .show_rows(ui, row_height, entries.len(), |ui, range| {
                 egui::Grid::new(side.grid_id())
                     .num_columns(2)
-                    .spacing([8.0, 3.0])
+                    .spacing([8.0, ui.spacing().item_spacing.y])
                     .striped(true)
+                    // Keeps the stripe phase tied to the absolute row index, so
+                    // the banding does not invert as the range scrolls.
+                    .start_row(range.start)
                     .min_col_width(LINE_NUMBER_WIDTH)
                     .show(ui, |ui| {
-                        for entry in entries {
+                        for entry in &entries[range] {
                             match side.cell(entry) {
                                 Some(SideCell::Line {
                                     number,

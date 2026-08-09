@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::shared::actions::UiAction;
 use crate::shared::conflicts::ConflictData;
+use crate::shared::diff::SideBySideEntry;
 use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
@@ -27,8 +28,17 @@ pub struct SelectedCommit {
     pub files: Vec<CommitFileChange>,
     pub selected_path: Option<String>,
     pub diff_content: String,
+    /// `diff_content` parsed and paired for the side-by-side panes.
+    ///
+    /// Built once per file selection: parsing allocates a `String` per line and
+    /// pairing clones each of those again, which is far too much to redo on
+    /// every frame of a repaint.
+    pub diff_entries: Vec<SideBySideEntry>,
     /// Shared vertical scroll offset for the two read-only diff panes.
     pub scroll: f32,
+    /// Added/removed line counts for the header, tallied with the parse.
+    pub added_lines: usize,
+    pub removed_lines: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

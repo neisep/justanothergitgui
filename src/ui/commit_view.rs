@@ -8,7 +8,6 @@ use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
 use crate::shared::actions::UiAction;
-use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
 use crate::state::{SelectedCommit, UiState};
 
 use super::HoveredRow;
@@ -140,25 +139,10 @@ fn render_diff(ui: &mut egui::Ui, commit: &mut SelectedCommit) {
         return;
     };
 
-    let mut rows = parse_diff_rows(&commit.diff_content);
-    let added_lines = rows
-        .iter()
-        .filter(|row| row.kind == DiffLineKind::Added)
-        .count();
-    let removed_lines = rows
-        .iter()
-        .filter(|row| row.kind == DiffLineKind::Removed)
-        .count();
-
-    // The patch preamble (`diff --git`, `index`, `---`, `+++`) is about the file
-    // as a whole, and the path is already in the header above — drop it so both
-    // panes start at the first hunk.
-    rows.retain(|row| row.kind != DiffLineKind::FileHeader);
-
     ui.horizontal(|ui| {
         ui.add(egui::Label::new(egui::RichText::new(&path).strong()).truncate());
         ui.separator();
-        ui.weak(format!("+{} / -{}", added_lines, removed_lines));
+        ui.weak(format!("+{} / -{}", commit.added_lines, commit.removed_lines));
     });
     ui.separator();
 
@@ -167,11 +151,11 @@ fn render_diff(ui: &mut egui::Ui, commit: &mut SelectedCommit) {
         return;
     }
 
-    let entries = to_side_by_side(&rows);
+    // Already parsed and paired when the file was selected — this only paints.
     commit.scroll = diff_view::show_side_by_side(
         ui,
         SideBySideView {
-            entries: &entries,
+            entries: &commit.diff_entries,
             scroll: commit.scroll,
         },
     );
