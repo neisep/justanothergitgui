@@ -343,6 +343,23 @@ fn sync_selected_file(
         return;
     }
 
+    // An open conflict holds unsaved decisions — per-line picks and hand edits
+    // that exist nowhere else. Reloading it would silently discard them, and a
+    // refresh fires after every stage/unstage and worker result, so touching an
+    // unrelated file would wipe the merge in progress. Only reload once the file
+    // stops being the conflict we are editing.
+    let editing_this_conflict = inspector_state
+        .conflict_data
+        .as_ref()
+        .is_some_and(|data| data.path == selected.path)
+        && worktree_state
+            .unstaged
+            .iter()
+            .any(|file| file.path == selected.path && file.is_conflicted);
+    if editing_this_conflict {
+        return;
+    }
+
     let staged = if selected.staged && in_staged {
         true
     } else if !selected.staged && in_unstaged {
@@ -352,4 +369,105 @@ fn sync_selected_file(
     };
 
     load_selected_file(worktree_state, inspector_state, repo, selected.path, staged);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SelectedFile, sync_selected_file};
+    use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, FileStyle};
+    use crate::shared::git::FileEntry;
+    use crate::state::{InspectorState, WorktreeState};
+    use crate::testutil::TestRepoDir;
+
+    fn entry(path: &str, is_conflicted: bool) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            display_status: if is_conflicted {
+                "conflicted".to_string()
+            } else {
+                "modified".to_string()
+            },
+            is_conflicted,
+        }
+    }
+
+    /// A conflict the user has already made a decision on.
+    fn decided_conflict(path: &str) -> ConflictData {
+        ConflictData::new(
+            path.to_string(),
+            vec![ConflictPart::Conflict {
+                ours: "mine".into(),
+                theirs: "yours".into(),
+                resolution: ConflictChoice::Ours,
+            }],
+            FileStyle::default(),
+        )
+    }
+
+    fn state_for(path: &str, is_conflicted: bool) -> (WorktreeState, InspectorState) {
+        let worktree = WorktreeState {
+            unstaged: vec![entry(path, is_conflicted)],
+            ..Default::default()
+        };
+
+        let mut inspector = InspectorState {
+            selected_file: Some(SelectedFile {
+                path: path.to_string(),
+                staged: false,
+            }),
+            ..Default::default()
+        };
+        inspector.set_conflict(Some(decided_conflict(path)));
+
+        (worktree, inspector)
+    }
+
+    #[test]
+    fn refresh_keeps_the_conflict_currently_being_resolved() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        let (worktree, mut inspector) = state_for("merge.txt", true);
+
+        sync_selected_file(&worktree, &mut inspector, &repo);
+
+        // A reload would have reset the section to Unresolved, silently throwing
+        // away the user's choice. Refreshes fire after every stage/unstage.
+        assert_eq!(
+            inspector
+                .conflict_data
+                .as_ref()
+                .map(|data| data.unresolved_count()),
+            Some(0),
+            "the in-progress resolution must survive a refresh"
+        );
+    }
+
+    #[test]
+    fn refresh_drops_the_conflict_once_the_file_is_no_longer_conflicted() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        // Same path, but the merge has been resolved and staged elsewhere.
+        let (worktree, mut inspector) = state_for("merge.txt", false);
+
+        sync_selected_file(&worktree, &mut inspector, &repo);
+
+        assert!(
+            inspector.conflict_data.is_none(),
+            "a file that stopped being conflicted must leave the merge editor"
+        );
+    }
+
+    #[test]
+    fn refresh_drops_the_conflict_when_the_file_disappears() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        let (_worktree, mut inspector) = state_for("merge.txt", true);
+        // Nothing left in the working tree — e.g. the merge was aborted.
+        let worktree = WorktreeState::default();
+
+        sync_selected_file(&worktree, &mut inspector, &repo);
+
+        assert!(inspector.conflict_data.is_none());
+        assert!(inspector.selected_file.is_none());
+    }
 }
