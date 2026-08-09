@@ -1,7 +1,9 @@
 use git2::{Repository, Status, StatusOptions};
 use std::path::Path;
 
-use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, Eol, diff3};
+use crate::shared::conflicts::{
+    ConflictChoice, ConflictData, ConflictPart, Eol, FileStyle, diff3,
+};
 use crate::shared::git::FileEntry;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -247,7 +249,7 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
     // run a real 3-way merge and pre-resolve edits only one side made. Fall back
     // to parsing the in-tree markers (base-less) when stages are unavailable —
     // e.g. the file was hand-edited or the merge state is gone.
-    let (sections, eol) = match read_index_conflict_sections(repo, path)? {
+    let (sections, style) = match read_index_conflict_sections(repo, path)? {
         Some(parsed) => parsed,
         None => {
             let full_path = repo_workdir(repo)
@@ -255,23 +257,23 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
                 .join(path);
             let content =
                 std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
-            let eol = Eol::detect(&content);
-            (parse_conflict_markers(&content, eol)?, eol)
+            let style = FileStyle::detect(&content);
+            (parse_conflict_markers(&content, style.eol)?, style)
         }
     };
 
-    Ok(ConflictData::new(path.to_string(), sections, eol))
+    Ok(ConflictData::new(path.to_string(), sections, style))
 }
 
 /// Build the conflict sections from the index's ancestor/ours/theirs stages via
-/// a 3-way merge, paired with the line terminator to restore on write.
+/// a 3-way merge, paired with the formatting to restore on write.
 ///
 /// `Ok(None)` when the path is not a full three-stage conflict or any stage is
 /// non-UTF-8, signalling the caller to fall back to marker parsing.
 fn read_index_conflict_sections(
     repo: &Repository,
     path: &str,
-) -> Result<Option<(Vec<ConflictPart>, Eol)>, String> {
+) -> Result<Option<(Vec<ConflictPart>, FileStyle)>, String> {
     let index = repo.index().map_err(|error| error.to_string())?;
     let target = Path::new(path);
 
@@ -298,26 +300,23 @@ fn read_index_conflict_sections(
 
     // Take the style from the checked-out side: that is the file the user has
     // in front of them, and the one being rewritten.
-    let eol = Eol::detect(&ours);
+    let style = FileStyle::detect(&ours);
 
-    Ok(Some((diff3(&base, &ours, &theirs, eol), eol)))
+    Ok(Some((diff3(&base, &ours, &theirs, style.eol), style)))
 }
 
 /// Write the user's resolved merge text to the working tree and stage it.
 ///
-/// The content is the final buffer from the merge editor's result pane, so no
-/// choice recomposition happens here — hand edits are written verbatim.
+/// The content is the final text from the merge editor, already carrying the
+/// source file's line terminator and final-newline state (see
+/// [`ConflictData::compose`]). It is written byte for byte: guessing a
+/// terminator here would rewrite files git deliberately tracks as having none.
 pub fn write_resolved_content(repo: &Repository, path: &str, content: &str) -> Result<(), String> {
     let full_path = repo_workdir(repo)
         .map_err(|error| error.to_string())?
         .join(path);
 
-    let mut content = content.to_string();
-    if !content.ends_with('\n') {
-        content.push('\n');
-    }
-
-    std::fs::write(&full_path, &content).map_err(|error| error.to_string())?;
+    std::fs::write(&full_path, content).map_err(|error| error.to_string())?;
     stage_file(repo, path).map_err(|error| error.to_string())?;
 
     Ok(())
@@ -544,20 +543,32 @@ mod tests {
     }
 
     #[test]
-    fn write_resolved_content_writes_buffer_and_stages_file() {
+    fn write_resolved_content_writes_buffer_verbatim_and_stages_file() {
         let repo_dir = TestRepoDir::init();
         let repo = Repository::open(repo_dir.path()).expect("open temp repo");
 
+        // The terminator is `compose`'s business — it knows what the source file
+        // looked like. This writer must not second-guess it.
         write_resolved_content(&repo, "merged.txt", "line one\nline two")
             .expect("write resolved content");
 
         let written =
             std::fs::read_to_string(repo_dir.path().join("merged.txt")).expect("read written file");
-        // A trailing newline is appended when missing.
-        assert_eq!(written, "line one\nline two\n");
+        assert_eq!(written, "line one\nline two");
 
         let (_unstaged, staged) = get_file_statuses(&repo).expect("read file statuses");
         assert!(staged.iter().any(|file| file.path == "merged.txt"));
+    }
+
+    #[test]
+    fn write_resolved_content_preserves_crlf_bytes() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+
+        write_resolved_content(&repo, "crlf.txt", "one\r\ntwo\r\n").expect("write resolved content");
+
+        let written = std::fs::read(repo_dir.path().join("crlf.txt")).expect("read written file");
+        assert_eq!(written, b"one\r\ntwo\r\n");
     }
 
     #[cfg(unix)]

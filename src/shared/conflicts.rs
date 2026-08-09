@@ -32,6 +32,36 @@ impl Eol {
     }
 }
 
+/// How the source file was formatted, so a resolved write matches it rather
+/// than imposing a house style on the user's repository.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStyle {
+    pub eol: Eol,
+    /// Whether the file ended with a line terminator. Git tracks its absence
+    /// ("\ No newline at end of file"), so adding one shows up as a change.
+    pub trailing_newline: bool,
+}
+
+impl FileStyle {
+    pub fn detect(text: &str) -> Self {
+        Self {
+            eol: Eol::detect(text),
+            trailing_newline: text.ends_with('\n'),
+        }
+    }
+}
+
+impl Default for FileStyle {
+    /// Matches how text files are normally written, for the rare caller with no
+    /// source text to inspect.
+    fn default() -> Self {
+        Self {
+            eol: Eol::default(),
+            trailing_newline: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ConflictPart {
     Common(String),
@@ -339,8 +369,8 @@ fn join_non_empty(parts: [&str; 2], sep: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct ConflictData {
     pub path: String,
-    /// Line terminator of the source file, restored by [`Self::compose`].
-    pub eol: Eol,
+    /// Formatting of the source file, restored by [`Self::compose`].
+    pub style: FileStyle,
     sections: Vec<ConflictPart>,
     /// Segments per section, keyed by the same index as `sections` and empty
     /// for `Common` ones.
@@ -355,7 +385,7 @@ pub struct ConflictData {
 }
 
 impl ConflictData {
-    pub fn new(path: String, sections: Vec<ConflictPart>, eol: Eol) -> Self {
+    pub fn new(path: String, sections: Vec<ConflictPart>, style: FileStyle) -> Self {
         let segments = sections
             .iter()
             .map(|section| match section {
@@ -366,7 +396,7 @@ impl ConflictData {
 
         Self {
             path,
-            eol,
+            style,
             sections,
             segments,
         }
@@ -386,15 +416,16 @@ impl ConflictData {
             *resolution = choice;
         }
     }
-    /// Render the sections back into a single merged text, in the file's own
-    /// line terminator.
+    /// Render the sections back into the file's exact text, in the source
+    /// file's own line terminator and with its final-newline state restored.
+    /// The result is what gets written to disk verbatim.
     ///
     /// Resolved conflicts emit the chosen side(s); an `Unresolved` conflict
     /// emits the raw `<<<<<<<` / `=======` / `>>>>>>>` markers so it stays
     /// visible and editable in the result buffer. Unlike a writer, this never
     /// fails — it is used to seed the editable merge result every frame.
     pub fn compose(&self) -> String {
-        let sep = self.eol.as_str();
+        let sep = self.style.eol.as_str();
         let mut pieces: Vec<String> = Vec::with_capacity(self.sections.len());
 
         for (index, section) in self.sections.iter().enumerate() {
@@ -432,7 +463,14 @@ impl ConflictData {
             }
         }
 
-        pieces.join(sep)
+        let mut content = pieces.join(sep);
+        // An empty result stays a genuinely empty file: terminating nothing
+        // would turn a deleted-everything merge into a one-blank-line file.
+        if self.style.trailing_newline && !content.is_empty() {
+            content.push_str(sep);
+        }
+
+        content
     }
 
     /// Cached segments for a section; empty for `Common` ones and out-of-range
@@ -504,7 +542,19 @@ impl ConflictData {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConflictChoice, ConflictData, ConflictPart, Eol};
+    use super::{ConflictChoice, ConflictData, ConflictPart, Eol, FileStyle};
+
+    /// These fixtures assert on how sections are joined, so they use a
+    /// terminator-free style; the final-newline behaviour is covered on its own
+    /// in `compose_restores_the_source_final_newline_state`.
+    const RAW_LF: FileStyle = FileStyle {
+        eol: Eol::Lf,
+        trailing_newline: false,
+    };
+    const RAW_CRLF: FileStyle = FileStyle {
+        eol: Eol::Crlf,
+        trailing_newline: false,
+    };
 
     /// The existing cases all predate CRLF support; keep them reading as before.
     fn diff3_lf(base: &str, ours: &str, theirs: &str) -> Vec<ConflictPart> {
@@ -523,7 +573,7 @@ mod tests {
                 },
                 ConflictPart::Common("bottom".into()),
             ],
-            Eol::Lf,
+            RAW_LF,
         )
     }
 
@@ -598,7 +648,7 @@ mod tests {
                 theirs: "b1".into(),
                 resolution: ConflictChoice::Unresolved,
             }],
-            Eol::Lf,
+            RAW_LF,
         );
         // Segments order: Ours(a1), Ours(a2), Theirs(b1).
         data.toggle_segment(0, 0); // keep a1
@@ -628,7 +678,7 @@ mod tests {
         let sections = diff3_lf("a\nb\nc", "a\nb\nc", "a\nB\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData::new("f".into(), sections, Eol::Lf)
+            ConflictData::new("f".into(), sections, RAW_LF)
             .compose(),
             "a\nB\nc"
         );
@@ -645,7 +695,7 @@ mod tests {
         let sections = diff3_lf("a\nb", "a\nb", "a\nb\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData::new("f".into(), sections, Eol::Lf)
+            ConflictData::new("f".into(), sections, RAW_LF)
             .compose(),
             "a\nb\nc"
         );
@@ -674,7 +724,7 @@ mod tests {
         let sections = diff3_lf("a\nb", "a\nZ", "a\nZ");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData::new("f".into(), sections, Eol::Lf)
+            ConflictData::new("f".into(), sections, RAW_LF)
             .compose(),
             "a\nZ"
         );
@@ -725,11 +775,83 @@ mod tests {
         // A CRLF file must come back out as CRLF: resolving one conflict may not
         // silently rewrite every other line in the file.
         let sections = super::diff3("a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\n", "a\r\nb\r\nc\r\n", Eol::Crlf);
-        let composed = ConflictData::new("f".into(), sections, Eol::Crlf)
+        let composed = ConflictData::new("f".into(), sections, RAW_CRLF)
         .compose();
 
         assert_eq!(composed, "a\r\nB\r\nc");
         assert!(!composed.contains("\n\r"), "no stray bare LF: {composed:?}");
+    }
+
+    #[test]
+    fn compose_restores_the_source_final_newline_state() {
+        let sections = || vec![ConflictPart::Common("a\nb".into())];
+
+        // Git tracks "no newline at end of file", so a file that had none must
+        // not silently gain one.
+        let bare = ConflictData::new("f".into(), sections(), RAW_LF);
+        assert_eq!(bare.compose(), "a\nb");
+
+        let terminated = ConflictData::new(
+            "f".into(),
+            sections(),
+            FileStyle {
+                eol: Eol::Lf,
+                trailing_newline: true,
+            },
+        );
+        assert_eq!(terminated.compose(), "a\nb\n");
+
+        // CRLF files get their own terminator back, not a bare LF. Section text
+        // already carries the file's separator internally (diff3 builds it with
+        // the same Eol); compose only controls the joins between sections and
+        // the final one.
+        let crlf = ConflictData::new(
+            "f".into(),
+            vec![ConflictPart::Common("a\r\nb".into())],
+            FileStyle {
+                eol: Eol::Crlf,
+                trailing_newline: true,
+            },
+        );
+        assert_eq!(crlf.compose(), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn compose_leaves_a_fully_emptied_file_empty() {
+        // Everything deleted means an empty file, not a file holding one blank
+        // line — even when the source was newline-terminated.
+        let data = ConflictData::new(
+            "f".into(),
+            vec![ConflictPart::Conflict {
+                ours: String::new(),
+                theirs: "gone".into(),
+                resolution: ConflictChoice::Ours,
+            }],
+            FileStyle {
+                eol: Eol::Lf,
+                trailing_newline: true,
+            },
+        );
+
+        assert_eq!(data.compose(), "");
+    }
+
+    #[test]
+    fn file_style_detect_reads_both_traits() {
+        assert_eq!(
+            FileStyle::detect("a\r\nb\r\n"),
+            FileStyle {
+                eol: Eol::Crlf,
+                trailing_newline: true
+            }
+        );
+        assert_eq!(
+            FileStyle::detect("a\nb"),
+            FileStyle {
+                eol: Eol::Lf,
+                trailing_newline: false
+            }
+        );
     }
 
     #[test]
@@ -744,7 +866,7 @@ mod tests {
         // Ours deleted the line, theirs rewrote it. Accepting ours means the line
         // is gone — not replaced by a blank one.
         let sections = diff3_lf("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
-        let mut data = ConflictData::new("f".into(), sections, Eol::Lf);
+        let mut data = ConflictData::new("f".into(), sections, RAW_LF);
         set_only_conflict(&mut data, ConflictChoice::Ours);
 
         assert_eq!(data.compose(), "keep\ntail");
@@ -754,7 +876,7 @@ mod tests {
     fn compose_drops_a_conflict_with_every_line_unticked() {
         // What the "Clear" button produces: keep only the (absent) common lines.
         let sections = diff3_lf("keep\nx\ntail", "keep\nOURS\ntail", "keep\nTHEIRS\ntail");
-        let mut data = ConflictData::new("f".into(), sections, Eol::Lf);
+        let mut data = ConflictData::new("f".into(), sections, RAW_LF);
         set_only_conflict(&mut data, ConflictChoice::Picked(vec![false, false]));
 
         assert_eq!(data.compose(), "keep\ntail");
@@ -779,7 +901,7 @@ mod tests {
                     resolution: ConflictChoice::Ours,
                 },
             ],
-            Eol::Lf,
+            RAW_LF,
         );
 
         assert_eq!(data.compose(), "one\n\ntwo");
@@ -789,7 +911,7 @@ mod tests {
     fn compose_both_skips_an_empty_side() {
         // "Both" on a delete-vs-modify conflict is just the surviving side.
         let sections = diff3_lf("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
-        let mut data = ConflictData::new("f".into(), sections, Eol::Lf);
+        let mut data = ConflictData::new("f".into(), sections, RAW_LF);
         set_only_conflict(&mut data, ConflictChoice::Both);
 
         assert_eq!(data.compose(), "keep\nX!\ntail");

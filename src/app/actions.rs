@@ -371,18 +371,24 @@ fn undo_last_commit(ctx: &mut TabActionContext<'_>) {
 }
 
 fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
-    let Some((path, content)) = ctx
-        .tab
-        .state
-        .inspector
-        .conflict_data
-        .as_ref()
-        .map(|data| (data.path.clone(), data.compose()))
-    else {
+    let Some(data) = ctx.tab.state.inspector.conflict_data.as_ref() else {
         ctx.tab.state.ui.status_msg = "No conflict selected".into();
         refresh_tab(ctx);
         return;
     };
+
+    // `compose` emits raw <<<<<<< / ======= / >>>>>>> markers for anything still
+    // unresolved, so this has to be checked before writing. The Save button is
+    // already disabled in that state; this is the guarantee that no other route
+    // to this action can commit markers into the working tree.
+    let unresolved = data.unresolved_count();
+    if unresolved > 0 {
+        let detail = format!("{unresolved} conflict(s) still unresolved");
+        log_action_error(ctx, "Save resolution", detail);
+        return;
+    }
+
+    let (path, content) = (data.path.clone(), data.compose());
 
     match AppRepoWrite::write_resolved_content(&ctx.tab.repo, &path, &content) {
         Ok(()) => {
