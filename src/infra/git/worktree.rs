@@ -1,7 +1,7 @@
 use git2::{Repository, Status, StatusOptions};
 use std::path::Path;
 
-use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, diff3};
+use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, Eol, diff3};
 use crate::shared::git::FileEntry;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -247,31 +247,35 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
     // run a real 3-way merge and pre-resolve edits only one side made. Fall back
     // to parsing the in-tree markers (base-less) when stages are unavailable —
     // e.g. the file was hand-edited or the merge state is gone.
-    let sections = match read_index_conflict_sections(repo, path)? {
-        Some(sections) => sections,
+    let (sections, eol) = match read_index_conflict_sections(repo, path)? {
+        Some(parsed) => parsed,
         None => {
             let full_path = repo_workdir(repo)
                 .map_err(|error| error.to_string())?
                 .join(path);
             let content =
                 std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
-            parse_conflict_markers(&content)?
+            let eol = Eol::detect(&content);
+            (parse_conflict_markers(&content, eol)?, eol)
         }
     };
 
     Ok(ConflictData {
         path: path.to_string(),
         sections,
+        eol,
     })
 }
 
 /// Build the conflict sections from the index's ancestor/ours/theirs stages via
-/// a 3-way merge. `Ok(None)` when the path is not a full three-stage conflict or
-/// any stage is non-UTF-8, signalling the caller to fall back to marker parsing.
+/// a 3-way merge, paired with the line terminator to restore on write.
+///
+/// `Ok(None)` when the path is not a full three-stage conflict or any stage is
+/// non-UTF-8, signalling the caller to fall back to marker parsing.
 fn read_index_conflict_sections(
     repo: &Repository,
     path: &str,
-) -> Result<Option<Vec<ConflictPart>>, String> {
+) -> Result<Option<(Vec<ConflictPart>, Eol)>, String> {
     let index = repo.index().map_err(|error| error.to_string())?;
     let target = Path::new(path);
 
@@ -296,7 +300,11 @@ fn read_index_conflict_sections(
         return Ok(None);
     };
 
-    Ok(Some(diff3(&base, &ours, &theirs)))
+    // Take the style from the checked-out side: that is the file the user has
+    // in front of them, and the one being rewritten.
+    let eol = Eol::detect(&ours);
+
+    Ok(Some((diff3(&base, &ours, &theirs, eol), eol)))
 }
 
 /// Write the user's resolved merge text to the working tree and stage it.
@@ -387,7 +395,8 @@ fn status_label_unstaged(status: Status) -> &'static str {
     }
 }
 
-fn parse_conflict_markers(content: &str) -> Result<Vec<ConflictPart>, String> {
+fn parse_conflict_markers(content: &str, eol: Eol) -> Result<Vec<ConflictPart>, String> {
+    let sep = eol.as_str();
     let mut sections = Vec::new();
     let mut common = String::new();
     let mut ours = String::new();
@@ -413,17 +422,17 @@ fn parse_conflict_markers(content: &str) -> Result<Vec<ConflictPart>, String> {
             });
         } else if in_ours {
             if !ours.is_empty() {
-                ours.push('\n');
+                ours.push_str(sep);
             }
             ours.push_str(line);
         } else if in_theirs {
             if !theirs.is_empty() {
-                theirs.push('\n');
+                theirs.push_str(sep);
             }
             theirs.push_str(line);
         } else {
             if !common.is_empty() {
-                common.push('\n');
+                common.push_str(sep);
             }
             common.push_str(line);
         }
@@ -453,7 +462,7 @@ mod tests {
         undo_last_commit, unstage_all, unstage_file, write_resolved_content,
     };
     use crate::infra::git::repository::{get_commit_history, get_current_branch};
-    use crate::shared::conflicts::{ConflictChoice, ConflictPart};
+    use crate::shared::conflicts::{ConflictChoice, ConflictPart, Eol};
     use crate::testutil::{TestRepoDir, commit_all, signature};
     use git2::{Repository, RepositoryState};
     use std::path::{Path, PathBuf};
@@ -497,6 +506,7 @@ mod tests {
     fn parses_complete_conflict_markers() {
         let sections = parse_conflict_markers(
             "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\nafter",
+            Eol::Lf,
         )
         .expect("parse complete conflict markers");
 
@@ -515,7 +525,7 @@ mod tests {
 
     #[test]
     fn rejects_unbalanced_conflict_markers_at_eof() {
-        let error = parse_conflict_markers("<<<<<<< HEAD\nours\n=======\ntheirs")
+        let error = parse_conflict_markers("<<<<<<< HEAD\nours\n=======\ntheirs", Eol::Lf)
             .expect_err("unbalanced conflict markers should fail");
 
         assert!(error.contains("Unbalanced conflict markers"));

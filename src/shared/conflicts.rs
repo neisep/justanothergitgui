@@ -1,3 +1,37 @@
+/// The line terminator a conflicted file uses.
+///
+/// Every section text in this module is stored terminator-free (split with
+/// [`str::lines`], which also strips a trailing `\r`), so the original style has
+/// to be carried alongside and put back by [`ConflictData::compose`]. Without
+/// it, resolving a single conflict in a CRLF file would rewrite every line in
+/// that file to LF.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Eol {
+    #[default]
+    Lf,
+    Crlf,
+}
+
+impl Eol {
+    /// The terminator a text predominantly uses. One CRLF is taken as proof:
+    /// mixed-ending files are rare, and matching the majority style beats
+    /// silently normalising the whole file.
+    pub fn detect(text: &str) -> Self {
+        if text.contains("\r\n") {
+            Self::Crlf
+        } else {
+            Self::Lf
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::Crlf => "\r\n",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ConflictPart {
     Common(String),
@@ -136,7 +170,8 @@ fn lcs_pairs(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
 /// regions where the two sides diverge differently become
 /// [`ConflictPart::Conflict`]. This is what lets the editor pre-resolve
 /// one-sided edits instead of asking the user.
-pub fn diff3(base: &str, ours: &str, theirs: &str) -> Vec<ConflictPart> {
+pub fn diff3(base: &str, ours: &str, theirs: &str, eol: Eol) -> Vec<ConflictPart> {
+    let sep = eol.as_str();
     let o: Vec<&str> = base.lines().collect();
     let a: Vec<&str> = ours.lines().collect();
     let b: Vec<&str> = theirs.lines().collect();
@@ -191,12 +226,12 @@ pub fn diff3(base: &str, ours: &str, theirs: &str) -> Vec<ConflictPart> {
             common.extend_from_slice(a_slice);
         } else {
             if !common.is_empty() {
-                parts.push(ConflictPart::Common(common.join("\n")));
+                parts.push(ConflictPart::Common(common.join(sep)));
                 common.clear();
             }
             parts.push(ConflictPart::Conflict {
-                ours: a_slice.join("\n"),
-                theirs: b_slice.join("\n"),
+                ours: a_slice.join(sep),
+                theirs: b_slice.join(sep),
                 resolution: ConflictChoice::default(),
             });
         }
@@ -205,7 +240,7 @@ pub fn diff3(base: &str, ours: &str, theirs: &str) -> Vec<ConflictPart> {
     }
 
     if !common.is_empty() {
-        parts.push(ConflictPart::Common(common.join("\n")));
+        parts.push(ConflictPart::Common(common.join(sep)));
     }
 
     parts
@@ -236,68 +271,83 @@ fn mask_for(segments: &[MergeSegment], resolution: &ConflictChoice) -> Vec<bool>
 }
 
 /// Join the kept lines of a segment list into merged text.
-fn compose_picked(segments: &[MergeSegment], mask: &[bool]) -> String {
+fn compose_picked(segments: &[MergeSegment], mask: &[bool], sep: &str) -> String {
     segments
         .iter()
         .zip(mask.iter())
         .filter(|(_, keep)| **keep)
         .map(|(segment, _)| segment.text.as_str())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join(sep)
+}
+
+/// Join only the parts that carry text, so an empty side never contributes a
+/// stray blank line to the result.
+fn join_non_empty(parts: [&str; 2], sep: &str) -> String {
+    parts
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
 #[derive(Clone, Debug)]
 pub struct ConflictData {
     pub path: String,
     pub sections: Vec<ConflictPart>,
+    /// Line terminator of the source file, restored by [`Self::compose`].
+    pub eol: Eol,
 }
 
 impl ConflictData {
-    /// Render the sections back into a single merged text.
+    /// Render the sections back into a single merged text, in the file's own
+    /// line terminator.
     ///
     /// Resolved conflicts emit the chosen side(s); an `Unresolved` conflict
     /// emits the raw `<<<<<<<` / `=======` / `>>>>>>>` markers so it stays
     /// visible and editable in the result buffer. Unlike a writer, this never
     /// fails — it is used to seed the editable merge result every frame.
     pub fn compose(&self) -> String {
-        let mut content = String::new();
+        let sep = self.eol.as_str();
+        let mut pieces: Vec<String> = Vec::with_capacity(self.sections.len());
 
-        for (index, section) in self.sections.iter().enumerate() {
-            if index > 0 {
-                content.push('\n');
-            }
+        for section in &self.sections {
             match section {
-                ConflictPart::Common(text) => content.push_str(text),
+                // A `Common` run is emitted verbatim even when it is empty: an
+                // empty one is a single blank line between two conflicts, and
+                // dropping it would delete a real line from the file.
+                ConflictPart::Common(text) => pieces.push(text.clone()),
                 ConflictPart::Conflict {
                     ours,
                     theirs,
                     resolution,
                     ..
-                } => match resolution {
-                    ConflictChoice::Ours => content.push_str(ours),
-                    ConflictChoice::Theirs => content.push_str(theirs),
-                    ConflictChoice::Both => {
-                        content.push_str(ours);
-                        content.push('\n');
-                        content.push_str(theirs);
+                } => {
+                    let resolved = match resolution {
+                        ConflictChoice::Ours => ours.clone(),
+                        ConflictChoice::Theirs => theirs.clone(),
+                        ConflictChoice::Both => join_non_empty([ours, theirs], sep),
+                        ConflictChoice::Custom(text) => text.clone(),
+                        ConflictChoice::Picked(mask) => {
+                            let segments = merge_segments(ours, theirs);
+                            compose_picked(&segments, mask, sep)
+                        }
+                        ConflictChoice::Unresolved => format!(
+                            "<<<<<<< Current (ours){sep}{ours}{sep}======={sep}{theirs}{sep}>>>>>>> Incoming (theirs)"
+                        ),
+                    };
+
+                    // An empty resolution means the region was deleted — a
+                    // whole-side deletion, or every line unticked. Emitting it
+                    // would leave a blank line where the conflict used to be.
+                    if !resolved.is_empty() {
+                        pieces.push(resolved);
                     }
-                    ConflictChoice::Custom(text) => content.push_str(text),
-                    ConflictChoice::Picked(mask) => {
-                        let segments = merge_segments(ours, theirs);
-                        content.push_str(&compose_picked(&segments, mask));
-                    }
-                    ConflictChoice::Unresolved => {
-                        content.push_str("<<<<<<< Current (ours)\n");
-                        content.push_str(ours);
-                        content.push_str("\n=======\n");
-                        content.push_str(theirs);
-                        content.push_str("\n>>>>>>> Incoming (theirs)");
-                    }
-                },
+                }
             }
         }
 
-        content
+        pieces.join(sep)
     }
 
     /// The line segments of a conflict section plus its current keep/drop mask,
@@ -362,11 +412,17 @@ impl ConflictData {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConflictChoice, ConflictData, ConflictPart};
+    use super::{ConflictChoice, ConflictData, ConflictPart, Eol};
+
+    /// The existing cases all predate CRLF support; keep them reading as before.
+    fn diff3_lf(base: &str, ours: &str, theirs: &str) -> Vec<ConflictPart> {
+        super::diff3(base, ours, theirs, Eol::Lf)
+    }
 
     fn conflict(resolution: ConflictChoice) -> ConflictData {
         ConflictData {
             path: "file.txt".into(),
+            eol: Eol::Lf,
             sections: vec![
                 ConflictPart::Common("top".into()),
                 ConflictPart::Conflict {
@@ -445,6 +501,7 @@ mod tests {
         // ours = [a1, a2], theirs = [b1] with no shared lines.
         let mut data = ConflictData {
             path: "f".into(),
+            eol: Eol::Lf,
             sections: vec![ConflictPart::Conflict {
                 ours: "a1\na2".into(),
                 theirs: "b1".into(),
@@ -476,11 +533,12 @@ mod tests {
     fn diff3_auto_resolves_one_sided_edits() {
         // Ours changed nothing; theirs edited the middle line → take theirs, no
         // conflict at all.
-        let sections = super::diff3("a\nb\nc", "a\nb\nc", "a\nB\nc");
+        let sections = diff3_lf("a\nb\nc", "a\nb\nc", "a\nB\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
             ConflictData {
                 path: "f".into(),
+                eol: Eol::Lf,
                 sections
             }
             .compose(),
@@ -488,7 +546,7 @@ mod tests {
         );
 
         // Symmetric: only ours edits → take ours.
-        let sections = super::diff3("a\nb\nc", "a\nB\nc", "a\nb\nc");
+        let sections = diff3_lf("a\nb\nc", "a\nB\nc", "a\nb\nc");
         assert!(conflict_parts(&sections).is_empty());
     }
 
@@ -496,11 +554,12 @@ mod tests {
     fn diff3_auto_keeps_one_sided_insertion() {
         // Theirs appended a line the base and ours never had → kept without a
         // conflict.
-        let sections = super::diff3("a\nb", "a\nb", "a\nb\nc");
+        let sections = diff3_lf("a\nb", "a\nb", "a\nb\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
             ConflictData {
                 path: "f".into(),
+                eol: Eol::Lf,
                 sections
             }
             .compose(),
@@ -511,7 +570,7 @@ mod tests {
     #[test]
     fn diff3_flags_two_sided_edits() {
         // Both sides changed the same line differently → a real conflict.
-        let sections = super::diff3("a\nb\nc", "a\nOURS\nc", "a\nTHEIRS\nc");
+        let sections = diff3_lf("a\nb\nc", "a\nOURS\nc", "a\nTHEIRS\nc");
         let conflicts = conflict_parts(&sections);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0], ("OURS".into(), "THEIRS".into()));
@@ -520,7 +579,7 @@ mod tests {
     #[test]
     fn diff3_treats_modify_versus_delete_as_a_conflict() {
         // Ours deletes the line, theirs rewrites it — never silently drop one.
-        let sections = super::diff3("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
+        let sections = diff3_lf("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
         let conflicts = conflict_parts(&sections);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0], ("".into(), "X!".into()));
@@ -528,16 +587,119 @@ mod tests {
 
     #[test]
     fn diff3_identical_edits_do_not_conflict() {
-        let sections = super::diff3("a\nb", "a\nZ", "a\nZ");
+        let sections = diff3_lf("a\nb", "a\nZ", "a\nZ");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
             ConflictData {
                 path: "f".into(),
+                eol: Eol::Lf,
                 sections
             }
             .compose(),
             "a\nZ"
         );
+    }
+
+    #[test]
+    fn compose_restores_crlf_line_endings() {
+        // A CRLF file must come back out as CRLF: resolving one conflict may not
+        // silently rewrite every other line in the file.
+        let sections = super::diff3("a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\n", "a\r\nb\r\nc\r\n", Eol::Crlf);
+        let composed = ConflictData {
+            path: "f".into(),
+            eol: Eol::Crlf,
+            sections,
+        }
+        .compose();
+
+        assert_eq!(composed, "a\r\nB\r\nc");
+        assert!(!composed.contains("\n\r"), "no stray bare LF: {composed:?}");
+    }
+
+    #[test]
+    fn eol_detect_reads_the_dominant_terminator() {
+        assert_eq!(Eol::detect("a\r\nb\r\n"), Eol::Crlf);
+        assert_eq!(Eol::detect("a\nb\n"), Eol::Lf);
+        assert_eq!(Eol::detect(""), Eol::Lf);
+    }
+
+    #[test]
+    fn compose_drops_a_conflict_resolved_to_nothing() {
+        // Ours deleted the line, theirs rewrote it. Accepting ours means the line
+        // is gone — not replaced by a blank one.
+        let sections = diff3_lf("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
+        let mut data = ConflictData {
+            path: "f".into(),
+            eol: Eol::Lf,
+            sections,
+        };
+        set_only_conflict(&mut data, ConflictChoice::Ours);
+
+        assert_eq!(data.compose(), "keep\ntail");
+    }
+
+    #[test]
+    fn compose_drops_a_conflict_with_every_line_unticked() {
+        // What the "Clear" button produces: keep only the (absent) common lines.
+        let sections = diff3_lf("keep\nx\ntail", "keep\nOURS\ntail", "keep\nTHEIRS\ntail");
+        let mut data = ConflictData {
+            path: "f".into(),
+            eol: Eol::Lf,
+            sections,
+        };
+        set_only_conflict(&mut data, ConflictChoice::Picked(vec![false, false]));
+
+        assert_eq!(data.compose(), "keep\ntail");
+    }
+
+    #[test]
+    fn compose_keeps_a_blank_line_that_is_genuinely_common() {
+        // An empty `Common` section is one real blank line between two conflicts.
+        // It must survive the empty-piece filtering that the cases above rely on.
+        let data = ConflictData {
+            path: "f".into(),
+            eol: Eol::Lf,
+            sections: vec![
+                ConflictPart::Conflict {
+                    ours: "one".into(),
+                    theirs: "1".into(),
+                    resolution: ConflictChoice::Ours,
+                },
+                ConflictPart::Common(String::new()),
+                ConflictPart::Conflict {
+                    ours: "two".into(),
+                    theirs: "2".into(),
+                    resolution: ConflictChoice::Ours,
+                },
+            ],
+        };
+
+        assert_eq!(data.compose(), "one\n\ntwo");
+    }
+
+    #[test]
+    fn compose_both_skips_an_empty_side() {
+        // "Both" on a delete-vs-modify conflict is just the surviving side.
+        let sections = diff3_lf("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
+        let mut data = ConflictData {
+            path: "f".into(),
+            eol: Eol::Lf,
+            sections,
+        };
+        set_only_conflict(&mut data, ConflictChoice::Both);
+
+        assert_eq!(data.compose(), "keep\nX!\ntail");
+    }
+
+    fn set_only_conflict(data: &mut ConflictData, choice: ConflictChoice) {
+        let section = data
+            .sections
+            .iter_mut()
+            .find(|section| matches!(section, ConflictPart::Conflict { .. }))
+            .expect("exactly one conflict in the fixture");
+        if let ConflictPart::Conflict { resolution, .. } = section {
+            *resolution = choice;
+        }
     }
 
     #[test]
