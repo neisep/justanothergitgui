@@ -262,10 +262,8 @@ fn apply_choice(
     choice: Option<(usize, ConflictChoice)>,
     ctx: &egui::Context,
 ) {
-    if let Some((index, choice)) = choice
-        && let Some(ConflictPart::Conflict { resolution, .. }) = data.sections.get_mut(index)
-    {
-        *resolution = choice;
+    if let Some((index, choice)) = choice {
+        data.set_resolution(index, choice);
         ctx.request_repaint();
     }
 }
@@ -304,7 +302,7 @@ fn render_result_document(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let mut conflict_no = 0usize;
-            for (index, section) in data.sections.iter().enumerate() {
+            for (index, section) in data.sections().iter().enumerate() {
                 match section {
                     ConflictPart::Common(text) => {
                         render_plain_lines(ui, text, ui.visuals().text_color());
@@ -528,7 +526,7 @@ fn render_input_pane(
         .vertical_scroll_offset(scroll_offset)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (index, section) in data.sections.iter().enumerate() {
+            for (index, section) in data.sections().iter().enumerate() {
                 match section {
                     ConflictPart::Common(text) => {
                         render_plain_lines(ui, text, ui.visuals().weak_text_color())
@@ -544,14 +542,14 @@ fn render_input_pane(
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 render_input_conflict_lines(
-                                    ui, index, &segments, &mask, mine, text_color, action,
+                                    ui, index, segments, &mask, mine, text_color, action,
                                 );
                                 ui.add_space(2.0);
                                 render_input_buttons(
                                     ui,
                                     side,
                                     index,
-                                    &segments,
+                                    segments,
                                     conflict_edit,
                                     action,
                                 );

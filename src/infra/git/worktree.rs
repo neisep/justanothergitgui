@@ -260,11 +260,7 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
         }
     };
 
-    Ok(ConflictData {
-        path: path.to_string(),
-        sections,
-        eol,
-    })
+    Ok(ConflictData::new(path.to_string(), sections, eol))
 }
 
 /// Build the conflict sections from the index's ancestor/ours/theirs stages via

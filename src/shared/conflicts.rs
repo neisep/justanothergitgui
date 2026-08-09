@@ -82,6 +82,57 @@ pub struct MergeSegment {
     pub text: String,
 }
 
+/// Ceiling on the longest-common-subsequence table, in cells.
+///
+/// The table is inherently `O(lines_a * lines_b)`, so a large conflicted file
+/// would otherwise ask for gigabytes: 20k lines a side is 3.2 GB as `usize`,
+/// and with `panic = "abort"` a failed allocation kills the app instead of
+/// surfacing an error. 16Mi cells is 64 MiB as `u32` and covers any conflict a
+/// person would work through by hand; past that, callers degrade to a coarser
+/// answer rather than trying.
+const MAX_LCS_CELLS: usize = 16 << 20;
+
+/// Row-major suffix-length table for the longest common subsequence of two line
+/// slices: `at(i, j)` is the LCS length of `a[i..]` and `b[j..]`.
+///
+/// One flat allocation of `u32` rather than a `Vec<Vec<usize>>` — a quarter the
+/// bytes, one allocation instead of `n + 1`, and contiguous for the scan.
+struct LcsTable {
+    dp: Vec<u32>,
+    stride: usize,
+}
+
+impl LcsTable {
+    /// `None` when the table would exceed [`MAX_LCS_CELLS`].
+    fn build(a: &[&str], b: &[&str]) -> Option<Self> {
+        let (n, m) = (a.len(), b.len());
+        let stride = m + 1;
+        let cells = stride.checked_mul(n + 1)?;
+        if cells > MAX_LCS_CELLS {
+            return None;
+        }
+
+        let mut dp = vec![0u32; cells];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                dp[i * stride + j] = if a[i] == b[j] {
+                    dp[(i + 1) * stride + j + 1] + 1
+                } else {
+                    dp[(i + 1) * stride + j].max(dp[i * stride + j + 1])
+                };
+            }
+        }
+
+        Some(Self { dp, stride })
+    }
+
+    /// Whether advancing on `a` keeps a subsequence at least as long as
+    /// advancing on `b` would — the backtracking tie-break.
+    fn prefer_a(&self, i: usize, j: usize) -> bool {
+        self.dp[(i + 1) * self.stride + j] >= self.dp[i * self.stride + j + 1]
+    }
+}
+
 /// Interleave two sides into a single ordered line sequence via a longest
 /// common subsequence, tagging each line as `Common`, `Ours`, or `Theirs`.
 /// This is the backbone of per-line conflict picking.
@@ -90,38 +141,29 @@ pub fn merge_segments(ours: &str, theirs: &str) -> Vec<MergeSegment> {
     let b: Vec<&str> = theirs.lines().collect();
     let (n, m) = (a.len(), b.len());
 
-    let mut dp = vec![vec![0usize; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            dp[i][j] = if a[i] == b[j] {
-                dp[i + 1][j + 1] + 1
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
-            };
-        }
-    }
+    let Some(table) = LcsTable::build(&a, &b) else {
+        // Too large to align line by line. Present the sides one after the
+        // other instead of allocating a multi-gigabyte table: picking still
+        // works, only the interleaving is coarser.
+        return a
+            .iter()
+            .map(|line| segment(SegmentOrigin::Ours, line))
+            .chain(b.iter().map(|line| segment(SegmentOrigin::Theirs, line)))
+            .collect();
+    };
 
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < n || j < m {
         if i < n && j < m && a[i] == b[j] {
-            out.push(MergeSegment {
-                origin: SegmentOrigin::Common,
-                text: a[i].to_string(),
-            });
+            out.push(segment(SegmentOrigin::Common, a[i]));
             i += 1;
             j += 1;
-        } else if j >= m || (i < n && dp[i + 1][j] >= dp[i][j + 1]) {
-            out.push(MergeSegment {
-                origin: SegmentOrigin::Ours,
-                text: a[i].to_string(),
-            });
+        } else if j >= m || (i < n && table.prefer_a(i, j)) {
+            out.push(segment(SegmentOrigin::Ours, a[i]));
             i += 1;
         } else {
-            out.push(MergeSegment {
-                origin: SegmentOrigin::Theirs,
-                text: b[j].to_string(),
-            });
+            out.push(segment(SegmentOrigin::Theirs, b[j]));
             j += 1;
         }
     }
@@ -129,22 +171,25 @@ pub fn merge_segments(ours: &str, theirs: &str) -> Vec<MergeSegment> {
     out
 }
 
+fn segment(origin: SegmentOrigin, text: &str) -> MergeSegment {
+    MergeSegment {
+        origin,
+        text: text.to_string(),
+    }
+}
+
 /// The matched index pairs of a longest common subsequence between two line
 /// slices, in increasing order on both sides. Shared backbone of the 2-way
 /// [`merge_segments`] and the 3-way [`diff3`].
+///
+/// Empty when the table would be oversized: with no anchors, [`diff3`] falls
+/// back to reporting the whole file as one conflict.
 fn lcs_pairs(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
-    let (n, m) = (a.len(), b.len());
-    let mut dp = vec![vec![0usize; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            dp[i][j] = if a[i] == b[j] {
-                dp[i + 1][j + 1] + 1
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
-            };
-        }
-    }
+    let Some(table) = LcsTable::build(a, b) else {
+        return Vec::new();
+    };
 
+    let (n, m) = (a.len(), b.len());
     let mut pairs = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
@@ -152,7 +197,7 @@ fn lcs_pairs(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
             pairs.push((i, j));
             i += 1;
             j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
+        } else if table.prefer_a(i, j) {
             i += 1;
         } else {
             j += 1;
@@ -294,12 +339,53 @@ fn join_non_empty(parts: [&str; 2], sep: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct ConflictData {
     pub path: String,
-    pub sections: Vec<ConflictPart>,
     /// Line terminator of the source file, restored by [`Self::compose`].
     pub eol: Eol,
+    sections: Vec<ConflictPart>,
+    /// Segments per section, keyed by the same index as `sections` and empty
+    /// for `Common` ones.
+    ///
+    /// Built once in [`Self::new`]. They depend only on a conflict's `ours` and
+    /// `theirs`, which never change once parsed — only the resolution does — so
+    /// the cache cannot go stale, and keeping `sections` private is what
+    /// guarantees that. The merge editor re-renders every frame and asks for
+    /// these three times per conflict; recomputing the LCS there dominated
+    /// frame time outright.
+    segments: Vec<Vec<MergeSegment>>,
 }
 
 impl ConflictData {
+    pub fn new(path: String, sections: Vec<ConflictPart>, eol: Eol) -> Self {
+        let segments = sections
+            .iter()
+            .map(|section| match section {
+                ConflictPart::Conflict { ours, theirs, .. } => merge_segments(ours, theirs),
+                ConflictPart::Common(_) => Vec::new(),
+            })
+            .collect();
+
+        Self {
+            path,
+            eol,
+            sections,
+            segments,
+        }
+    }
+
+    /// Read-only view of the ordered sections.
+    pub fn sections(&self) -> &[ConflictPart] {
+        &self.sections
+    }
+
+    /// Record the user's choice for one conflict. The only sanctioned mutation:
+    /// it leaves `ours`/`theirs` — and therefore the cached segments — intact.
+    pub fn set_resolution(&mut self, section_index: usize, choice: ConflictChoice) {
+        if let Some(ConflictPart::Conflict { resolution, .. }) =
+            self.sections.get_mut(section_index)
+        {
+            *resolution = choice;
+        }
+    }
     /// Render the sections back into a single merged text, in the file's own
     /// line terminator.
     ///
@@ -311,7 +397,7 @@ impl ConflictData {
         let sep = self.eol.as_str();
         let mut pieces: Vec<String> = Vec::with_capacity(self.sections.len());
 
-        for section in &self.sections {
+        for (index, section) in self.sections.iter().enumerate() {
             match section {
                 // A `Common` run is emitted verbatim even when it is empty: an
                 // empty one is a single blank line between two conflicts, and
@@ -329,8 +415,7 @@ impl ConflictData {
                         ConflictChoice::Both => join_non_empty([ours, theirs], sep),
                         ConflictChoice::Custom(text) => text.clone(),
                         ConflictChoice::Picked(mask) => {
-                            let segments = merge_segments(ours, theirs);
-                            compose_picked(&segments, mask, sep)
+                            compose_picked(self.segments_at(index), mask, sep)
                         }
                         ConflictChoice::Unresolved => format!(
                             "<<<<<<< Current (ours){sep}{ours}{sep}======={sep}{theirs}{sep}>>>>>>> Incoming (theirs)"
@@ -350,47 +435,54 @@ impl ConflictData {
         pieces.join(sep)
     }
 
+    /// Cached segments for a section; empty for `Common` ones and out-of-range
+    /// indices, both of which have no lines to pick.
+    fn segments_at(&self, section_index: usize) -> &[MergeSegment] {
+        self.segments
+            .get(section_index)
+            .map_or(&[], |segments| segments.as_slice())
+    }
+
     /// The line segments of a conflict section plus its current keep/drop mask,
     /// for rendering the per-line picker. `None` if the index is not a conflict.
+    ///
+    /// The segments are borrowed from the cache; only the mask is built per
+    /// call, and that is linear in the conflict's line count.
     pub fn conflict_segments(
         &self,
         section_index: usize,
-    ) -> Option<(Vec<MergeSegment>, Vec<bool>)> {
-        if let Some(ConflictPart::Conflict {
-            ours,
-            theirs,
-            resolution,
-            ..
-        }) = self.sections.get(section_index)
-        {
-            let segments = merge_segments(ours, theirs);
-            let mask = mask_for(&segments, resolution);
-            Some((segments, mask))
-        } else {
-            None
-        }
+    ) -> Option<(&[MergeSegment], Vec<bool>)> {
+        let Some(ConflictPart::Conflict { resolution, .. }) = self.sections.get(section_index)
+        else {
+            return None;
+        };
+
+        let segments = self.segments_at(section_index);
+        Some((segments, mask_for(segments, resolution)))
     }
 
     /// Toggle whether one line of a conflict is kept, switching that conflict
     /// into `Picked` mode. `Common` lines are always kept and ignore toggles.
     pub fn toggle_segment(&mut self, section_index: usize, segment_index: usize) {
-        if let Some(ConflictPart::Conflict {
-            ours,
-            theirs,
-            resolution,
-            ..
-        }) = self.sections.get_mut(section_index)
+        // Disjoint fields, so the shared borrow of `segments` coexists with the
+        // exclusive borrow of `sections`.
+        let segments = self
+            .segments
+            .get(section_index)
+            .map_or(&[][..], |segments| segments.as_slice());
+        let Some(ConflictPart::Conflict { resolution, .. }) = self.sections.get_mut(section_index)
+        else {
+            return;
+        };
+
+        let mut mask = mask_for(segments, resolution);
+        if let (Some(segment), Some(flag)) =
+            (segments.get(segment_index), mask.get_mut(segment_index))
+            && segment.origin != SegmentOrigin::Common
         {
-            let segments = merge_segments(ours, theirs);
-            let mut mask = mask_for(&segments, resolution);
-            if let (Some(segment), Some(flag)) =
-                (segments.get(segment_index), mask.get_mut(segment_index))
-                && segment.origin != SegmentOrigin::Common
-            {
-                *flag = !*flag;
-            }
-            *resolution = ConflictChoice::Picked(mask);
+            *flag = !*flag;
         }
+        *resolution = ConflictChoice::Picked(mask);
     }
 
     /// Number of conflict sections still left `Unresolved`.
@@ -420,10 +512,9 @@ mod tests {
     }
 
     fn conflict(resolution: ConflictChoice) -> ConflictData {
-        ConflictData {
-            path: "file.txt".into(),
-            eol: Eol::Lf,
-            sections: vec![
+        ConflictData::new(
+            "file.txt".into(),
+            vec![
                 ConflictPart::Common("top".into()),
                 ConflictPart::Conflict {
                     ours: "mine".into(),
@@ -432,7 +523,8 @@ mod tests {
                 },
                 ConflictPart::Common("bottom".into()),
             ],
-        }
+            Eol::Lf,
+        )
     }
 
     #[test]
@@ -499,15 +591,15 @@ mod tests {
     #[test]
     fn toggle_segment_picks_individual_lines_from_each_side() {
         // ours = [a1, a2], theirs = [b1] with no shared lines.
-        let mut data = ConflictData {
-            path: "f".into(),
-            eol: Eol::Lf,
-            sections: vec![ConflictPart::Conflict {
+        let mut data = ConflictData::new(
+            "f".into(),
+            vec![ConflictPart::Conflict {
                 ours: "a1\na2".into(),
                 theirs: "b1".into(),
                 resolution: ConflictChoice::Unresolved,
             }],
-        };
+            Eol::Lf,
+        );
         // Segments order: Ours(a1), Ours(a2), Theirs(b1).
         data.toggle_segment(0, 0); // keep a1
         data.toggle_segment(0, 2); // keep b1
@@ -536,11 +628,7 @@ mod tests {
         let sections = diff3_lf("a\nb\nc", "a\nb\nc", "a\nB\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData {
-                path: "f".into(),
-                eol: Eol::Lf,
-                sections
-            }
+            ConflictData::new("f".into(), sections, Eol::Lf)
             .compose(),
             "a\nB\nc"
         );
@@ -557,11 +645,7 @@ mod tests {
         let sections = diff3_lf("a\nb", "a\nb", "a\nb\nc");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData {
-                path: "f".into(),
-                eol: Eol::Lf,
-                sections
-            }
+            ConflictData::new("f".into(), sections, Eol::Lf)
             .compose(),
             "a\nb\nc"
         );
@@ -590,14 +674,50 @@ mod tests {
         let sections = diff3_lf("a\nb", "a\nZ", "a\nZ");
         assert!(conflict_parts(&sections).is_empty());
         assert_eq!(
-            ConflictData {
-                path: "f".into(),
-                eol: Eol::Lf,
-                sections
-            }
+            ConflictData::new("f".into(), sections, Eol::Lf)
             .compose(),
             "a\nZ"
         );
+    }
+
+    #[test]
+    fn oversized_sides_degrade_instead_of_allocating() {
+        // Past MAX_LCS_CELLS the quadratic table is refused. The sides must still
+        // come back in full — coarsely separated rather than interleaved — so no
+        // line is ever lost to the size guard.
+        let side = (0..5000).fold(String::new(), |mut text, index| {
+            text.push_str(&format!("line {index}\n"));
+            text
+        });
+        let other = (0..5000).fold(String::new(), |mut text, index| {
+            text.push_str(&format!("other {index}\n"));
+            text
+        });
+
+        let segments = super::merge_segments(&side, &other);
+
+        assert_eq!(segments.len(), 10_000);
+        let ours = segments
+            .iter()
+            .filter(|segment| segment.origin == super::SegmentOrigin::Ours)
+            .count();
+        let theirs = segments
+            .iter()
+            .filter(|segment| segment.origin == super::SegmentOrigin::Theirs)
+            .count();
+        assert_eq!((ours, theirs), (5000, 5000));
+    }
+
+    #[test]
+    fn segments_are_cached_not_recomputed() {
+        // conflict_segments borrows from the cache: the returned slice must be
+        // the same memory across calls, since the merge editor asks three times
+        // per conflict per frame.
+        let data = conflict(ConflictChoice::Ours);
+        let (first, _) = data.conflict_segments(1).expect("conflict at index 1");
+        let (second, _) = data.conflict_segments(1).expect("conflict at index 1");
+
+        assert!(std::ptr::eq(first, second));
     }
 
     #[test]
@@ -605,11 +725,7 @@ mod tests {
         // A CRLF file must come back out as CRLF: resolving one conflict may not
         // silently rewrite every other line in the file.
         let sections = super::diff3("a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\n", "a\r\nb\r\nc\r\n", Eol::Crlf);
-        let composed = ConflictData {
-            path: "f".into(),
-            eol: Eol::Crlf,
-            sections,
-        }
+        let composed = ConflictData::new("f".into(), sections, Eol::Crlf)
         .compose();
 
         assert_eq!(composed, "a\r\nB\r\nc");
@@ -628,11 +744,7 @@ mod tests {
         // Ours deleted the line, theirs rewrote it. Accepting ours means the line
         // is gone — not replaced by a blank one.
         let sections = diff3_lf("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
-        let mut data = ConflictData {
-            path: "f".into(),
-            eol: Eol::Lf,
-            sections,
-        };
+        let mut data = ConflictData::new("f".into(), sections, Eol::Lf);
         set_only_conflict(&mut data, ConflictChoice::Ours);
 
         assert_eq!(data.compose(), "keep\ntail");
@@ -642,11 +754,7 @@ mod tests {
     fn compose_drops_a_conflict_with_every_line_unticked() {
         // What the "Clear" button produces: keep only the (absent) common lines.
         let sections = diff3_lf("keep\nx\ntail", "keep\nOURS\ntail", "keep\nTHEIRS\ntail");
-        let mut data = ConflictData {
-            path: "f".into(),
-            eol: Eol::Lf,
-            sections,
-        };
+        let mut data = ConflictData::new("f".into(), sections, Eol::Lf);
         set_only_conflict(&mut data, ConflictChoice::Picked(vec![false, false]));
 
         assert_eq!(data.compose(), "keep\ntail");
@@ -656,10 +764,9 @@ mod tests {
     fn compose_keeps_a_blank_line_that_is_genuinely_common() {
         // An empty `Common` section is one real blank line between two conflicts.
         // It must survive the empty-piece filtering that the cases above rely on.
-        let data = ConflictData {
-            path: "f".into(),
-            eol: Eol::Lf,
-            sections: vec![
+        let data = ConflictData::new(
+            "f".into(),
+            vec![
                 ConflictPart::Conflict {
                     ours: "one".into(),
                     theirs: "1".into(),
@@ -672,7 +779,8 @@ mod tests {
                     resolution: ConflictChoice::Ours,
                 },
             ],
-        };
+            Eol::Lf,
+        );
 
         assert_eq!(data.compose(), "one\n\ntwo");
     }
@@ -681,11 +789,7 @@ mod tests {
     fn compose_both_skips_an_empty_side() {
         // "Both" on a delete-vs-modify conflict is just the surviving side.
         let sections = diff3_lf("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
-        let mut data = ConflictData {
-            path: "f".into(),
-            eol: Eol::Lf,
-            sections,
-        };
+        let mut data = ConflictData::new("f".into(), sections, Eol::Lf);
         set_only_conflict(&mut data, ConflictChoice::Both);
 
         assert_eq!(data.compose(), "keep\nX!\ntail");
@@ -718,3 +822,4 @@ mod tests {
         assert_eq!(kept, vec!["yours"]);
     }
 }
+
