@@ -407,7 +407,6 @@ fn parse_conflict_markers(content: &str) -> Result<Vec<ConflictPart>, String> {
         } else if line.starts_with(">>>>>>>") && in_theirs {
             in_theirs = false;
             sections.push(ConflictPart::Conflict {
-                base: None,
                 ours: std::mem::take(&mut ours),
                 theirs: std::mem::take(&mut theirs),
                 resolution: ConflictChoice::default(),
@@ -506,7 +505,6 @@ mod tests {
         assert!(matches!(
             sections[1],
             ConflictPart::Conflict {
-                base: None,
                 ref ours,
                 ref theirs,
                 resolution: ConflictChoice::Unresolved,

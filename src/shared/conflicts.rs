@@ -2,10 +2,6 @@
 pub enum ConflictPart {
     Common(String),
     Conflict {
-        /// The common-ancestor text for this hunk, when known (from a 3-way
-        /// merge against the merge base). `None` when the conflict was recovered
-        /// from bare `<<<<<<<`/`=======`/`>>>>>>>` markers with no base section.
-        base: Option<String>,
         ours: String,
         theirs: String,
         resolution: ConflictChoice,
@@ -138,8 +134,8 @@ fn lcs_pairs(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
 /// between anchors is resolved automatically when only one side touched it (or
 /// both made the identical edit) and emitted as [`ConflictPart::Common`]; only
 /// regions where the two sides diverge differently become
-/// [`ConflictPart::Conflict`], carrying the base text for that hunk. This is
-/// what lets the editor pre-resolve one-sided edits instead of asking the user.
+/// [`ConflictPart::Conflict`]. This is what lets the editor pre-resolve
+/// one-sided edits instead of asking the user.
 pub fn diff3(base: &str, ours: &str, theirs: &str) -> Vec<ConflictPart> {
     let o: Vec<&str> = base.lines().collect();
     let a: Vec<&str> = ours.lines().collect();
@@ -199,7 +195,6 @@ pub fn diff3(base: &str, ours: &str, theirs: &str) -> Vec<ConflictPart> {
                 common.clear();
             }
             parts.push(ConflictPart::Conflict {
-                base: Some(o_slice.join("\n")),
                 ours: a_slice.join("\n"),
                 theirs: b_slice.join("\n"),
                 resolution: ConflictChoice::default(),
@@ -375,7 +370,6 @@ mod tests {
             sections: vec![
                 ConflictPart::Common("top".into()),
                 ConflictPart::Conflict {
-                    base: None,
                     ours: "mine".into(),
                     theirs: "yours".into(),
                     resolution,
@@ -452,7 +446,6 @@ mod tests {
         let mut data = ConflictData {
             path: "f".into(),
             sections: vec![ConflictPart::Conflict {
-                base: None,
                 ours: "a1\na2".into(),
                 theirs: "b1".into(),
                 resolution: ConflictChoice::Unresolved,
@@ -467,13 +460,13 @@ mod tests {
         assert_eq!(data.compose(), "b1");
     }
 
-    fn conflict_parts(sections: &[ConflictPart]) -> Vec<(String, String, Option<String>)> {
+    fn conflict_parts(sections: &[ConflictPart]) -> Vec<(String, String)> {
         sections
             .iter()
             .filter_map(|section| match section {
-                ConflictPart::Conflict {
-                    base, ours, theirs, ..
-                } => Some((ours.clone(), theirs.clone(), base.clone())),
+                ConflictPart::Conflict { ours, theirs, .. } => {
+                    Some((ours.clone(), theirs.clone()))
+                }
                 ConflictPart::Common(_) => None,
             })
             .collect()
@@ -516,16 +509,12 @@ mod tests {
     }
 
     #[test]
-    fn diff3_flags_two_sided_edits_and_carries_base() {
-        // Both sides changed the same line differently → a real conflict that
-        // remembers the ancestor text.
+    fn diff3_flags_two_sided_edits() {
+        // Both sides changed the same line differently → a real conflict.
         let sections = super::diff3("a\nb\nc", "a\nOURS\nc", "a\nTHEIRS\nc");
         let conflicts = conflict_parts(&sections);
         assert_eq!(conflicts.len(), 1);
-        assert_eq!(
-            conflicts[0],
-            ("OURS".into(), "THEIRS".into(), Some("b".into()))
-        );
+        assert_eq!(conflicts[0], ("OURS".into(), "THEIRS".into()));
     }
 
     #[test]
@@ -534,7 +523,7 @@ mod tests {
         let sections = super::diff3("keep\nx\ntail", "keep\ntail", "keep\nX!\ntail");
         let conflicts = conflict_parts(&sections);
         assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0], ("".into(), "X!".into(), Some("x".into())));
+        assert_eq!(conflicts[0], ("".into(), "X!".into()));
     }
 
     #[test]

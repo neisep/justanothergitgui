@@ -128,9 +128,6 @@ enum MergeSide {
 // is blue, matching the VSCode merge editor's convention.
 const CURRENT_TEXT: egui::Color32 = egui::Color32::from_rgb(120, 220, 130);
 const INCOMING_TEXT: egui::Color32 = egui::Color32::from_rgb(125, 180, 255);
-// The merge base (common ancestor) pane — a muted tan that reads as neutral
-// context between the green "current" and blue "incoming" sides.
-const BASE_TEXT: egui::Color32 = egui::Color32::from_rgb(190, 175, 135);
 const CUSTOM_ACCENT: egui::Color32 = egui::Color32::from_rgb(190, 190, 190);
 const UNRESOLVED_ACCENT: egui::Color32 = egui::Color32::from_rgb(240, 180, 70);
 const EDIT_ACCENT: egui::Color32 = egui::Color32::from_rgb(230, 160, 230);
@@ -197,52 +194,24 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
         let scroll = *conflict_scroll;
         let mut pane_action: Option<ResultAction> = None;
         let mut offsets = [scroll; 2];
-        // Slot a read-only Base pane between the two editable sides whenever we
-        // recovered the ancestor text, turning the editor into a true 3-way view.
-        let has_base = data
-            .sections
-            .iter()
-            .any(|section| matches!(section, ConflictPart::Conflict { base: Some(_), .. }));
-        if has_base {
-            ui.columns(3, |columns| {
-                offsets[0] = render_input_pane(
-                    &mut columns[0],
-                    data,
-                    MergeSide::Current,
-                    scroll,
-                    conflict_edit,
-                    &mut pane_action,
-                );
-                render_base_pane(&mut columns[1], data, scroll);
-                offsets[1] = render_input_pane(
-                    &mut columns[2],
-                    data,
-                    MergeSide::Incoming,
-                    scroll,
-                    conflict_edit,
-                    &mut pane_action,
-                );
-            });
-        } else {
-            ui.columns(2, |columns| {
-                offsets[0] = render_input_pane(
-                    &mut columns[0],
-                    data,
-                    MergeSide::Current,
-                    scroll,
-                    conflict_edit,
-                    &mut pane_action,
-                );
-                offsets[1] = render_input_pane(
-                    &mut columns[1],
-                    data,
-                    MergeSide::Incoming,
-                    scroll,
-                    conflict_edit,
-                    &mut pane_action,
-                );
-            });
-        }
+        ui.columns(2, |columns| {
+            offsets[0] = render_input_pane(
+                &mut columns[0],
+                data,
+                MergeSide::Current,
+                scroll,
+                conflict_edit,
+                &mut pane_action,
+            );
+            offsets[1] = render_input_pane(
+                &mut columns[1],
+                data,
+                MergeSide::Incoming,
+                scroll,
+                conflict_edit,
+                &mut pane_action,
+            );
+        });
 
         // Adopt whichever pane the user actually scrolled this frame.
         *conflict_scroll = if (offsets[0] - scroll).abs() > 0.5 {
@@ -502,50 +471,6 @@ fn conflict_zone_frame(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add_contents(ui);
-        });
-}
-
-/// Render the read-only Base (ancestor) column: agreed lines as dimmed text and,
-/// for each conflict, the ancestor version of that hunk framed for reference.
-fn render_base_pane(ui: &mut egui::Ui, data: &ConflictData, scroll_offset: f32) {
-    ui.colored_label(BASE_TEXT, egui::RichText::new("Base (ancestor)").strong());
-    ui.weak("the common starting point — read only");
-    ui.separator();
-
-    let weak = ui.visuals().weak_text_color();
-    egui::ScrollArea::vertical()
-        .id_salt("merge_in_base")
-        .vertical_scroll_offset(scroll_offset)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for section in &data.sections {
-                match section {
-                    ConflictPart::Common(text) => render_plain_lines(ui, text, weak),
-                    ConflictPart::Conflict { base, .. } => {
-                        egui::Frame::new()
-                            .stroke(egui::Stroke::new(1.0, BASE_TEXT))
-                            .corner_radius(4.0)
-                            .inner_margin(6.0)
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                let note = match base {
-                                    Some(text) if !text.is_empty() => {
-                                        render_plain_lines(ui, text, weak);
-                                        None
-                                    }
-                                    Some(_) => Some("(absent in base — added on both sides)"),
-                                    None => Some("(base unavailable)"),
-                                };
-                                if let Some(note) = note {
-                                    ui.label(
-                                        egui::RichText::new(note).monospace().italics().color(weak),
-                                    );
-                                }
-                            });
-                        ui.add_space(6.0);
-                    }
-                }
-            }
         });
 }
 
