@@ -36,7 +36,7 @@ pub fn show(ui: &mut egui::Ui, mut state: DiffPanelState<'_>) {
     });
     ui.separator();
 
-    match state.inspector.center_view.clone() {
+    match state.inspector.center_view {
         CenterView::Diff => show_diff_or_conflict(ui, &mut state),
         CenterView::History => show_history(ui, &mut state),
     }

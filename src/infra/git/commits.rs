@@ -44,6 +44,9 @@ pub fn commit_changed_files(
 pub fn commit_file_diff(repo: &Repository, oid: &str, path: &str) -> Result<String, git2::Error> {
     let mut opts = git2::DiffOptions::new();
     opts.pathspec(path);
+    // `path` is one exact entry from `commit_changed_files`, not a pattern, so
+    // don't let `*`, `?` or `[..]` in a filename glob-match its siblings.
+    opts.disable_pathspec_match(true);
     let diff = diff_against_first_parent(repo, oid, &mut opts)?;
 
     let mut result = String::new();
@@ -52,9 +55,10 @@ pub fn commit_file_diff(repo: &Repository, oid: &str, path: &str) -> Result<Stri
         if origin == '+' || origin == '-' || origin == ' ' {
             result.push(origin);
         }
-        if let Ok(content) = std::str::from_utf8(line.content()) {
-            result.push_str(content);
-        }
+        // Lossy rather than skipped: dropping the body of a non-UTF-8 line would
+        // render it as an empty line, which reads as "this line is blank" rather
+        // than "this line could not be decoded".
+        result.push_str(&String::from_utf8_lossy(line.content()));
         true
     })?;
 
@@ -219,6 +223,30 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, "side.txt");
         assert_eq!(changes[0].display_status, "new");
+    }
+
+    #[test]
+    fn treats_the_path_as_exact_not_as_a_glob() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        dir.write("a.rs", "one\n");
+        dir.write("b.rs", "two\n");
+        commit_all(&repo, "root");
+
+        dir.write("a.rs", "one changed\n");
+        dir.write("b.rs", "two changed\n");
+        let oid = commit_all(&repo, "second");
+
+        // A pattern must match nothing, rather than sweeping in every sibling it
+        // happens to glob onto.
+        let patch = commit_file_diff(&repo, &oid.to_string(), "*.rs").expect("patch");
+        assert!(!patch.contains("one changed"), "patch was: {patch}");
+        assert!(!patch.contains("two changed"), "patch was: {patch}");
+
+        // The real path still resolves, and only to itself.
+        let exact = commit_file_diff(&repo, &oid.to_string(), "a.rs").expect("patch");
+        assert!(exact.contains("one changed"), "patch was: {exact}");
+        assert!(!exact.contains("two changed"), "patch was: {exact}");
     }
 
     #[test]

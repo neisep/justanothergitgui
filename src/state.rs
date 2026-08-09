@@ -41,7 +41,7 @@ pub struct SelectedCommit {
     pub removed_lines: usize,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CenterView {
     #[default]
     Diff,

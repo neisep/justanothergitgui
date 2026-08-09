@@ -285,9 +285,11 @@ fn read_index_conflict_sections(
         return Ok(None);
     };
 
+    // Validate in place; the copy only happens for a stage we actually keep,
+    // not for one that turns out to be binary and gets discarded.
     let read_blob = |oid| -> Result<Option<String>, String> {
         let blob = repo.find_blob(oid).map_err(|error| error.to_string())?;
-        Ok(String::from_utf8(blob.content().to_vec()).ok())
+        Ok(std::str::from_utf8(blob.content()).ok().map(str::to_owned))
     };
 
     let (Some(base), Some(ours), Some(theirs)) = (
