@@ -1,7 +1,7 @@
 use git2::{Repository, Status, StatusOptions};
 use std::path::Path;
 
-use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart};
+use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, diff3};
 use crate::shared::git::FileEntry;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -243,51 +243,78 @@ pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<Stri
 }
 
 pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData, String> {
-    let full_path = repo_workdir(repo)
-        .map_err(|error| error.to_string())?
-        .join(path);
-    let content = std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
-    let sections = parse_conflict_markers(&content)?;
+    // Prefer the index's conflict stages: they carry the merge base, so we can
+    // run a real 3-way merge and pre-resolve edits only one side made. Fall back
+    // to parsing the in-tree markers (base-less) when stages are unavailable —
+    // e.g. the file was hand-edited or the merge state is gone.
+    let sections = match read_index_conflict_sections(repo, path)? {
+        Some(sections) => sections,
+        None => {
+            let full_path = repo_workdir(repo)
+                .map_err(|error| error.to_string())?
+                .join(path);
+            let content =
+                std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
+            parse_conflict_markers(&content)?
+        }
+    };
+
     Ok(ConflictData {
         path: path.to_string(),
         sections,
     })
 }
 
-pub fn write_resolved_file(repo: &Repository, data: &ConflictData) -> Result<(), String> {
+/// Build the conflict sections from the index's ancestor/ours/theirs stages via
+/// a 3-way merge. `Ok(None)` when the path is not a full three-stage conflict or
+/// any stage is non-UTF-8, signalling the caller to fall back to marker parsing.
+fn read_index_conflict_sections(
+    repo: &Repository,
+    path: &str,
+) -> Result<Option<Vec<ConflictPart>>, String> {
+    let index = repo.index().map_err(|error| error.to_string())?;
+    let target = Path::new(path);
+
+    let (Some(base_entry), Some(ours_entry), Some(theirs_entry)) = (
+        index.get_path(target, 1),
+        index.get_path(target, 2),
+        index.get_path(target, 3),
+    ) else {
+        return Ok(None);
+    };
+
+    let read_blob = |oid| -> Result<Option<String>, String> {
+        let blob = repo.find_blob(oid).map_err(|error| error.to_string())?;
+        Ok(String::from_utf8(blob.content().to_vec()).ok())
+    };
+
+    let (Some(base), Some(ours), Some(theirs)) = (
+        read_blob(base_entry.id)?,
+        read_blob(ours_entry.id)?,
+        read_blob(theirs_entry.id)?,
+    ) else {
+        return Ok(None);
+    };
+
+    Ok(Some(diff3(&base, &ours, &theirs)))
+}
+
+/// Write the user's resolved merge text to the working tree and stage it.
+///
+/// The content is the final buffer from the merge editor's result pane, so no
+/// choice recomposition happens here — hand edits are written verbatim.
+pub fn write_resolved_content(repo: &Repository, path: &str, content: &str) -> Result<(), String> {
     let full_path = repo_workdir(repo)
         .map_err(|error| error.to_string())?
-        .join(&data.path);
-    let mut content = String::new();
+        .join(path);
 
-    for (index, section) in data.sections.iter().enumerate() {
-        if index > 0 {
-            content.push('\n');
-        }
-        match section {
-            ConflictPart::Common(text) => {
-                content.push_str(text);
-            }
-            ConflictPart::Conflict {
-                ours,
-                theirs,
-                resolution,
-            } => match resolution {
-                ConflictChoice::Ours => content.push_str(ours),
-                ConflictChoice::Theirs => content.push_str(theirs),
-                ConflictChoice::Both => {
-                    content.push_str(ours);
-                    content.push('\n');
-                    content.push_str(theirs);
-                }
-                ConflictChoice::Unresolved => return Err("Not all conflicts resolved".into()),
-            },
-        }
+    let mut content = content.to_string();
+    if !content.ends_with('\n') {
+        content.push('\n');
     }
 
-    content.push('\n');
     std::fs::write(&full_path, &content).map_err(|error| error.to_string())?;
-    stage_file(repo, &data.path).map_err(|error| error.to_string())?;
+    stage_file(repo, path).map_err(|error| error.to_string())?;
 
     Ok(())
 }
@@ -380,6 +407,7 @@ fn parse_conflict_markers(content: &str) -> Result<Vec<ConflictPart>, String> {
         } else if line.starts_with(">>>>>>>") && in_theirs {
             in_theirs = false;
             sections.push(ConflictPart::Conflict {
+                base: None,
                 ours: std::mem::take(&mut ours),
                 theirs: std::mem::take(&mut theirs),
                 resolution: ConflictChoice::default(),
@@ -423,7 +451,7 @@ mod tests {
     use super::{
         clean_untracked_files, create_commit, get_file_diff, get_file_statuses,
         parse_conflict_markers, read_conflict_file, short_object_id, stage_all, stage_file,
-        unstage_all, unstage_file, undo_last_commit,
+        undo_last_commit, unstage_all, unstage_file, write_resolved_content,
     };
     use crate::infra::git::repository::{get_commit_history, get_current_branch};
     use crate::shared::conflicts::{ConflictChoice, ConflictPart};
@@ -478,6 +506,7 @@ mod tests {
         assert!(matches!(
             sections[1],
             ConflictPart::Conflict {
+                base: None,
                 ref ours,
                 ref theirs,
                 resolution: ConflictChoice::Unresolved,
@@ -508,6 +537,23 @@ mod tests {
             .expect_err("malformed conflict file should fail");
 
         assert!(error.contains("Unbalanced conflict markers"));
+    }
+
+    #[test]
+    fn write_resolved_content_writes_buffer_and_stages_file() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+
+        write_resolved_content(&repo, "merged.txt", "line one\nline two")
+            .expect("write resolved content");
+
+        let written =
+            std::fs::read_to_string(repo_dir.path().join("merged.txt")).expect("read written file");
+        // A trailing newline is appended when missing.
+        assert_eq!(written, "line one\nline two\n");
+
+        let (_unstaged, staged) = get_file_statuses(&repo).expect("read file statuses");
+        assert!(staged.iter().any(|file| file.path == "merged.txt"));
     }
 
     #[cfg(unix)]

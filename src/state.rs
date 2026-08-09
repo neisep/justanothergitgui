@@ -113,7 +113,29 @@ pub struct InspectorState {
     pub diff_wrap: bool,
     pub center_view: CenterView,
     pub conflict_data: Option<ConflictData>,
+    /// Which conflict (by section index) is open for inline editing, plus its
+    /// draft text. `None` when no conflict is being hand-edited.
+    pub conflict_edit: Option<ConflictEdit>,
+    /// Shared vertical scroll offset for the two top merge-editor panes.
+    pub conflict_scroll: f32,
     pub dragging: Option<DragFile>,
+}
+
+/// Draft state for editing one conflict's resolution text inline.
+#[derive(Clone, Debug)]
+pub struct ConflictEdit {
+    pub index: usize,
+    pub buffer: String,
+}
+
+impl InspectorState {
+    /// Set (or clear) the active conflict, resetting the inline-edit slot and
+    /// shared scroll offset so no state leaks between files.
+    pub fn set_conflict(&mut self, data: Option<ConflictData>) {
+        self.conflict_data = data;
+        self.conflict_edit = None;
+        self.conflict_scroll = 0.0;
+    }
 }
 
 #[derive(Default)]

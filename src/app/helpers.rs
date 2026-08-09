@@ -109,7 +109,7 @@ pub(super) fn reset_inspector_state(inspector_state: &mut InspectorState) {
     inspector_state.diff_content.clear();
     inspector_state.diff_wrap = false;
     inspector_state.center_view = CenterView::Diff;
-    inspector_state.conflict_data = None;
+    inspector_state.set_conflict(None);
     inspector_state.dragging = None;
 }
 
@@ -170,18 +170,18 @@ pub(super) fn load_selected_file(
         });
         match AppRepoRead::read_conflict_file(repo, &path) {
             Ok(conflict_data) => {
-                inspector_state.conflict_data = Some(conflict_data);
+                inspector_state.set_conflict(Some(conflict_data));
                 inspector_state.diff_content.clear();
             }
             Err(error) => {
-                inspector_state.conflict_data = None;
+                inspector_state.set_conflict(None);
                 inspector_state.diff_content = format!("Error loading conflict data: {}", error);
             }
         }
         return;
     }
 
-    inspector_state.conflict_data = None;
+    inspector_state.set_conflict(None);
     match AppRepoRead::file_diff(repo, &path, staged) {
         Ok(diff) => inspector_state.diff_content = diff,
         Err(error) => inspector_state.diff_content = format!("Error loading diff: {}", error),
@@ -239,7 +239,7 @@ fn sync_selected_file(
     repo: &Repository,
 ) {
     let Some(selected) = inspector_state.selected_file.clone() else {
-        inspector_state.conflict_data = None;
+        inspector_state.set_conflict(None);
         return;
     };
 
@@ -255,7 +255,7 @@ fn sync_selected_file(
     if !in_unstaged && !in_staged {
         inspector_state.selected_file = None;
         inspector_state.diff_content.clear();
-        inspector_state.conflict_data = None;
+        inspector_state.set_conflict(None);
         return;
     }
 

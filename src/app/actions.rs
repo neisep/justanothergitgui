@@ -353,18 +353,26 @@ fn undo_last_commit(ctx: &mut TabActionContext<'_>) {
 }
 
 fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
-    if let Some(conflict_data) = ctx.tab.state.inspector.conflict_data.clone() {
-        let path = conflict_data.path.clone();
-        match AppRepoWrite::write_resolved_file(&ctx.tab.repo, &conflict_data) {
-            Ok(()) => {
-                ctx.tab.state.ui.status_msg = format!("Resolved and staged: {path}");
-                ctx.tab.state.inspector.selected_file = Some(SelectedFile { path, staged: true });
-                ctx.tab.state.inspector.conflict_data = None;
-            }
-            Err(error) => log_action_error(ctx, "Save resolution", error.to_string()),
-        }
-    } else {
+    let Some((path, content)) = ctx
+        .tab
+        .state
+        .inspector
+        .conflict_data
+        .as_ref()
+        .map(|data| (data.path.clone(), data.compose()))
+    else {
         ctx.tab.state.ui.status_msg = "No conflict selected".into();
+        refresh_tab(ctx);
+        return;
+    };
+
+    match AppRepoWrite::write_resolved_content(&ctx.tab.repo, &path, &content) {
+        Ok(()) => {
+            ctx.tab.state.ui.status_msg = format!("Resolved and staged: {path}");
+            ctx.tab.state.inspector.selected_file = Some(SelectedFile { path, staged: true });
+            ctx.tab.state.inspector.set_conflict(None);
+        }
+        Err(error) => log_action_error(ctx, "Save resolution", error),
     }
 
     refresh_tab(ctx);
@@ -397,7 +405,7 @@ impl GitGuiApp {
 fn clear_repo_selection(inspector_state: &mut InspectorState) {
     inspector_state.selected_file = None;
     inspector_state.diff_content.clear();
-    inspector_state.conflict_data = None;
+    inspector_state.set_conflict(None);
 }
 
 fn log_action_error(ctx: &mut TabActionContext<'_>, context: &str, detail: String) {

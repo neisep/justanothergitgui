@@ -145,11 +145,12 @@ impl AppRepoWrite {
         repository::preview_discard_damage(repo)
     }
 
-    pub(super) fn write_resolved_file(
+    pub(super) fn write_resolved_content(
         repo: &Repository,
-        data: &ConflictData,
+        path: &str,
+        content: &str,
     ) -> Result<(), String> {
-        worktree::write_resolved_file(repo, data)
+        worktree::write_resolved_content(repo, path, content)
     }
 }
 
