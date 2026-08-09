@@ -26,6 +26,9 @@ impl UiAction {
             Self::LaunchPullRequest => launch_pull_request(ctx),
             Self::ShowDiff => show_diff(ctx),
             Self::ShowHistory => show_history(ctx),
+            Self::SelectCommit(oid) => select_commit(ctx, oid),
+            Self::SelectCommitFile(path) => select_commit_file(ctx, path),
+            Self::CloseCommit => close_commit(ctx),
             Self::OpenCleanupBranches => open_cleanup_branches(ctx),
             Self::DeleteStaleBranches(names) => delete_stale_branches(ctx, names),
             Self::OpenDiscardDialog => open_discard_dialog(ctx),
@@ -271,6 +274,26 @@ fn show_history(ctx: &mut TabActionContext<'_>) {
     ctx.tab.state.inspector.center_view = CenterView::History;
 }
 
+fn select_commit(ctx: &mut TabActionContext<'_>, oid: String) {
+    let state = &mut ctx.tab.state;
+    state.inspector.center_view = CenterView::History;
+    let failure =
+        helpers::load_selected_commit(&state.repo, &mut state.inspector, &ctx.tab.repo, oid);
+
+    if let Some(detail) = failure {
+        log_action_error(ctx, "Open commit", detail);
+    }
+}
+
+fn select_commit_file(ctx: &mut TabActionContext<'_>, path: String) {
+    let state = &mut ctx.tab.state;
+    helpers::load_commit_file_diff(&mut state.inspector, &ctx.tab.repo, path);
+}
+
+fn close_commit(ctx: &mut TabActionContext<'_>) {
+    ctx.tab.state.inspector.set_commit(None);
+}
+
 fn open_cleanup_branches(ctx: &mut TabActionContext<'_>) {
     match AppRepoWrite::list_stale_branches(&ctx.tab.repo) {
         Ok(stale) => {
@@ -353,18 +376,32 @@ fn undo_last_commit(ctx: &mut TabActionContext<'_>) {
 }
 
 fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
-    if let Some(conflict_data) = ctx.tab.state.inspector.conflict_data.clone() {
-        let path = conflict_data.path.clone();
-        match AppRepoWrite::write_resolved_file(&ctx.tab.repo, &conflict_data) {
-            Ok(()) => {
-                ctx.tab.state.ui.status_msg = format!("Resolved and staged: {path}");
-                ctx.tab.state.inspector.selected_file = Some(SelectedFile { path, staged: true });
-                ctx.tab.state.inspector.conflict_data = None;
-            }
-            Err(error) => log_action_error(ctx, "Save resolution", error.to_string()),
-        }
-    } else {
+    let Some(data) = ctx.tab.state.inspector.conflict_data.as_ref() else {
         ctx.tab.state.ui.status_msg = "No conflict selected".into();
+        refresh_tab(ctx);
+        return;
+    };
+
+    // `compose` emits raw <<<<<<< / ======= / >>>>>>> markers for anything still
+    // unresolved, so this has to be checked before writing. The Save button is
+    // already disabled in that state; this is the guarantee that no other route
+    // to this action can commit markers into the working tree.
+    let unresolved = data.unresolved_count();
+    if unresolved > 0 {
+        let detail = format!("{unresolved} conflict(s) still unresolved");
+        log_action_error(ctx, "Save resolution", detail);
+        return;
+    }
+
+    let (path, content) = (data.path.clone(), data.compose());
+
+    match AppRepoWrite::write_resolved_content(&ctx.tab.repo, &path, &content) {
+        Ok(()) => {
+            ctx.tab.state.ui.status_msg = format!("Resolved and staged: {path}");
+            ctx.tab.state.inspector.selected_file = Some(SelectedFile { path, staged: true });
+            ctx.tab.state.inspector.set_conflict(None);
+        }
+        Err(error) => log_action_error(ctx, "Save resolution", error.to_string()),
     }
 
     refresh_tab(ctx);
@@ -396,8 +433,9 @@ impl GitGuiApp {
 
 fn clear_repo_selection(inspector_state: &mut InspectorState) {
     inspector_state.selected_file = None;
-    inspector_state.diff_content.clear();
-    inspector_state.conflict_data = None;
+    inspector_state.clear_diff();
+    inspector_state.set_conflict(None);
+    inspector_state.set_commit(None);
 }
 
 fn log_action_error(ctx: &mut TabActionContext<'_>, context: &str, detail: String) {

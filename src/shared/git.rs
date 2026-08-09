@@ -5,8 +5,19 @@ pub struct FileEntry {
     pub is_conflicted: bool,
 }
 
+/// One file touched by a commit, relative to that commit's first parent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitFileChange {
+    pub path: String,
+    /// Same vocabulary as [`FileEntry::display_status`] so both lists can share
+    /// one status badge renderer.
+    pub display_status: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct CommitEntry {
+    /// Full 40-hex object id; the stable handle used to look the commit back up.
+    pub oid: String,
     pub short_oid: String,
     pub message: String,
     pub author: String,

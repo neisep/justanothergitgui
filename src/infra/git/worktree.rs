@@ -1,7 +1,8 @@
 use git2::{Repository, Status, StatusOptions};
 use std::path::Path;
 
-use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart};
+use crate::infra::git::error::ConflictError;
+use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, Eol, FileStyle, diff3};
 use crate::shared::git::FileEntry;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -219,6 +220,9 @@ fn short_object_id(repo: &Repository, oid: git2::Oid) -> Result<String, git2::Er
 pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<String, git2::Error> {
     let mut opts = git2::DiffOptions::new();
     opts.pathspec(path);
+    // `path` is one exact entry from `get_file_statuses`, not a pattern, so don't
+    // let `*`, `?` or `[..]` in a filename glob-match its siblings into the patch.
+    opts.disable_pathspec_match(true);
 
     let diff = if staged {
         let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
@@ -233,61 +237,91 @@ pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<Stri
         if origin == '+' || origin == '-' || origin == ' ' {
             result.push(origin);
         }
-        if let Ok(content) = std::str::from_utf8(line.content()) {
-            result.push_str(content);
-        }
+        // Lossy rather than skipped: dropping the body of a non-UTF-8 line would
+        // render it as an empty line, which reads as "this line is blank" rather
+        // than "this line could not be decoded".
+        result.push_str(&String::from_utf8_lossy(line.content()));
         true
     })?;
 
     Ok(result)
 }
 
-pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData, String> {
-    let full_path = repo_workdir(repo)
-        .map_err(|error| error.to_string())?
-        .join(path);
-    let content = std::fs::read_to_string(&full_path).map_err(|error| error.to_string())?;
-    let sections = parse_conflict_markers(&content)?;
-    Ok(ConflictData {
-        path: path.to_string(),
-        sections,
-    })
+pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData, ConflictError> {
+    // Prefer the index's conflict stages: they carry the merge base, so we can
+    // run a real 3-way merge and pre-resolve edits only one side made. Fall back
+    // to parsing the in-tree markers (base-less) when stages are unavailable —
+    // e.g. the file was hand-edited or the merge state is gone.
+    let (sections, style) = match read_index_conflict_sections(repo, path)? {
+        Some(parsed) => parsed,
+        None => {
+            let full_path = conflict_workdir(repo)?.join(path);
+            let content = std::fs::read_to_string(&full_path)?;
+            let style = FileStyle::detect(&content);
+            (parse_conflict_markers(&content, style.eol)?, style)
+        }
+    };
+
+    Ok(ConflictData::new(path.to_string(), sections, style))
 }
 
-pub fn write_resolved_file(repo: &Repository, data: &ConflictData) -> Result<(), String> {
-    let full_path = repo_workdir(repo)
-        .map_err(|error| error.to_string())?
-        .join(&data.path);
-    let mut content = String::new();
+/// Build the conflict sections from the index's ancestor/ours/theirs stages via
+/// a 3-way merge, paired with the formatting to restore on write.
+///
+/// `Ok(None)` when the path is not a full three-stage conflict or any stage is
+/// non-UTF-8, signalling the caller to fall back to marker parsing.
+fn read_index_conflict_sections(
+    repo: &Repository,
+    path: &str,
+) -> Result<Option<(Vec<ConflictPart>, FileStyle)>, ConflictError> {
+    let index = repo.index()?;
+    let target = Path::new(path);
 
-    for (index, section) in data.sections.iter().enumerate() {
-        if index > 0 {
-            content.push('\n');
-        }
-        match section {
-            ConflictPart::Common(text) => {
-                content.push_str(text);
-            }
-            ConflictPart::Conflict {
-                ours,
-                theirs,
-                resolution,
-            } => match resolution {
-                ConflictChoice::Ours => content.push_str(ours),
-                ConflictChoice::Theirs => content.push_str(theirs),
-                ConflictChoice::Both => {
-                    content.push_str(ours);
-                    content.push('\n');
-                    content.push_str(theirs);
-                }
-                ConflictChoice::Unresolved => return Err("Not all conflicts resolved".into()),
-            },
-        }
-    }
+    let (Some(base_entry), Some(ours_entry), Some(theirs_entry)) = (
+        index.get_path(target, 1),
+        index.get_path(target, 2),
+        index.get_path(target, 3),
+    ) else {
+        return Ok(None);
+    };
 
-    content.push('\n');
-    std::fs::write(&full_path, &content).map_err(|error| error.to_string())?;
-    stage_file(repo, &data.path).map_err(|error| error.to_string())?;
+    // Validate in place; the copy only happens for a stage we actually keep,
+    // not for one that turns out to be binary and gets discarded.
+    let read_blob = |oid| -> Result<Option<String>, ConflictError> {
+        let blob = repo.find_blob(oid)?;
+        Ok(std::str::from_utf8(blob.content()).ok().map(str::to_owned))
+    };
+
+    let (Some(base), Some(ours), Some(theirs)) = (
+        read_blob(base_entry.id)?,
+        read_blob(ours_entry.id)?,
+        read_blob(theirs_entry.id)?,
+    ) else {
+        return Ok(None);
+    };
+
+    // Take the style from the checked-out side: that is the file the user has
+    // in front of them, and the one being rewritten.
+    let style = FileStyle::detect(&ours);
+
+    Ok(Some((diff3(&base, &ours, &theirs, style.eol), style)))
+}
+
+/// Write the user's resolved merge text to the working tree and stage it.
+///
+/// The content is the final text from the merge editor, already carrying the
+/// source file's line terminator and final-newline state (see
+/// [`ConflictData::compose`]). It is written byte for byte: guessing a
+/// terminator here would rewrite files git deliberately tracks as having none.
+pub fn write_resolved_content(
+    repo: &Repository,
+    path: &str,
+    content: &str,
+) -> Result<(), ConflictError> {
+    let full_path = conflict_workdir(repo)?.join(path);
+
+    std::fs::write(&full_path, content)?;
+    stage_file(repo, path)?;
 
     Ok(())
 }
@@ -360,18 +394,26 @@ fn status_label_unstaged(status: Status) -> &'static str {
     }
 }
 
-fn parse_conflict_markers(content: &str) -> Result<Vec<ConflictPart>, String> {
+/// Rebuild the section list from the `<<<<<<<` / `=======` / `>>>>>>>` markers
+/// left in a working-tree file, for when the index stages are gone.
+///
+/// Every run is collected as a list of lines and joined only at the end. Growing
+/// a `String` and using "is it still empty?" to decide whether a separator is
+/// due would read a leading blank line as "nothing here yet" and swallow it —
+/// and this text is written back to the user's file verbatim.
+fn parse_conflict_markers(content: &str, eol: Eol) -> Result<Vec<ConflictPart>, ConflictError> {
+    let sep = eol.as_str();
     let mut sections = Vec::new();
-    let mut common = String::new();
-    let mut ours = String::new();
-    let mut theirs = String::new();
+    let mut common: Vec<&str> = Vec::new();
+    let mut ours: Vec<&str> = Vec::new();
+    let mut theirs: Vec<&str> = Vec::new();
     let mut in_ours = false;
     let mut in_theirs = false;
 
     for line in content.lines() {
         if line.starts_with("<<<<<<<") {
             if !common.is_empty() {
-                sections.push(ConflictPart::Common(std::mem::take(&mut common)));
+                sections.push(ConflictPart::Common(join_lines(&mut common, sep)));
             }
             in_ours = true;
         } else if line.starts_with("=======") && in_ours {
@@ -380,37 +422,35 @@ fn parse_conflict_markers(content: &str) -> Result<Vec<ConflictPart>, String> {
         } else if line.starts_with(">>>>>>>") && in_theirs {
             in_theirs = false;
             sections.push(ConflictPart::Conflict {
-                ours: std::mem::take(&mut ours),
-                theirs: std::mem::take(&mut theirs),
+                ours: join_lines(&mut ours, sep),
+                theirs: join_lines(&mut theirs, sep),
                 resolution: ConflictChoice::default(),
             });
         } else if in_ours {
-            if !ours.is_empty() {
-                ours.push('\n');
-            }
-            ours.push_str(line);
+            ours.push(line);
         } else if in_theirs {
-            if !theirs.is_empty() {
-                theirs.push('\n');
-            }
-            theirs.push_str(line);
+            theirs.push(line);
         } else {
-            if !common.is_empty() {
-                common.push('\n');
-            }
-            common.push_str(line);
+            common.push(line);
         }
     }
 
     if in_ours || in_theirs {
-        return Err("Unbalanced conflict markers".into());
+        return Err(ConflictError::UnbalancedMarkers);
     }
 
     if !common.is_empty() {
-        sections.push(ConflictPart::Common(common));
+        sections.push(ConflictPart::Common(join_lines(&mut common, sep)));
     }
 
     Ok(sections)
+}
+
+/// Join a run of lines and clear it, ready for the next run.
+fn join_lines(lines: &mut Vec<&str>, sep: &str) -> String {
+    let joined = lines.join(sep);
+    lines.clear();
+    joined
 }
 
 fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
@@ -418,15 +458,21 @@ fn repo_workdir(repo: &Repository) -> Result<&Path, git2::Error> {
         .ok_or_else(|| git2::Error::from_str("Bare repositories are not supported"))
 }
 
+/// The same lookup for the merge paths, which report a bare repository as its
+/// own variant rather than burying it in an opaque libgit2 error.
+fn conflict_workdir(repo: &Repository) -> Result<&Path, ConflictError> {
+    repo.workdir().ok_or(ConflictError::BareRepository)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         clean_untracked_files, create_commit, get_file_diff, get_file_statuses,
         parse_conflict_markers, read_conflict_file, short_object_id, stage_all, stage_file,
-        unstage_all, unstage_file, undo_last_commit,
+        undo_last_commit, unstage_all, unstage_file, write_resolved_content,
     };
     use crate::infra::git::repository::{get_commit_history, get_current_branch};
-    use crate::shared::conflicts::{ConflictChoice, ConflictPart};
+    use crate::shared::conflicts::{ConflictChoice, ConflictPart, Eol};
     use crate::testutil::{TestRepoDir, commit_all, signature};
     use git2::{Repository, RepositoryState};
     use std::path::{Path, PathBuf};
@@ -470,6 +516,7 @@ mod tests {
     fn parses_complete_conflict_markers() {
         let sections = parse_conflict_markers(
             "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\nafter",
+            Eol::Lf,
         )
         .expect("parse complete conflict markers");
 
@@ -487,11 +534,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_conflict_markers_keeps_blank_lines() {
+        // Blank lines are content. A leading one on either side of a conflict, or
+        // in the common run before it, used to read as "nothing accumulated yet"
+        // and vanish — and this text is written back to the file verbatim.
+        let sections = parse_conflict_markers(
+            "keep\n\n<<<<<<< HEAD\n\nours\n=======\ntheirs\n>>>>>>> main\ntail",
+            Eol::Lf,
+        )
+        .expect("parse conflict markers");
+
+        assert_eq!(sections.len(), 3);
+        assert!(matches!(sections[0], ConflictPart::Common(ref text) if text == "keep\n"));
+        assert!(matches!(
+            sections[1],
+            ConflictPart::Conflict {
+                ref ours,
+                ref theirs,
+                ..
+            } if ours == "\nours" && theirs == "theirs"
+        ));
+        assert!(matches!(sections[2], ConflictPart::Common(ref text) if text == "tail"));
+    }
+
+    #[test]
+    fn parse_conflict_markers_keeps_a_common_run_of_only_blank_lines() {
+        // Two conflicts separated by a single blank line: the run joins to the
+        // empty string, so an "is it empty?" test would drop the line entirely.
+        let sections = parse_conflict_markers(
+            "<<<<<<< HEAD\na\n=======\n1\n>>>>>>> main\n\n<<<<<<< HEAD\nb\n=======\n2\n>>>>>>> main",
+            Eol::Lf,
+        )
+        .expect("parse conflict markers");
+
+        assert_eq!(sections.len(), 3);
+        assert!(matches!(sections[1], ConflictPart::Common(ref text) if text.is_empty()));
+    }
+
+    #[test]
     fn rejects_unbalanced_conflict_markers_at_eof() {
-        let error = parse_conflict_markers("<<<<<<< HEAD\nours\n=======\ntheirs")
+        let error = parse_conflict_markers("<<<<<<< HEAD\nours\n=======\ntheirs", Eol::Lf)
             .expect_err("unbalanced conflict markers should fail");
 
-        assert!(error.contains("Unbalanced conflict markers"));
+        assert!(matches!(error, super::ConflictError::UnbalancedMarkers));
     }
 
     #[test]
@@ -507,7 +592,37 @@ mod tests {
         let error = read_conflict_file(&repo, "conflicted.txt")
             .expect_err("malformed conflict file should fail");
 
-        assert!(error.contains("Unbalanced conflict markers"));
+        assert!(matches!(error, super::ConflictError::UnbalancedMarkers));
+    }
+
+    #[test]
+    fn write_resolved_content_writes_buffer_verbatim_and_stages_file() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+
+        // The terminator is `compose`'s business — it knows what the source file
+        // looked like. This writer must not second-guess it.
+        write_resolved_content(&repo, "merged.txt", "line one\nline two")
+            .expect("write resolved content");
+
+        let written =
+            std::fs::read_to_string(repo_dir.path().join("merged.txt")).expect("read written file");
+        assert_eq!(written, "line one\nline two");
+
+        let (_unstaged, staged) = get_file_statuses(&repo).expect("read file statuses");
+        assert!(staged.iter().any(|file| file.path == "merged.txt"));
+    }
+
+    #[test]
+    fn write_resolved_content_preserves_crlf_bytes() {
+        let repo_dir = TestRepoDir::init();
+        let repo = Repository::open(repo_dir.path()).expect("open temp repo");
+
+        write_resolved_content(&repo, "crlf.txt", "one\r\ntwo\r\n")
+            .expect("write resolved content");
+
+        let written = std::fs::read(repo_dir.path().join("crlf.txt")).expect("read written file");
+        assert_eq!(written, b"one\r\ntwo\r\n");
     }
 
     #[cfg(unix)]
@@ -920,5 +1035,48 @@ mod tests {
         let diff = get_file_diff(&repo, "file.txt", false).expect("unstaged diff");
         assert!(diff.contains("file.txt"), "diff names the file");
         assert!(diff.contains("+line2"), "diff shows the added line");
+    }
+
+    #[test]
+    fn get_file_diff_treats_the_path_as_exact_not_as_a_glob() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("a.rs", "one\n");
+        repo_dir.write("b.rs", "two\n");
+        commit_all(&repo, "base");
+
+        repo_dir.write("a.rs", "one changed\n");
+        repo_dir.write("b.rs", "two changed\n");
+
+        // A pattern must match nothing, rather than sweeping in every sibling it
+        // happens to glob onto.
+        let patch = get_file_diff(&repo, "*.rs", false).expect("unstaged diff");
+        assert!(!patch.contains("one changed"), "patch was: {patch}");
+        assert!(!patch.contains("two changed"), "patch was: {patch}");
+
+        // The real path still resolves, and only to itself.
+        let exact = get_file_diff(&repo, "a.rs", false).expect("unstaged diff");
+        assert!(exact.contains("one changed"), "patch was: {exact}");
+        assert!(!exact.contains("two changed"), "patch was: {exact}");
+    }
+
+    #[test]
+    fn get_file_diff_decodes_non_utf8_lines_lossily() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("data.txt", "clean\n");
+        commit_all(&repo, "base");
+
+        // An undecodable line must still show up as *something*: rendering it as
+        // an empty line reads as "this line is blank", not "cannot decode".
+        std::fs::write(repo_dir.path().join("data.txt"), b"clean\n\xFF\xFEbad\n")
+            .expect("write non-utf8 content");
+
+        let diff = get_file_diff(&repo, "data.txt", false).expect("unstaged diff");
+        assert!(
+            diff.contains('\u{FFFD}'),
+            "undecodable bytes should survive as replacement chars: {diff:?}"
+        );
+        assert!(diff.contains("bad"), "diff was: {diff:?}");
     }
 }

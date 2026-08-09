@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use crate::shared::actions::UiAction;
 use crate::shared::conflicts::ConflictData;
+use crate::shared::diff::{DiffLineKind, ParsedDiffLine, SideBySideEntry, parse_diff_rows};
 use crate::shared::git::{
-    CommitEntry, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
+    CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
 use crate::shared::github::PullRequestPrompt;
 
@@ -13,7 +14,76 @@ pub struct SelectedFile {
     pub staged: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A working-tree patch parsed for rendering: the rows the table paints plus the
+/// tallies its header shows.
+///
+/// Built once per file selection. The Changes tab repaints many times a second
+/// while the patch only changes when the selection does, and parsing allocates a
+/// `String` per line — far too much to redo on the render path.
+#[derive(Debug, Default)]
+pub struct ParsedDiff {
+    pub rows: Vec<ParsedDiffLine>,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+}
+
+impl ParsedDiff {
+    fn from_patch(content: &str) -> Self {
+        let rows = parse_diff_rows(content);
+        let added_lines = rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::Added)
+            .count();
+        let removed_lines = rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::Removed)
+            .count();
+
+        Self {
+            rows,
+            added_lines,
+            removed_lines,
+        }
+    }
+}
+
+/// The commit currently open in the History tab's read-only commit view.
+///
+/// Holds everything that view renders, so it can be dropped in one move when the
+/// user goes back to the list or the history it came from changes.
+///
+/// Deliberately not `Clone`: it owns the whole parsed patch, and nothing needs a
+/// second copy — `set_commit` moves it in and out.
+#[derive(Debug)]
+pub struct SelectedCommit {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author: String,
+    pub time: String,
+    pub files: Vec<CommitFileChange>,
+    pub selected_path: Option<String>,
+    pub diff_content: String,
+    /// `diff_content` parsed and paired for the side-by-side panes.
+    ///
+    /// Built once per file selection: parsing allocates a `String` per line and
+    /// pairing clones each of those again, which is far too much to redo on
+    /// every frame of a repaint.
+    pub diff_entries: Vec<SideBySideEntry>,
+    /// Shared vertical scroll offset for the two read-only diff panes.
+    pub scroll: f32,
+    /// Added/removed line counts for the header, tallied with the parse.
+    pub added_lines: usize,
+    pub removed_lines: usize,
+    /// Why the commit's file list could not be read, if it could not.
+    ///
+    /// An empty `files` is also what a genuinely empty commit looks like, so the
+    /// failure has to be recorded separately or the view reports a git error as
+    /// "this commit changed no files".
+    pub load_error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CenterView {
     #[default]
     Diff,
@@ -110,10 +180,55 @@ pub struct WorktreeState {
 pub struct InspectorState {
     pub selected_file: Option<SelectedFile>,
     pub diff_content: String,
+    /// `diff_content` parsed for the Changes tab. Kept in step with it by
+    /// [`Self::set_diff`] / [`Self::clear_diff`], which are the only two ways in.
+    pub parsed_diff: ParsedDiff,
     pub diff_wrap: bool,
     pub center_view: CenterView,
     pub conflict_data: Option<ConflictData>,
+    /// Which conflict (by section index) is open for inline editing, plus its
+    /// draft text. `None` when no conflict is being hand-edited.
+    pub conflict_edit: Option<ConflictEdit>,
+    /// Shared vertical scroll offset for the two top merge-editor panes.
+    pub conflict_scroll: f32,
+    /// Commit opened from the History tab, or `None` while the list is showing.
+    pub selected_commit: Option<SelectedCommit>,
     pub dragging: Option<DragFile>,
+}
+
+/// Draft state for editing one conflict's resolution text inline.
+#[derive(Clone, Debug)]
+pub struct ConflictEdit {
+    pub index: usize,
+    pub buffer: String,
+}
+
+impl InspectorState {
+    /// Replace the working-tree patch, reparsing it in the same move so the two
+    /// can never disagree about what is on screen.
+    pub fn set_diff(&mut self, content: String) {
+        self.parsed_diff = ParsedDiff::from_patch(&content);
+        self.diff_content = content;
+    }
+
+    pub fn clear_diff(&mut self) {
+        self.diff_content.clear();
+        self.parsed_diff = ParsedDiff::default();
+    }
+
+    /// Set (or clear) the active conflict, resetting the inline-edit slot and
+    /// shared scroll offset so no state leaks between files.
+    pub fn set_conflict(&mut self, data: Option<ConflictData>) {
+        self.conflict_data = data;
+        self.conflict_edit = None;
+        self.conflict_scroll = 0.0;
+    }
+
+    /// Open (or close) the read-only commit view. The whole view state travels
+    /// with the commit, so nothing leaks between commits.
+    pub fn set_commit(&mut self, commit: Option<SelectedCommit>) {
+        self.selected_commit = commit;
+    }
 }
 
 #[derive(Default)]

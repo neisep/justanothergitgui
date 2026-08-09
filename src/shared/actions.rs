@@ -15,6 +15,9 @@ pub enum UiAction {
     LaunchPullRequest,
     ShowDiff,
     ShowHistory,
+    SelectCommit(String),
+    SelectCommitFile(String),
+    CloseCommit,
     OpenCleanupBranches,
     DeleteStaleBranches(Vec<String>),
     OpenDiscardDialog,
@@ -89,6 +92,18 @@ impl UiAction {
 
     pub fn show_history() -> Self {
         Self::ShowHistory
+    }
+
+    pub fn select_commit(oid: impl Into<String>) -> Self {
+        Self::SelectCommit(oid.into())
+    }
+
+    pub fn select_commit_file(path: impl Into<String>) -> Self {
+        Self::SelectCommitFile(path.into())
+    }
+
+    pub fn close_commit() -> Self {
+        Self::CloseCommit
     }
 
     pub fn open_cleanup_branches() -> Self {

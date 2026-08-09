@@ -20,7 +20,7 @@ pub use crate::infra::git::repository::{
 #[allow(unused_imports)]
 pub use crate::infra::git::worktree::{
     create_commit, get_file_diff, get_file_statuses, read_conflict_file, stage_all, stage_file,
-    unstage_all, unstage_file, write_resolved_file,
+    unstage_all, unstage_file, write_resolved_content,
 };
 #[allow(unused_imports)]
 pub use crate::infra::github::auth::{

@@ -1,8 +1,10 @@
 use super::*;
+use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
+
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
-    DiscardDialogState, InspectorState, RepoState, SelectedFile, TagDialogState, UiState,
-    WorktreeState,
+    DiscardDialogState, InspectorState, RepoState, SelectedCommit, SelectedFile, TagDialogState,
+    UiState, WorktreeState,
 };
 
 pub(super) fn refresh_status(
@@ -72,6 +74,7 @@ pub(super) fn refresh_status(
     }
     sync_pull_request_prompt(repo_state);
     sync_selected_file(worktree_state, inspector_state, repo);
+    sync_selected_commit(repo_state, inspector_state);
     if errors.is_empty() {
         None
     } else {
@@ -106,10 +109,11 @@ pub(super) fn reset_commit_state(commit_state: &mut CommitState) {
 
 pub(super) fn reset_inspector_state(inspector_state: &mut InspectorState) {
     inspector_state.selected_file = None;
-    inspector_state.diff_content.clear();
+    inspector_state.clear_diff();
     inspector_state.diff_wrap = false;
     inspector_state.center_view = CenterView::Diff;
-    inspector_state.conflict_data = None;
+    inspector_state.set_conflict(None);
+    inspector_state.set_commit(None);
     inspector_state.dragging = None;
 }
 
@@ -170,23 +174,124 @@ pub(super) fn load_selected_file(
         });
         match AppRepoRead::read_conflict_file(repo, &path) {
             Ok(conflict_data) => {
-                inspector_state.conflict_data = Some(conflict_data);
-                inspector_state.diff_content.clear();
+                inspector_state.set_conflict(Some(conflict_data));
+                inspector_state.clear_diff();
             }
             Err(error) => {
-                inspector_state.conflict_data = None;
-                inspector_state.diff_content = format!("Error loading conflict data: {}", error);
+                inspector_state.set_conflict(None);
+                inspector_state.set_diff(format!("Error loading conflict data: {error}"));
             }
         }
         return;
     }
 
-    inspector_state.conflict_data = None;
+    inspector_state.set_conflict(None);
     match AppRepoRead::file_diff(repo, &path, staged) {
-        Ok(diff) => inspector_state.diff_content = diff,
-        Err(error) => inspector_state.diff_content = format!("Error loading diff: {}", error),
+        Ok(diff) => inspector_state.set_diff(diff),
+        Err(error) => inspector_state.set_diff(format!("Error loading diff: {error}")),
     }
     inspector_state.selected_file = Some(SelectedFile { path, staged });
+}
+
+/// Open a commit in the read-only commit view.
+///
+/// Metadata comes from the `CommitEntry` already loaded into `repo_state`, so
+/// only the changed files and the first file's patch are read from git here.
+/// Returns the failure detail when the commit's file list could not be read, so
+/// the caller can log it — the view shows its own copy via
+/// [`SelectedCommit::load_error`].
+pub(super) fn load_selected_commit(
+    repo_state: &RepoState,
+    inspector_state: &mut InspectorState,
+    repo: &Repository,
+    oid: String,
+) -> Option<String> {
+    let Some(entry) = repo_state
+        .commit_history
+        .iter()
+        .find(|commit| commit.oid == oid)
+    else {
+        inspector_state.set_commit(None);
+        return Some(format!("commit {oid} is no longer in the loaded history"));
+    };
+
+    let mut commit = SelectedCommit {
+        oid: entry.oid.clone(),
+        short_oid: entry.short_oid.clone(),
+        summary: entry.message.clone(),
+        author: entry.author.clone(),
+        time: entry.time.clone(),
+        files: Vec::new(),
+        selected_path: None,
+        diff_content: String::new(),
+        diff_entries: Vec::new(),
+        scroll: 0.0,
+        added_lines: 0,
+        removed_lines: 0,
+        load_error: None,
+    };
+
+    // An empty file list is a real outcome (an empty commit), so a failure here
+    // has to be recorded rather than left to look like one.
+    let detail = match AppRepoRead::commit_changed_files(repo, &commit.oid) {
+        Ok(files) => {
+            commit.files = files;
+            None
+        }
+        Err(error) => {
+            let detail = error.to_string();
+            commit.load_error = Some(detail.clone());
+            Some(detail)
+        }
+    };
+
+    inspector_state.set_commit(Some(commit));
+
+    let first_path = inspector_state
+        .selected_commit
+        .as_ref()
+        .and_then(|commit| commit.files.first())
+        .map(|file| file.path.clone());
+    if let Some(path) = first_path {
+        load_commit_file_diff(inspector_state, repo, path);
+    }
+
+    detail
+}
+
+/// Load one file's patch inside the currently open commit, parsed and paired
+/// ready for rendering.
+pub(super) fn load_commit_file_diff(
+    inspector_state: &mut InspectorState,
+    repo: &Repository,
+    path: String,
+) {
+    let Some(commit) = inspector_state.selected_commit.as_mut() else {
+        return;
+    };
+
+    commit.diff_content = match AppRepoRead::commit_file_diff(repo, &commit.oid, &path) {
+        Ok(diff) => diff,
+        Err(error) => format!("Error loading diff: {}", error),
+    };
+
+    let mut rows = parse_diff_rows(&commit.diff_content);
+    commit.added_lines = rows
+        .iter()
+        .filter(|row| row.kind == DiffLineKind::Added)
+        .count();
+    commit.removed_lines = rows
+        .iter()
+        .filter(|row| row.kind == DiffLineKind::Removed)
+        .count();
+    // The patch preamble (`diff --git`, `index`, `---`, `+++`) describes the
+    // file as a whole and the path is already in the view's header, so drop it
+    // and let both panes start at the first hunk.
+    rows.retain(|row| row.kind != DiffLineKind::FileHeader);
+    commit.diff_entries = to_side_by_side(&rows);
+
+    commit.selected_path = Some(path);
+    commit.scroll = 0.0;
 }
 
 pub(super) fn repo_root_path(repo: &Repository) -> PathBuf {
@@ -233,13 +338,29 @@ fn sync_pull_request_prompt(repo_state: &mut RepoState) {
     }
 }
 
+/// Drop the open commit when it is no longer part of the refreshed history —
+/// e.g. after a branch switch, a reset, or undoing the last commit.
+fn sync_selected_commit(repo_state: &RepoState, inspector_state: &mut InspectorState) {
+    let Some(selected) = inspector_state.selected_commit.as_ref() else {
+        return;
+    };
+
+    let still_present = repo_state
+        .commit_history
+        .iter()
+        .any(|commit| commit.oid == selected.oid);
+    if !still_present {
+        inspector_state.set_commit(None);
+    }
+}
+
 fn sync_selected_file(
     worktree_state: &WorktreeState,
     inspector_state: &mut InspectorState,
     repo: &Repository,
 ) {
     let Some(selected) = inspector_state.selected_file.clone() else {
-        inspector_state.conflict_data = None;
+        inspector_state.set_conflict(None);
         return;
     };
 
@@ -254,8 +375,25 @@ fn sync_selected_file(
 
     if !in_unstaged && !in_staged {
         inspector_state.selected_file = None;
-        inspector_state.diff_content.clear();
-        inspector_state.conflict_data = None;
+        inspector_state.clear_diff();
+        inspector_state.set_conflict(None);
+        return;
+    }
+
+    // An open conflict holds unsaved decisions — per-line picks and hand edits
+    // that exist nowhere else. Reloading it would silently discard them, and a
+    // refresh fires after every stage/unstage and worker result, so touching an
+    // unrelated file would wipe the merge in progress. Only reload once the file
+    // stops being the conflict we are editing.
+    let editing_this_conflict = inspector_state
+        .conflict_data
+        .as_ref()
+        .is_some_and(|data| data.path == selected.path)
+        && worktree_state
+            .unstaged
+            .iter()
+            .any(|file| file.path == selected.path && file.is_conflicted);
+    if editing_this_conflict {
         return;
     }
 
@@ -268,4 +406,105 @@ fn sync_selected_file(
     };
 
     load_selected_file(worktree_state, inspector_state, repo, selected.path, staged);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SelectedFile, sync_selected_file};
+    use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, FileStyle};
+    use crate::shared::git::FileEntry;
+    use crate::state::{InspectorState, WorktreeState};
+    use crate::testutil::TestRepoDir;
+
+    fn entry(path: &str, is_conflicted: bool) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            display_status: if is_conflicted {
+                "conflicted".to_string()
+            } else {
+                "modified".to_string()
+            },
+            is_conflicted,
+        }
+    }
+
+    /// A conflict the user has already made a decision on.
+    fn decided_conflict(path: &str) -> ConflictData {
+        ConflictData::new(
+            path.to_string(),
+            vec![ConflictPart::Conflict {
+                ours: "mine".into(),
+                theirs: "yours".into(),
+                resolution: ConflictChoice::Ours,
+            }],
+            FileStyle::default(),
+        )
+    }
+
+    fn state_for(path: &str, is_conflicted: bool) -> (WorktreeState, InspectorState) {
+        let worktree = WorktreeState {
+            unstaged: vec![entry(path, is_conflicted)],
+            ..Default::default()
+        };
+
+        let mut inspector = InspectorState {
+            selected_file: Some(SelectedFile {
+                path: path.to_string(),
+                staged: false,
+            }),
+            ..Default::default()
+        };
+        inspector.set_conflict(Some(decided_conflict(path)));
+
+        (worktree, inspector)
+    }
+
+    #[test]
+    fn refresh_keeps_the_conflict_currently_being_resolved() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        let (worktree, mut inspector) = state_for("merge.txt", true);
+
+        sync_selected_file(&worktree, &mut inspector, &repo);
+
+        // A reload would have reset the section to Unresolved, silently throwing
+        // away the user's choice. Refreshes fire after every stage/unstage.
+        assert_eq!(
+            inspector
+                .conflict_data
+                .as_ref()
+                .map(|data| data.unresolved_count()),
+            Some(0),
+            "the in-progress resolution must survive a refresh"
+        );
+    }
+
+    #[test]
+    fn refresh_drops_the_conflict_once_the_file_is_no_longer_conflicted() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        // Same path, but the merge has been resolved and staged elsewhere.
+        let (worktree, mut inspector) = state_for("merge.txt", false);
+
+        sync_selected_file(&worktree, &mut inspector, &repo);
+
+        assert!(
+            inspector.conflict_data.is_none(),
+            "a file that stopped being conflicted must leave the merge editor"
+        );
+    }
+
+    #[test]
+    fn refresh_drops_the_conflict_when_the_file_disappears() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        let (_worktree, mut inspector) = state_for("merge.txt", true);
+        // Nothing left in the working tree — e.g. the merge was aborted.
+        let worktree = WorktreeState::default();
+
+        sync_selected_file(&worktree, &mut inspector, &repo);
+
+        assert!(inspector.conflict_data.is_none());
+        assert!(inspector.selected_file.is_none());
+    }
 }

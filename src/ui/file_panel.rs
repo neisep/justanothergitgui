@@ -5,6 +5,9 @@ use crate::shared::actions::UiAction;
 use crate::shared::git::FileEntry;
 use crate::state::{DragFile, InspectorState, UiState, WorktreeState};
 
+use super::HoveredRow;
+use super::diff_view;
+
 const STATUS_COL_WIDTH: f32 = 72.0;
 const ACTION_COL_WIDTH: f32 = 72.0;
 
@@ -38,7 +41,7 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
             ui.separator();
 
             let first_list_height = (ui.available_height() - 8.0).max(0.0) / 2.0;
-            unstaged_rect = render_file_table(ui, &mut state, false, first_list_height);
+            unstaged_rect = show_file_list(ui, &mut state, false, first_list_height);
 
             ui.add_space(8.0);
 
@@ -57,7 +60,7 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
             });
             ui.separator();
 
-            staged_rect = render_file_table(ui, &mut state, true, ui.available_height());
+            staged_rect = show_file_list(ui, &mut state, true, ui.available_height());
 
             handle_drop(ui, &mut state, unstaged_rect, staged_rect);
         });
@@ -65,159 +68,216 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
     show_drag_ghost(ui.ctx(), &state);
 }
 
-fn render_file_table(
+/// Pick the list for this half of the panel and render it, empty state included.
+fn show_file_list(
     ui: &mut egui::Ui,
     state: &mut FilePanelState<'_>,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
+    // Copy the shared reference out of `state` first: taking the slice straight
+    // from `state.worktree` would keep `state` borrowed and block the exclusive
+    // borrows the table needs.
+    let worktree = state.worktree;
     let files = if staged {
-        state.worktree.staged.clone()
+        &worktree.staged
     } else {
-        state.worktree.unstaged.clone()
+        &worktree.unstaged
     };
-    let row_height = ui.spacing().interact_size.y.max(28.0);
 
     if files.is_empty() {
-        return render_empty_section(ui, state, staged, max_height);
+        return render_empty_section(ui, worktree, staged, max_height);
     }
 
-    TableBuilder::new(ui)
-        .id_salt(if staged {
-            "staged_file_table"
-        } else {
-            "unstaged_file_table"
-        })
-        .striped(true)
-        .sense(egui::Sense::click())
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::remainder().at_least(100.0).clip(true))
-        .column(Column::exact(STATUS_COL_WIDTH))
-        .column(Column::exact(ACTION_COL_WIDTH))
-        .min_scrolled_height(0.0)
-        .max_scroll_height(max_height.max(row_height * 2.0))
-        .header(row_height, |mut header| {
-            header.col(|ui| {
-                ui.weak("File");
-            });
-            header.col(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak("Status");
+    render_file_table(
+        ui,
+        FileTable {
+            files,
+            inspector: state.inspector,
+            ui_state: state.ui_state,
+        },
+        staged,
+        max_height,
+    )
+}
+
+/// The file list borrowed apart, so the table can hold the entries and mutate the
+/// inspector at the same time.
+///
+/// Taking `&mut FilePanelState` instead would force a clone of the whole entry
+/// list on every frame just to get past the borrow checker — and this runs twice
+/// per frame, once per list.
+struct FileTable<'a> {
+    files: &'a [FileEntry],
+    inspector: &'a mut InspectorState,
+    ui_state: &'a mut UiState,
+}
+
+fn render_file_table(
+    ui: &mut egui::Ui,
+    table: FileTable<'_>,
+    staged: bool,
+    max_height: f32,
+) -> egui::Rect {
+    let FileTable {
+        files,
+        inspector,
+        ui_state,
+    } = table;
+    let row_height = ui.spacing().interact_size.y.max(28.0);
+
+    let scope_id = if staged {
+        "staged_file_rows"
+    } else {
+        "unstaged_file_rows"
+    };
+
+    ui.push_id(scope_id, |ui| {
+        super::prepare_clickable_rows(ui);
+        let mut hover = HoveredRow::load(ui, "hover");
+
+        let inner_rect = TableBuilder::new(ui)
+            .id_salt(if staged {
+                "staged_file_table"
+            } else {
+                "unstaged_file_table"
+            })
+            .striped(true)
+            .sense(egui::Sense::click())
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder().at_least(100.0).clip(true))
+            .column(Column::exact(STATUS_COL_WIDTH))
+            .column(Column::exact(ACTION_COL_WIDTH))
+            .min_scrolled_height(0.0)
+            .max_scroll_height(max_height.max(row_height * 2.0))
+            .header(row_height, |mut header| {
+                header.col(|ui| {
+                    ui.weak("File");
                 });
-            });
-            header.col(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak("Quick action");
+                header.col(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.weak("Status");
+                    });
                 });
-            });
-        })
-        .body(|body| {
-            body.rows(row_height, files.len(), |mut row| {
-                let file = &files[row.index()];
-                let is_selected = state
-                    .inspector
-                    .selected_file
-                    .as_ref()
-                    .is_some_and(|selected| {
+                header.col(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.weak("Quick action");
+                    });
+                });
+            })
+            .body(|body| {
+                body.rows(row_height, files.len(), |mut row| {
+                    let index = row.index();
+                    let file = &files[index];
+                    let is_selected = inspector.selected_file.as_ref().is_some_and(|selected| {
                         selected.path == file.path && selected.staged == staged
                     });
-                row.set_selected(is_selected);
+                    row.set_selected(is_selected);
+                    row.set_hovered(hover.is_hovered(index));
 
-                let mut action_clicked = false;
-                let mut drag_started = false;
+                    let mut action_clicked = false;
+                    let mut drag_started = false;
 
-                row.col(|ui| {
-                    let label = if file.is_conflicted {
-                        egui::RichText::new(&file.path).color(egui::Color32::from_rgb(255, 170, 80))
-                    } else if is_selected {
-                        egui::RichText::new(&file.path).strong()
-                    } else {
-                        egui::RichText::new(&file.path)
-                    };
-                    ui.add(egui::Label::new(label).truncate());
-                });
-
-                row.col(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        render_status_badge(ui, file);
-                    });
-                });
-
-                row.col(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let handle = drag_handle(ui);
-                        handle
-                            .clone()
-                            .on_hover_cursor(egui::CursorIcon::Grab)
-                            .on_hover_text(if staged {
-                                "Drag to move this file to unstaged"
-                            } else {
-                                "Drag to move this file to staged"
-                            });
-                        if handle.drag_started() {
-                            drag_started = true;
-                            state.inspector.dragging = Some(DragFile {
-                                path: file.path.clone(),
-                                from_staged: staged,
-                            });
-                        }
-
-                        let (btn_label, btn_tooltip) = if staged {
-                            (
-                                "Unstage",
-                                "Unstage this file\nShortcut: Ctrl/Cmd+S when selected",
-                            )
+                    row.col(|ui| {
+                        let label = if file.is_conflicted {
+                            egui::RichText::new(&file.path)
+                                .color(egui::Color32::from_rgb(255, 170, 80))
+                        } else if is_selected {
+                            egui::RichText::new(&file.path).strong()
                         } else {
-                            (
-                                "Stage",
-                                "Stage this file\nShortcut: Ctrl/Cmd+S when selected",
-                            )
+                            egui::RichText::new(&file.path)
                         };
-                        if ui
-                            .small_button(btn_label)
-                            .on_hover_text(btn_tooltip)
-                            .clicked()
-                        {
-                            action_clicked = true;
-                            if staged {
-                                state
-                                    .ui_state
-                                    .actions
-                                    .push(UiAction::unstage_file(file.path.clone()));
-                            } else {
-                                state
-                                    .ui_state
-                                    .actions
-                                    .push(UiAction::stage_file(file.path.clone()));
-                            }
-                        }
+                        ui.add(egui::Label::new(label).truncate());
                     });
+
+                    row.col(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            diff_view::render_status_badge(
+                                ui,
+                                &file.display_status,
+                                file.is_conflicted,
+                            );
+                        });
+                    });
+
+                    row.col(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let handle = drag_handle(ui);
+                            handle
+                                .clone()
+                                .on_hover_cursor(egui::CursorIcon::Grab)
+                                .on_hover_text(if staged {
+                                    "Drag to move this file to unstaged"
+                                } else {
+                                    "Drag to move this file to staged"
+                                });
+                            if handle.drag_started() {
+                                drag_started = true;
+                                inspector.dragging = Some(DragFile {
+                                    path: file.path.clone(),
+                                    from_staged: staged,
+                                });
+                            }
+
+                            let (btn_label, btn_tooltip) = if staged {
+                                (
+                                    "Unstage",
+                                    "Unstage this file\nShortcut: Ctrl/Cmd+S when selected",
+                                )
+                            } else {
+                                (
+                                    "Stage",
+                                    "Stage this file\nShortcut: Ctrl/Cmd+S when selected",
+                                )
+                            };
+                            if ui
+                                .small_button(btn_label)
+                                .on_hover_text(btn_tooltip)
+                                .clicked()
+                            {
+                                action_clicked = true;
+                                if staged {
+                                    ui_state
+                                        .actions
+                                        .push(UiAction::unstage_file(file.path.clone()));
+                                } else {
+                                    ui_state
+                                        .actions
+                                        .push(UiAction::stage_file(file.path.clone()));
+                                }
+                            }
+                        });
+                    });
+
+                    let row_response = row.response().clone();
+                    hover.observe(index, &row_response);
+                    row_response
+                        .clone()
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                    if row_response.clicked() && !action_clicked && !drag_started {
+                        ui_state
+                            .actions
+                            .push(UiAction::select_file(file.path.clone(), staged));
+                    }
                 });
+            })
+            .inner_rect;
 
-                let row_response = row.response().clone();
-                row_response
-                    .clone()
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-                if row_response.clicked() && !action_clicked && !drag_started {
-                    state
-                        .ui_state
-                        .actions
-                        .push(UiAction::select_file(file.path.clone(), staged));
-                }
-            });
-        })
-        .inner_rect
+        hover.store(ui);
+        inner_rect
+    })
+    .inner
 }
 
 fn render_empty_section(
     ui: &mut egui::Ui,
-    state: &FilePanelState<'_>,
+    worktree: &WorktreeState,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
     let (title, hint) = if staged {
-        if state.worktree.unstaged.is_empty() {
+        if worktree.unstaged.is_empty() {
             (
                 "Nothing staged yet",
                 "Edit a file in your project — changes will show up here.",
@@ -228,7 +288,7 @@ fn render_empty_section(
                 "Click Stage, or drag a file from Unstaged above.",
             )
         }
-    } else if state.worktree.staged.is_empty() {
+    } else if worktree.staged.is_empty() {
         (
             "Working tree is clean",
             "Edit any file in your project to see it here.",
@@ -265,33 +325,6 @@ fn render_empty_section(
     );
 
     rect
-}
-
-fn render_status_badge(ui: &mut egui::Ui, file: &FileEntry) {
-    let (fill, text) = if file.is_conflicted {
-        (egui::Color32::from_rgb(160, 92, 32), "CONFLICT")
-    } else {
-        match file.display_status.as_str() {
-            "new" => (egui::Color32::from_rgb(48, 128, 88), "NEW"),
-            "untracked" => (egui::Color32::from_rgb(48, 128, 88), "ADDED"),
-            "modified" => (egui::Color32::from_rgb(52, 96, 160), "MODIFIED"),
-            "deleted" => (egui::Color32::from_rgb(152, 64, 64), "DELETED"),
-            "renamed" => (egui::Color32::from_rgb(108, 76, 156), "RENAMED"),
-            _ => (egui::Color32::from_rgb(92, 92, 92), "CHANGED"),
-        }
-    };
-
-    egui::Frame::new()
-        .fill(fill)
-        .corner_radius(4.0)
-        .inner_margin(egui::Margin::symmetric(6, 2))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(text)
-                    .small()
-                    .color(egui::Color32::WHITE),
-            );
-        });
 }
 
 fn drag_handle(ui: &mut egui::Ui) -> egui::Response {
