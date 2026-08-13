@@ -397,3 +397,157 @@
 - Location: src/infra/github/repos.rs:150
 - Namespace: crate::infra::github::repos
 - Anchor: fn parse_target_repo_name(
+
+## src/ui/tab_bar.rs
+
+### struct TabBarView
+- Location: src/ui/tab_bar.rs:4
+- Namespace: crate::ui::tab_bar
+- Anchor: pub struct TabBarView<'a> {
+
+### struct TabBarResponse
+- Location: src/ui/tab_bar.rs:14
+- Namespace: crate::ui::tab_bar
+- Anchor: pub struct TabBarResponse {
+
+### const PAD_X
+- Location: src/ui/tab_bar.rs:20
+- Namespace: crate::ui::tab_bar
+- Anchor: const PAD_X: f32 = 10.0;
+
+### const PAD_Y
+- Location: src/ui/tab_bar.rs:21
+- Namespace: crate::ui::tab_bar
+- Anchor: const PAD_Y: f32 = 5.0;
+
+### const LABEL_CLOSE_GAP
+- Location: src/ui/tab_bar.rs:22
+- Namespace: crate::ui::tab_bar
+- Anchor: const LABEL_CLOSE_GAP: f32 = 6.0;
+
+### const CLOSE_SIZE
+- Location: src/ui/tab_bar.rs:23
+- Namespace: crate::ui::tab_bar
+- Anchor: const CLOSE_SIZE: f32 = 14.0;
+
+### const TAB_CORNER
+- Location: src/ui/tab_bar.rs:24
+- Namespace: crate::ui::tab_bar
+- Anchor: const TAB_CORNER: u8 = 6;
+
+### function show
+- Location: src/ui/tab_bar.rs:33
+- Namespace: crate::ui::tab_bar
+- Anchor: pub fn show(ui: &mut egui::Ui, view: &TabBarView) -> TabBarResponse {
+
+### function draw_tab
+- Location: src/ui/tab_bar.rs:111
+- Namespace: crate::ui::tab_bar
+- Anchor: fn draw_tab(
+
+### const NEW_TAB_GAP
+- Location: src/ui/tab_bar.rs:25
+- Namespace: crate::ui::tab_bar
+- Anchor: const NEW_TAB_GAP: f32 = 4.0;
+
+### const NEW_TAB_GLYPH
+- Location: src/ui/tab_bar.rs:30
+- Namespace: crate::ui::tab_bar
+- Anchor: const NEW_TAB_GLYPH: f32 = 16.0;
+
+### function draw_new_tab_button
+- Location: src/ui/tab_bar.rs:69
+- Namespace: crate::ui::tab_bar
+- Anchor: fn draw_new_tab_button(
+
+### const NEW_TAB_CORNER
+- Location: src/ui/tab_bar.rs:29
+- Namespace: crate::ui::tab_bar
+- Anchor: const NEW_TAB_CORNER: u8 = 4;
+
+### const NEW_TAB_WIDTH
+- Location: src/ui/tab_bar.rs:28
+- Namespace: crate::ui::tab_bar
+- Anchor: const NEW_TAB_WIDTH: f32 = 20.0;
+
+## src/app/shell.rs
+
+### struct RepoTabsUiOutput
+- Location: src/app/shell.rs:4
+- Namespace: crate::app::shell
+- Anchor: struct RepoTabsUiOutput {
+
+### struct RepoToolbarModel
+- Location: src/app/shell.rs:15
+- Namespace: crate::app::shell
+- Anchor: struct RepoToolbarModel {
+
+#### method RepoToolbarModel.from_state
+- Location: src/app/shell.rs:37
+- Namespace: crate::app::shell
+- Anchor: fn from_state(
+
+#### method GitGuiApp.refresh_active_tab
+- Location: src/app/shell.rs:126
+- Namespace: crate::app::shell
+- Anchor: pub(super) fn refresh_active_tab(&mut self) {
+
+#### method GitGuiApp.handle_keyboard_shortcuts
+- Location: src/app/shell.rs:172
+- Namespace: crate::app::shell
+- Anchor: pub(super) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+
+#### method GitGuiApp.show_log_viewer_dialog
+- Location: src/app/shell.rs:244
+- Namespace: crate::app::shell
+- Anchor: pub(super) fn show_log_viewer_dialog(&mut self, ctx: &egui::Context) {
+
+#### method GitGuiApp.show_repo_tabs
+- Location: src/app/shell.rs:272
+- Namespace: crate::app::shell
+- Anchor: pub(super) fn show_repo_tabs(&mut self, ui: &mut egui::Ui) {
+
+#### method GitGuiApp.repo_tab_labels
+- Location: src/app/shell.rs:294
+- Namespace: crate::app::shell
+- Anchor: fn repo_tab_labels(&self) -> Vec<(String, Option<String>)> {
+
+#### method GitGuiApp.show_repo_tabs_panel
+- Location: src/app/shell.rs:310
+- Namespace: crate::app::shell
+- Anchor: fn show_repo_tabs_panel(
+
+#### method GitGuiApp.show_repo_menu
+- Location: src/app/shell.rs:351
+- Namespace: crate::app::shell
+- Anchor: fn show_repo_menu(
+
+#### method GitGuiApp.show_repo_toolbar_actions
+- Location: src/app/shell.rs:463
+- Namespace: crate::app::shell
+- Anchor: fn show_repo_toolbar_actions(
+
+#### method GitGuiApp.show_remote_sync_actions
+- Location: src/app/shell.rs:475
+- Namespace: crate::app::shell
+- Anchor: fn show_remote_sync_actions(
+
+#### method GitGuiApp.show_pull_request_action
+- Location: src/app/shell.rs:514
+- Namespace: crate::app::shell
+- Anchor: fn show_pull_request_action(
+
+#### method GitGuiApp.show_branch_controls
+- Location: src/app/shell.rs:554
+- Namespace: crate::app::shell
+- Anchor: fn show_branch_controls(ui: &mut egui::Ui, state: &mut AppState, toolbar: &RepoToolbarModel) {
+
+#### method GitGuiApp.apply_repo_tabs_output
+- Location: src/app/shell.rs:585
+- Namespace: crate::app::shell
+- Anchor: fn apply_repo_tabs_output(&mut self, active_index: usize, output: RepoTabsUiOutput) {
+
+#### method GitGuiApp.show_welcome
+- Location: src/app/shell.rs:616
+- Namespace: crate::app::shell
+- Anchor: pub(super) fn show_welcome(&mut self, ui: &mut egui::Ui) {
