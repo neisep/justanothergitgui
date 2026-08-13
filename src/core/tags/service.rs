@@ -259,13 +259,10 @@ mod tests {
             has_origin: true,
             ..Default::default()
         };
-        let github = FakeGitHub {
-            https_origin: true,
-        };
+        let github = FakeGitHub { https_origin: true };
         let auth = app_auth();
 
-        let message =
-            create_tag(path(), "v1.0.0", Some(&auth), &git, &github).expect("push tag");
+        let message = create_tag(path(), "v1.0.0", Some(&auth), &git, &github).expect("push tag");
 
         assert_eq!(message, "Created and pushed tag v1.0.0");
         assert_eq!(
@@ -282,12 +279,9 @@ mod tests {
             has_origin: true,
             ..Default::default()
         };
-        let github = FakeGitHub {
-            https_origin: true,
-        };
+        let github = FakeGitHub { https_origin: true };
 
-        let error =
-            create_tag(path(), "v1.0.0", None, &git, &github).expect_err("auth required");
+        let error = create_tag(path(), "v1.0.0", None, &git, &github).expect_err("auth required");
 
         assert!(error.contains("GitHub tag creation requires the app's GitHub sign-in"));
         assert!(git.pushed.borrow().is_empty(), "push not attempted");
@@ -327,8 +321,7 @@ mod tests {
             https_origin: false,
         };
 
-        let error =
-            create_tag(path(), "v1.0.0", None, &git, &github).expect_err("both failed");
+        let error = create_tag(path(), "v1.0.0", None, &git, &github).expect_err("both failed");
 
         assert_eq!(
             error,

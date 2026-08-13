@@ -490,15 +490,12 @@ impl GitGuiApp {
         };
 
         let output = ui::dialogs::github_auth::show(ctx, &prompt);
-        if output.open_github_again_clicked {
-            if let Err(error) = webbrowser::open(&prompt.browser_url) {
-                let detail = error.to_string();
-                self.logger.log_error("GitHub sign-in", &detail);
-                self.set_status_message(helpers::status_message_for_error(
-                    "GitHub sign-in",
-                    &detail,
-                ));
-            }
+        if output.open_github_again_clicked
+            && let Err(error) = webbrowser::open(&prompt.browser_url)
+        {
+            let detail = error.to_string();
+            self.logger.log_error("GitHub sign-in", &detail);
+            self.set_status_message(helpers::status_message_for_error("GitHub sign-in", &detail));
         }
     }
 }

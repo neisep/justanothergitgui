@@ -109,7 +109,7 @@ pub fn repo_name_from_clone_url(url: &str) -> Option<String> {
 
     let without_git = trimmed.strip_suffix(".git").unwrap_or(trimmed);
     let segment = without_git
-        .rsplit(|ch: char| ch == '/' || ch == ':')
+        .rsplit(['/', ':'])
         .find(|part| !part.is_empty())?;
     let segment = segment.trim();
     if segment.is_empty() || segment.contains('\\') || segment.contains('\0') {
@@ -118,9 +118,7 @@ pub fn repo_name_from_clone_url(url: &str) -> Option<String> {
 
     let path = Path::new(segment);
     let mut components = path.components();
-    let Some(first) = components.next() else {
-        return None;
-    };
+    let first = components.next()?;
     if components.next().is_some() {
         return None;
     }
