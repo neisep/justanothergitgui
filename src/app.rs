@@ -23,7 +23,7 @@ use crate::shared::github::{
     CreateGithubRepoRequest, GithubAuthCheck, GithubAuthPrompt, GithubAuthSession,
     GithubRepoSummary, GithubRepoVisibility, PullRequestPrompt,
 };
-use crate::state::{AppState, BusyAction, BusyState};
+use crate::state::{AppState, BusyAction, BusyState, StatusMessage};
 use crate::ui;
 use crate::worker::{RepoWorker, WelcomeWorker};
 
@@ -108,7 +108,7 @@ pub(crate) struct SettingsDialogState {
 pub struct GitGuiApp {
     tabs: Vec<RepoTab>,
     active_tab: usize,
-    welcome_status: String,
+    welcome_status: StatusMessage,
     welcome_worker: WelcomeWorker,
     welcome_busy: Option<BusyState>,
     publish_dialog: PublishRepoDialogState,
@@ -186,10 +186,9 @@ impl GitGuiApp {
                         "Saved GitHub token was revoked or expired; please sign in again.",
                     );
                     if startup_status.is_none() {
-                        startup_status = Some(
-                            "GitHub sign-in expired. Use 'Sign in to GitHub...' to reconnect."
-                                .into(),
-                        );
+                        startup_status = Some(StatusMessage::error(
+                            "GitHub sign-in expired. Use 'Sign in to GitHub...' to reconnect.",
+                        ));
                     }
                     None
                 }
@@ -213,7 +212,7 @@ impl GitGuiApp {
         let mut app = Self {
             tabs: Vec::new(),
             active_tab: 0,
-            welcome_status: "Open a Git repository to get started.".into(),
+            welcome_status: StatusMessage::info("Open a Git repository to get started."),
             welcome_worker: WelcomeWorker::new(),
             welcome_busy: None,
             publish_dialog: PublishRepoDialogState::new(settings.commit_message_ruleset),
@@ -276,6 +275,7 @@ impl eframe::App for GitGuiApp {
         }
 
         self.handle_keyboard_shortcuts(&ctx);
+        self.handle_window_focus(&ctx);
 
         if self.tabs.is_empty() {
             self.show_welcome(ui);
@@ -313,7 +313,7 @@ impl eframe::App for GitGuiApp {
                 ui,
                 ui::bottom_bar::BottomBarView {
                     repo_path: tab.state.repo.path.as_deref(),
-                    status_msg: &tab.state.ui.status_msg,
+                    status: &tab.state.ui.status,
                 },
                 has_logs,
             );

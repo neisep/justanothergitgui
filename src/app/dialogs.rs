@@ -106,17 +106,20 @@ impl GitGuiApp {
             ctx,
             &mut self.settings_dialog,
             self.settings.commit_message_ruleset,
+            self.settings.auto_refresh_on_focus,
         );
 
         let parsed_custom_scopes =
             commit_rules::parse_custom_scopes(&self.settings_dialog.custom_scopes_input);
         if output.custom_scope_error.is_none()
             && (output.selected_ruleset != self.settings.commit_message_ruleset
+                || output.auto_refresh_on_focus != self.settings.auto_refresh_on_focus
                 || parsed_custom_scopes.as_ref().ok()
                     != Some(&self.settings.commit_message_custom_scopes))
         {
             let mut next_settings = self.settings.clone();
             next_settings.commit_message_ruleset = output.selected_ruleset;
+            next_settings.auto_refresh_on_focus = output.auto_refresh_on_focus;
             next_settings.commit_message_custom_scopes = parsed_custom_scopes.unwrap_or_default();
             match settings::save_app_settings(&next_settings) {
                 Ok(()) => {
@@ -125,9 +128,9 @@ impl GitGuiApp {
                 }
                 Err(error) => {
                     self.logger.log_error("Settings", &error);
-                    self.settings_dialog.status =
-                        helpers::status_message_for_error("Settings", &error);
-                    self.set_status_message(self.settings_dialog.status.clone());
+                    let status = helpers::status_message_for_error("Settings", &error);
+                    self.settings_dialog.status = status.text().to_string();
+                    self.set_status_message(status);
                 }
             }
         }
@@ -206,7 +209,7 @@ impl GitGuiApp {
             self.welcome_busy = Some(BusyState::new(BusyAction::CloneRepository, "Cloning..."));
         } else {
             let dispatch_message = helpers::status_message_for_worker_dispatch("Clone");
-            self.clone_dialog.status = dispatch_message.clone();
+            self.clone_dialog.status = dispatch_message.text().to_string();
             self.logger
                 .log_error("Clone", helpers::WORKER_DISPATCH_ERROR_DETAIL);
             self.welcome_status = dispatch_message.clone();
@@ -275,7 +278,7 @@ impl GitGuiApp {
                         } else {
                             let message =
                                 helpers::status_message_for_worker_dispatch("Publish to GitHub");
-                            self.publish_dialog.operation_status = message.clone();
+                            self.publish_dialog.operation_status = message.text().to_string();
                             self.logger.log_error(
                                 "Publish to GitHub",
                                 helpers::WORKER_DISPATCH_ERROR_DETAIL,

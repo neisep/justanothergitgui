@@ -10,6 +10,7 @@ struct RepoTabsUiOutput {
     publish_clicked: bool,
     github_sign_in_clicked: bool,
     create_tag_clicked: bool,
+    refresh_clicked: bool,
 }
 
 struct RepoToolbarModel {
@@ -123,7 +124,23 @@ impl RepoToolbarModel {
 }
 
 impl GitGuiApp {
+    /// Refresh the active tab and say so in the status line — the response the
+    /// user asked for by pressing Refresh or `Ctrl/Cmd+R`.
     pub(super) fn refresh_active_tab(&mut self) {
+        self.refresh_active_tab_inner(true);
+    }
+
+    /// Refresh the active tab without announcing success.
+    ///
+    /// Used by the refresh-on-focus path, which fires on every alt-tab: writing
+    /// "Refreshed repository status" there would clobber whatever the user was
+    /// last told (the result of their push, commit, or failure) simply because
+    /// they looked at another window. Failures are still reported.
+    pub(super) fn refresh_active_tab_quiet(&mut self) {
+        self.refresh_active_tab_inner(false);
+    }
+
+    fn refresh_active_tab_inner(&mut self, announce: bool) {
         let Some(active_index) = self.normalize_active_tab() else {
             return;
         };
@@ -132,7 +149,10 @@ impl GitGuiApp {
         };
 
         if self.tabs[active_index].worker.is_busy() {
-            self.tabs[active_index].state.ui.status_msg = "Busy — please wait...".into();
+            if announce {
+                self.tabs[active_index].state.ui.status =
+                    StatusMessage::info("Busy — please wait...");
+            }
             return;
         }
 
@@ -151,21 +171,44 @@ impl GitGuiApp {
                     )
                 };
                 if let Some(detail) = refresh_result {
-                    self.tabs[active_index].state.ui.status_msg =
+                    self.tabs[active_index].state.ui.status =
                         helpers::status_message_for_error("Refresh", &detail);
                     self.tabs[active_index].logger.log_error("Refresh", &detail);
-                } else {
-                    self.tabs[active_index].state.ui.status_msg =
-                        "Refreshed repository status".into();
+                } else if announce {
+                    self.tabs[active_index].state.ui.status =
+                        StatusMessage::success("Refreshed repository status");
                 }
                 self.tabs[active_index].repo = repo;
             }
             Err(error) => {
                 let detail = error.to_string();
-                self.tabs[active_index].state.ui.status_msg =
+                self.tabs[active_index].state.ui.status =
                     helpers::status_message_for_error("Refresh", &detail);
                 self.tabs[active_index].logger.log_error("Refresh", &detail);
             }
+        }
+    }
+
+    /// Re-read the repository when the window comes back to the foreground.
+    ///
+    /// Work happens in an editor, not here, so the moment the user switches back
+    /// is exactly when the view is most likely to be out of date. Listening for
+    /// the `WindowFocused(true)` event rather than the viewport's `focused` flag
+    /// gives the transition instead of a value that is true on every frame.
+    pub(super) fn handle_window_focus(&mut self, ctx: &egui::Context) {
+        if !self.settings.auto_refresh_on_focus || self.any_dialog_open() {
+            return;
+        }
+
+        let regained_focus = ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(true)))
+        });
+
+        if regained_focus {
+            self.refresh_active_tab_quiet();
         }
     }
 
@@ -206,8 +249,8 @@ impl GitGuiApp {
                     .actions
                     .push(UiAction::stage_file(selected.path)),
                 None => {
-                    self.tabs[active_index].state.ui.status_msg =
-                        "Select a file to stage or unstage first".into();
+                    self.tabs[active_index].state.ui.status =
+                        StatusMessage::info("Select a file to stage or unstage first");
                 }
             }
         }
@@ -222,12 +265,12 @@ impl GitGuiApp {
                 commit_rules::validation_error(self.settings.commit_message_ruleset, &message);
 
             if tab.state.worktree.staged.is_empty() {
-                tab.state.ui.status_msg = "Stage files first".into();
+                tab.state.ui.status = StatusMessage::info("Stage files first");
             } else if tab.state.commit.commit_summary.trim().is_empty() {
-                tab.state.ui.status_msg = "Enter a commit summary".into();
+                tab.state.ui.status = StatusMessage::info("Enter a commit summary");
                 tab.state.commit.focus_commit_summary_requested = true;
             } else if let Some(error) = validation_error {
-                tab.state.ui.status_msg = error;
+                tab.state.ui.status = StatusMessage::error(error);
                 tab.state.commit.focus_commit_summary_requested = true;
             } else {
                 tab.state.ui.actions.push(UiAction::commit());
@@ -259,7 +302,7 @@ impl GitGuiApp {
         if output.clear_clicked {
             let result = self.log_target(active).clear_entries();
             match result {
-                Ok(()) => self.set_status_message("Logs cleared.".into()),
+                Ok(()) => self.set_status_message(StatusMessage::success("Logs cleared.")),
                 Err(error) => {
                     self.set_status_message(helpers::status_message_for_error("Clear logs", &error))
                 }
@@ -341,7 +384,7 @@ impl GitGuiApp {
                     ui::show_inline_busy(ui, &busy.label);
                 }
 
-                Self::show_repo_toolbar_actions(ui, state, toolbar);
+                Self::show_repo_toolbar_actions(ui, state, toolbar, &mut output);
             });
         });
 
@@ -464,12 +507,36 @@ impl GitGuiApp {
         ui: &mut egui::Ui,
         state: &mut AppState,
         toolbar: &RepoToolbarModel,
+        output: &mut RepoTabsUiOutput,
     ) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             Self::show_remote_sync_actions(ui, state, toolbar);
+            Self::show_refresh_action(ui, toolbar, output);
             Self::show_pull_request_action(ui, state, toolbar);
             Self::show_branch_controls(ui, state, toolbar);
         });
+    }
+
+    /// The one control that answers "did anything change outside the app?".
+    ///
+    /// Deliberately outside [`Self::show_remote_sync_actions`], which returns
+    /// early without an origin remote: reading the working tree needs no remote,
+    /// and a local-only repository is exactly where a stale view goes unnoticed.
+    fn show_refresh_action(
+        ui: &mut egui::Ui,
+        toolbar: &RepoToolbarModel,
+        output: &mut RepoTabsUiOutput,
+    ) {
+        if ui
+            .add_enabled(
+                toolbar.has_repo && !toolbar.repo_worker_busy,
+                egui::Button::new("Refresh"),
+            )
+            .on_hover_text("Reload the working tree and history\nShortcut: Ctrl/Cmd+R or F5")
+            .clicked()
+        {
+            output.refresh_clicked = true;
+        }
     }
 
     fn show_remote_sync_actions(
@@ -611,6 +678,9 @@ impl GitGuiApp {
         if output.show_logs_clicked {
             self.show_log_viewer = true;
         }
+        if output.refresh_clicked {
+            self.refresh_active_tab();
+        }
     }
 
     pub(super) fn show_welcome(&mut self, ui: &mut egui::Ui) {
@@ -656,7 +726,7 @@ impl GitGuiApp {
                     self.open_settings_dialog();
                 }
                 ui.add_space(12.0);
-                ui.weak(&self.welcome_status);
+                ui.weak(self.welcome_status.text());
                 if self.logger.has_entries() && ui.button("View Logs").clicked() {
                     self.show_log_viewer = true;
                 }

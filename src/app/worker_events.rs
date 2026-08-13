@@ -43,8 +43,8 @@ impl HandleWelcomeTaskResult for GithubAuthPromptResult {
             "If GitHub did not open automatically, visit {}.",
             self.0.verification_uri
         );
-        ctx.app.welcome_status = message.clone();
-        ctx.app.set_status_message(message);
+        ctx.app.welcome_status = StatusMessage::info(message.clone());
+        ctx.app.set_status_message(StatusMessage::info(message));
     }
 }
 
@@ -55,44 +55,48 @@ impl HandleWelcomeTaskResult for GithubAuthResult {
         match self.0 {
             Ok(session) => {
                 let persistence_result = AppGitHubAuth::save_session(&session);
-                let message = match &persistence_result {
-                    Ok(()) => format!("GitHub sign-in complete for @{}", session.login),
+                // Signing in worked either way; a failed keychain write still
+                // leaves the session usable for this run, so it reports as an
+                // error rather than quietly passing as a success.
+                let status = match &persistence_result {
+                    Ok(()) => StatusMessage::success(format!(
+                        "GitHub sign-in complete for @{}",
+                        session.login
+                    )),
                     Err(error) => {
                         ctx.app.logger.log_error("GitHub sign-in", error);
-                        format!(
+                        StatusMessage::error(format!(
                             "GitHub sign-in complete for @{}, but {}",
                             session.login,
                             logging::summarize_for_ui(error)
-                        )
+                        ))
                     }
                 };
                 ctx.app.github_auth_prompt = None;
                 ctx.app.github_auth_session = Some(session);
                 ctx.app.publish_dialog.github_authenticated = true;
-                ctx.app.publish_dialog.github_status = message.clone();
+                ctx.app.publish_dialog.github_status = status.text().to_string();
                 ctx.app.publish_dialog.operation_status.clear();
-                ctx.app.welcome_status = message;
-                ctx.app
-                    .set_status_message(ctx.app.publish_dialog.github_status.clone());
+                ctx.app.welcome_status = status.clone();
+                ctx.app.set_status_message(status);
             }
             Err(msg) => {
                 ctx.app.logger.log_error("GitHub sign-in", &msg);
                 ctx.app.github_auth_prompt = None;
                 ctx.app.publish_dialog.github_authenticated = ctx.app.github_auth_session.is_some();
-                ctx.app.publish_dialog.github_status =
-                    if let Some(session) = &ctx.app.github_auth_session {
-                        format!(
-                            "Signed in to GitHub as @{} (latest sign-in failed: {})",
-                            session.login,
-                            logging::summarize_for_ui(&msg)
-                        )
-                    } else {
-                        helpers::status_message_for_error("GitHub sign-in", &msg)
-                    };
+                let status = if let Some(session) = &ctx.app.github_auth_session {
+                    StatusMessage::error(format!(
+                        "Signed in to GitHub as @{} (latest sign-in failed: {})",
+                        session.login,
+                        logging::summarize_for_ui(&msg)
+                    ))
+                } else {
+                    helpers::status_message_for_error("GitHub sign-in", &msg)
+                };
+                ctx.app.publish_dialog.github_status = status.text().to_string();
                 ctx.app.publish_dialog.operation_status.clear();
-                ctx.app.welcome_status = helpers::status_message_for_error("GitHub sign-in", &msg);
-                ctx.app
-                    .set_status_message(ctx.app.publish_dialog.github_status.clone());
+                ctx.app.welcome_status = status.clone();
+                ctx.app.set_status_message(status);
             }
         }
     }
@@ -104,19 +108,18 @@ impl HandleWelcomeTaskResult for CreateGithubRepoResult {
 
         match self.0 {
             Ok(result) => {
-                let message = result.message.clone();
+                let status = StatusMessage::success(result.message.clone());
                 ctx.app.publish_dialog.show = false;
                 ctx.app.publish_dialog.operation_status.clear();
-                ctx.app.welcome_status = message.clone();
+                ctx.app.welcome_status = status.clone();
                 ctx.app.open_repo(result.folder_path);
-                ctx.app.set_status_message(message);
+                ctx.app.set_status_message(status);
             }
             Err(msg) => {
                 ctx.app.logger.log_error("Publish to GitHub", &msg);
-                ctx.app.publish_dialog.operation_status =
-                    helpers::status_message_for_error("Publish to GitHub", &msg);
-                ctx.app.welcome_status =
-                    helpers::status_message_for_error("Publish to GitHub", &msg);
+                let status = helpers::status_message_for_error("Publish to GitHub", &msg);
+                ctx.app.publish_dialog.operation_status = status.text().to_string();
+                ctx.app.welcome_status = status;
             }
         }
     }
@@ -147,15 +150,17 @@ impl HandleWelcomeTaskResult for CloneRepoResult {
             Ok(path) => {
                 ctx.app.clone_dialog.show = false;
                 ctx.app.clone_dialog.status.clear();
-                let message = format!("Cloned repository to {}", path.display());
-                ctx.app.welcome_status = message.clone();
+                let status =
+                    StatusMessage::success(format!("Cloned repository to {}", path.display()));
+                ctx.app.welcome_status = status.clone();
                 ctx.app.open_repo(path);
-                ctx.app.set_status_message(message);
+                ctx.app.set_status_message(status);
             }
             Err(msg) => {
                 ctx.app.logger.log_error("Clone", &msg);
-                ctx.app.clone_dialog.status = helpers::status_message_for_error("Clone", &msg);
-                ctx.app.welcome_status = helpers::status_message_for_error("Clone", &msg);
+                let status = helpers::status_message_for_error("Clone", &msg);
+                ctx.app.clone_dialog.status = status.text().to_string();
+                ctx.app.welcome_status = status;
             }
         }
     }
@@ -177,11 +182,12 @@ impl HandleRepoTaskResult for PushResult {
                     None => String::new(),
                 };
                 ctx.tab.state.repo.pull_request_prompt = result.pull_request_prompt;
-                ctx.tab.state.ui.status_msg = format!("Push: {}{}", result.message, prompt_message);
+                ctx.tab.state.ui.status =
+                    StatusMessage::success(format!("Push: {}{}", result.message, prompt_message));
                 ctx.request_refresh();
             }
             Err(msg) => {
-                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Push", &msg);
+                ctx.tab.state.ui.status = helpers::status_message_for_error("Push", &msg);
                 ctx.log_error("Push", &msg);
             }
         }
@@ -194,11 +200,11 @@ impl HandleRepoTaskResult for PullResult {
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.ui.status_msg = format!("Pull: {}", msg);
+                ctx.tab.state.ui.status = StatusMessage::success(format!("Pull: {}", msg));
                 ctx.request_refresh();
             }
             Err(msg) => {
-                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Pull", &msg);
+                ctx.tab.state.ui.status = helpers::status_message_for_error("Pull", &msg);
                 ctx.log_error("Pull", &msg);
             }
         }
@@ -211,13 +217,13 @@ impl HandleRepoTaskResult for CreateTagResult {
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.ui.status_msg = msg;
+                ctx.tab.state.ui.status = StatusMessage::success(msg);
                 ctx.tab.state.dialogs.tag.new_tag_name.clear();
                 ctx.tab.state.dialogs.tag.focus_new_tag_name_requested = false;
                 ctx.tab.state.dialogs.tag.show_create_tag_dialog = false;
             }
             Err(msg) => {
-                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Create tag", &msg);
+                ctx.tab.state.ui.status = helpers::status_message_for_error("Create tag", &msg);
                 ctx.log_error("Create tag", &msg);
             }
         }
@@ -232,10 +238,10 @@ impl HandleRepoTaskResult for OpenPullRequestResult {
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.ui.status_msg = msg;
+                ctx.tab.state.ui.status = StatusMessage::success(msg);
             }
             Err(msg) => {
-                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Open PR", &msg);
+                ctx.tab.state.ui.status = helpers::status_message_for_error("Open PR", &msg);
                 ctx.log_error("Open PR", &msg);
             }
         }
@@ -248,10 +254,10 @@ impl HandleRepoTaskResult for CreatePullRequestResult {
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.ui.status_msg = msg;
+                ctx.tab.state.ui.status = StatusMessage::success(msg);
             }
             Err(msg) => {
-                ctx.tab.state.ui.status_msg = helpers::status_message_for_error("Create PR", &msg);
+                ctx.tab.state.ui.status = helpers::status_message_for_error("Create PR", &msg);
                 ctx.log_error("Create PR", &msg);
             }
         }
@@ -264,13 +270,13 @@ impl HandleRepoTaskResult for DiscardAndResetResult {
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.ui.status_msg = format!("Discard: {}", msg);
+                ctx.tab.state.ui.status = StatusMessage::success(format!("Discard: {}", msg));
                 ctx.tab.state.dialogs.discard.show_discard_dialog = false;
                 ctx.tab.state.dialogs.discard.discard_preview = None;
                 ctx.tab.state.dialogs.discard.discard_clean_untracked = false;
             }
             Err(msg) => {
-                ctx.tab.state.ui.status_msg =
+                ctx.tab.state.ui.status =
                     helpers::status_message_for_error("Discard & reset", &msg);
                 ctx.log_error("Discard & reset", &msg);
             }
@@ -286,10 +292,11 @@ impl HandleRepoTaskResult for UndoLastCommitResult {
 
         match self.0 {
             Ok(msg) => {
-                ctx.tab.state.ui.status_msg = format!("Undo last commit: {}", msg);
+                ctx.tab.state.ui.status =
+                    StatusMessage::success(format!("Undo last commit: {}", msg));
             }
             Err(msg) => {
-                ctx.tab.state.ui.status_msg =
+                ctx.tab.state.ui.status =
                     helpers::status_message_for_error("Undo last commit", &msg);
                 ctx.log_error("Undo last commit", &msg);
             }
@@ -358,7 +365,7 @@ fn refresh_repo_tab(tab: &mut RepoTab) {
         }
         Err(error) => {
             let detail = error.to_string();
-            tab.state.ui.status_msg = helpers::status_message_for_error("Refresh", &detail);
+            tab.state.ui.status = helpers::status_message_for_error("Refresh", &detail);
             tab.logger.log_error("Refresh", &detail);
         }
     }

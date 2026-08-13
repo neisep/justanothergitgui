@@ -41,7 +41,7 @@ impl UiAction {
 
 fn stage_file(ctx: &mut TabActionContext<'_>, path: String) {
     match AppRepoWrite::stage_file(&ctx.tab.repo, &path) {
-        Ok(()) => ctx.tab.state.ui.status_msg = format!("Staged: {path}"),
+        Ok(()) => ctx.tab.state.ui.status = StatusMessage::success(format!("Staged: {path}")),
         Err(error) => log_action_error(ctx, "Stage", error.to_string()),
     }
     refresh_tab(ctx);
@@ -49,7 +49,7 @@ fn stage_file(ctx: &mut TabActionContext<'_>, path: String) {
 
 fn unstage_file(ctx: &mut TabActionContext<'_>, path: String) {
     match AppRepoWrite::unstage_file(&ctx.tab.repo, &path) {
-        Ok(()) => ctx.tab.state.ui.status_msg = format!("Unstaged: {path}"),
+        Ok(()) => ctx.tab.state.ui.status = StatusMessage::success(format!("Unstaged: {path}")),
         Err(error) => log_action_error(ctx, "Unstage", error.to_string()),
     }
     refresh_tab(ctx);
@@ -57,7 +57,7 @@ fn unstage_file(ctx: &mut TabActionContext<'_>, path: String) {
 
 fn stage_all(ctx: &mut TabActionContext<'_>) {
     match AppRepoWrite::stage_all(&ctx.tab.repo) {
-        Ok(()) => ctx.tab.state.ui.status_msg = "Staged all changes".into(),
+        Ok(()) => ctx.tab.state.ui.status = StatusMessage::success("Staged all changes"),
         Err(error) => log_action_error(ctx, "Stage all", error.to_string()),
     }
     refresh_tab(ctx);
@@ -65,7 +65,7 @@ fn stage_all(ctx: &mut TabActionContext<'_>) {
 
 fn unstage_all(ctx: &mut TabActionContext<'_>) {
     match AppRepoWrite::unstage_all(&ctx.tab.repo) {
-        Ok(()) => ctx.tab.state.ui.status_msg = "Unstaged all changes".into(),
+        Ok(()) => ctx.tab.state.ui.status = StatusMessage::success("Unstaged all changes"),
         Err(error) => log_action_error(ctx, "Unstage all", error.to_string()),
     }
     refresh_tab(ctx);
@@ -85,7 +85,8 @@ fn commit(ctx: &mut TabActionContext<'_>) {
             should_refresh = true;
             match AppRepoWrite::create_commit(&tab.repo, &msg) {
                 Ok(oid) => {
-                    tab.state.ui.status_msg = format!("Committed: {}", &oid.to_string()[..8]);
+                    tab.state.ui.status =
+                        StatusMessage::success(format!("Committed: {}", &oid.to_string()[..8]));
                     clear_repo_selection(&mut tab.state.inspector);
                     tab.state.commit.commit_summary.clear();
                     tab.state.commit.commit_body.clear();
@@ -94,7 +95,7 @@ fn commit(ctx: &mut TabActionContext<'_>) {
             }
         }
         Err(detail) => {
-            tab.state.ui.status_msg = detail;
+            tab.state.ui.status = StatusMessage::error(detail);
         }
     }
 
@@ -106,11 +107,11 @@ fn commit(ctx: &mut TabActionContext<'_>) {
 fn push(ctx: &mut TabActionContext<'_>) {
     if let Some(path) = ctx.tab.state.repo.path.clone() {
         if ctx.tab.worker.is_busy() {
-            ctx.tab.state.ui.status_msg = "Busy — please wait...".into();
+            ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
         } else {
             let busy = BusyState::new(BusyAction::Push, "Pushing...");
             if ctx.tab.worker.push(path, ctx.github_auth_session.clone()) {
-                ctx.tab.state.ui.status_msg = busy.label.clone();
+                ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
                 ctx.tab.state.ui.busy = Some(busy);
             } else {
                 log_worker_dispatch_error(ctx, "Push");
@@ -122,11 +123,11 @@ fn push(ctx: &mut TabActionContext<'_>) {
 fn pull(ctx: &mut TabActionContext<'_>) {
     if let Some(path) = ctx.tab.state.repo.path.clone() {
         if ctx.tab.worker.is_busy() {
-            ctx.tab.state.ui.status_msg = "Busy — please wait...".into();
+            ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
         } else {
             let busy = BusyState::new(BusyAction::Pull, "Pulling...");
             if ctx.tab.worker.pull(path, ctx.github_auth_session.clone()) {
-                ctx.tab.state.ui.status_msg = busy.label.clone();
+                ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
                 ctx.tab.state.ui.busy = Some(busy);
             } else {
                 log_worker_dispatch_error(ctx, "Pull");
@@ -150,7 +151,7 @@ fn select_file(ctx: &mut TabActionContext<'_>, path: String, staged: bool) {
 fn switch_branch(ctx: &mut TabActionContext<'_>, branch: String) {
     match AppRepoWrite::switch_branch(&ctx.tab.repo, &branch) {
         Ok(()) => {
-            ctx.tab.state.ui.status_msg = format!("Switched to {branch}");
+            ctx.tab.state.ui.status = StatusMessage::success(format!("Switched to {branch}"));
             clear_repo_selection(&mut ctx.tab.state.inspector);
         }
         Err(error) => log_action_error(ctx, "Switch branch", error.to_string()),
@@ -161,7 +162,8 @@ fn switch_branch(ctx: &mut TabActionContext<'_>, branch: String) {
 fn create_branch(ctx: &mut TabActionContext<'_>, branch: String) {
     match AppRepoWrite::create_branch(&ctx.tab.repo, &branch) {
         Ok(()) => {
-            ctx.tab.state.ui.status_msg = format!("Created and switched to {branch}");
+            ctx.tab.state.ui.status =
+                StatusMessage::success(format!("Created and switched to {branch}"));
             clear_repo_selection(&mut ctx.tab.state.inspector);
             ctx.tab.state.dialogs.branch.new_branch_name.clear();
             ctx.tab.state.dialogs.branch.show_create_branch_dialog = false;
@@ -204,13 +206,13 @@ fn confirm_create_branch(ctx: &mut TabActionContext<'_>) {
 fn create_tag(ctx: &mut TabActionContext<'_>, tag_name: String) {
     if let Some(path) = ctx.tab.state.repo.path.clone() {
         if ctx.tab.worker.is_busy() {
-            ctx.tab.state.ui.status_msg = "Busy — please wait...".into();
+            ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
         } else if !AppRepoRead::can_create_tag_on_branch(&ctx.tab.state.repo.branch) {
-            ctx.tab.state.ui.status_msg =
-                "Tags can only be created from the main or master branch.".into();
+            ctx.tab.state.ui.status =
+                StatusMessage::error("Tags can only be created from the main or master branch.");
         } else if ctx.tab.state.repo.has_github_https_origin && ctx.github_auth_session.is_none() {
-            ctx.tab.state.ui.status_msg =
-                "Sign in to GitHub before creating tags for this repository.".into();
+            ctx.tab.state.ui.status =
+                StatusMessage::error("Sign in to GitHub before creating tags for this repository.");
         } else {
             let busy = BusyState::new(BusyAction::CreateTag, format!("Creating tag {tag_name}..."));
             if ctx
@@ -218,7 +220,7 @@ fn create_tag(ctx: &mut TabActionContext<'_>, tag_name: String) {
                 .worker
                 .create_tag(path, tag_name, ctx.github_auth_session.clone())
             {
-                ctx.tab.state.ui.status_msg = busy.label.clone();
+                ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
                 ctx.tab.state.ui.busy = Some(busy);
             } else {
                 log_worker_dispatch_error(ctx, "Create tag");
@@ -229,12 +231,12 @@ fn create_tag(ctx: &mut TabActionContext<'_>, tag_name: String) {
 
 fn launch_pull_request(ctx: &mut TabActionContext<'_>) {
     let Some(prompt) = ctx.tab.state.repo.pull_request_prompt.clone() else {
-        ctx.tab.state.ui.status_msg = "No pull request action available".into();
+        ctx.tab.state.ui.status = StatusMessage::info("No pull request action available");
         return;
     };
 
     if ctx.tab.worker.is_busy() {
-        ctx.tab.state.ui.status_msg = "Busy — please wait...".into();
+        ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
         return;
     }
 
@@ -245,7 +247,7 @@ fn launch_pull_request(ctx: &mut TabActionContext<'_>) {
                 format!("Opening pull request #{number}..."),
             );
             if ctx.tab.worker.open_pull_request(url) {
-                ctx.tab.state.ui.status_msg = busy.label.clone();
+                ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
                 ctx.tab.state.ui.busy = Some(busy);
             } else {
                 log_worker_dispatch_error(ctx, "Open PR");
@@ -257,7 +259,7 @@ fn launch_pull_request(ctx: &mut TabActionContext<'_>) {
                 format!("Opening pull request creation for {branch}..."),
             );
             if ctx.tab.worker.create_pull_request(url) {
-                ctx.tab.state.ui.status_msg = busy.label.clone();
+                ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
                 ctx.tab.state.ui.busy = Some(busy);
             } else {
                 log_worker_dispatch_error(ctx, "Create PR");
@@ -323,7 +325,8 @@ fn delete_stale_branches(ctx: &mut TabActionContext<'_>, names: Vec<String>) {
         .retain(|branch| !deleted.contains(&branch.name));
 
     if failures.is_empty() {
-        ctx.tab.state.ui.status_msg = format!("Deleted {} branch(es)", deleted.len());
+        ctx.tab.state.ui.status =
+            StatusMessage::success(format!("Deleted {} branch(es)", deleted.len()));
         ctx.tab.state.dialogs.cleanup.show_cleanup_branches_dialog = false;
     } else {
         log_action_error(ctx, "Delete branch", failures.join("; "));
@@ -342,7 +345,7 @@ fn open_discard_dialog(ctx: &mut TabActionContext<'_>) {
 fn discard_and_reset(ctx: &mut TabActionContext<'_>, clean_untracked: bool) {
     if let Some(path) = ctx.tab.state.repo.path.clone() {
         if ctx.tab.worker.is_busy() {
-            ctx.tab.state.ui.status_msg = "Busy — please wait...".into();
+            ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
         } else {
             let busy = BusyState::new(BusyAction::DiscardAndReset, "Resetting to remote...");
             if ctx.tab.worker.discard_and_reset(
@@ -350,7 +353,7 @@ fn discard_and_reset(ctx: &mut TabActionContext<'_>, clean_untracked: bool) {
                 ctx.github_auth_session.clone(),
                 clean_untracked,
             ) {
-                ctx.tab.state.ui.status_msg = busy.label.clone();
+                ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
                 ctx.tab.state.ui.busy = Some(busy);
             } else {
                 log_worker_dispatch_error(ctx, "Discard & reset");
@@ -362,11 +365,11 @@ fn discard_and_reset(ctx: &mut TabActionContext<'_>, clean_untracked: bool) {
 fn undo_last_commit(ctx: &mut TabActionContext<'_>) {
     if let Some(path) = ctx.tab.state.repo.path.clone() {
         if ctx.tab.worker.is_busy() {
-            ctx.tab.state.ui.status_msg = "Busy — please wait...".into();
+            ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
         } else {
             let busy = BusyState::new(BusyAction::UndoLastCommit, "Undoing last commit...");
             if ctx.tab.worker.undo_last_commit(path) {
-                ctx.tab.state.ui.status_msg = busy.label.clone();
+                ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
                 ctx.tab.state.ui.busy = Some(busy);
             } else {
                 log_worker_dispatch_error(ctx, "Undo last commit");
@@ -377,7 +380,7 @@ fn undo_last_commit(ctx: &mut TabActionContext<'_>) {
 
 fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
     let Some(data) = ctx.tab.state.inspector.conflict_data.as_ref() else {
-        ctx.tab.state.ui.status_msg = "No conflict selected".into();
+        ctx.tab.state.ui.status = StatusMessage::info("No conflict selected");
         refresh_tab(ctx);
         return;
     };
@@ -397,7 +400,8 @@ fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
 
     match AppRepoWrite::write_resolved_content(&ctx.tab.repo, &path, &content) {
         Ok(()) => {
-            ctx.tab.state.ui.status_msg = format!("Resolved and staged: {path}");
+            ctx.tab.state.ui.status =
+                StatusMessage::success(format!("Resolved and staged: {path}"));
             ctx.tab.state.inspector.selected_file = Some(SelectedFile { path, staged: true });
             ctx.tab.state.inspector.set_conflict(None);
         }
@@ -439,12 +443,12 @@ fn clear_repo_selection(inspector_state: &mut InspectorState) {
 }
 
 fn log_action_error(ctx: &mut TabActionContext<'_>, context: &str, detail: String) {
-    ctx.tab.state.ui.status_msg = helpers::status_message_for_error(context, &detail);
+    ctx.tab.state.ui.status = helpers::status_message_for_error(context, &detail);
     ctx.tab.logger.log_error(context, &detail);
 }
 
 fn log_worker_dispatch_error(ctx: &mut TabActionContext<'_>, context: &str) {
-    ctx.tab.state.ui.status_msg = helpers::status_message_for_worker_dispatch(context);
+    ctx.tab.state.ui.status = helpers::status_message_for_worker_dispatch(context);
     ctx.tab
         .logger
         .log_error(context, helpers::WORKER_DISPATCH_ERROR_DETAIL);

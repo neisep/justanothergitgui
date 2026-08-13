@@ -96,6 +96,57 @@ pub struct DragFile {
     pub from_staged: bool,
 }
 
+/// How much attention a status message deserves.
+///
+/// Kept inside [`StatusMessage`] rather than beside it in [`UiState`] so the two
+/// can never drift apart: every writer has to state the severity it means.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusLevel {
+    #[default]
+    Info,
+    Success,
+    Error,
+}
+
+/// The one-line message shown in the bottom bar, with the severity the status
+/// area renders it at.
+#[derive(Clone, Debug, Default)]
+pub struct StatusMessage {
+    text: String,
+    level: StatusLevel,
+}
+
+impl StatusMessage {
+    pub fn info(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            level: StatusLevel::Info,
+        }
+    }
+
+    pub fn success(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            level: StatusLevel::Success,
+        }
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            level: StatusLevel::Error,
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn level(&self) -> StatusLevel {
+        self.level
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusyAction {
     Push,
@@ -184,6 +235,9 @@ pub struct InspectorState {
     /// [`Self::set_diff`] / [`Self::clear_diff`], which are the only two ways in.
     pub parsed_diff: ParsedDiff,
     pub diff_wrap: bool,
+    /// Substring the file panel narrows both of its lists by. View state only —
+    /// it never reaches git.
+    pub file_filter: String,
     pub center_view: CenterView,
     pub conflict_data: Option<ConflictData>,
     /// Which conflict (by section index) is open for inline editing, plus its
@@ -278,7 +332,7 @@ pub struct DiscardDialogState {
 }
 
 pub struct UiState {
-    pub status_msg: String,
+    pub status: StatusMessage,
     pub actions: Vec<UiAction>,
     pub busy: Option<BusyState>,
 }
@@ -286,7 +340,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            status_msg: "No repository open".into(),
+            status: StatusMessage::info("No repository open"),
             actions: Vec::new(),
             busy: None,
         }

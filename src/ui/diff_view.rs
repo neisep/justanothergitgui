@@ -320,20 +320,26 @@ pub(crate) fn diff_line_color(kind: DiffLineKind, ui: &egui::Ui) -> egui::Color3
     }
 }
 
-/// Status badge shared by the working-tree file list and the commit file list.
+/// The color and wording one file status is shown with, shared by both the wide
+/// badge and the narrow chip so the two can never disagree about a status.
+pub(crate) fn status_style(display_status: &str, is_conflicted: bool) -> (egui::Color32, &str) {
+    if is_conflicted {
+        return (egui::Color32::from_rgb(160, 92, 32), "CONFLICT");
+    }
+
+    match display_status {
+        "new" => (egui::Color32::from_rgb(48, 128, 88), "NEW"),
+        "untracked" => (egui::Color32::from_rgb(48, 128, 88), "ADDED"),
+        "modified" => (egui::Color32::from_rgb(52, 96, 160), "MODIFIED"),
+        "deleted" => (egui::Color32::from_rgb(152, 64, 64), "DELETED"),
+        "renamed" => (egui::Color32::from_rgb(108, 76, 156), "RENAMED"),
+        _ => (egui::Color32::from_rgb(92, 92, 92), "CHANGED"),
+    }
+}
+
+/// Status badge for lists with room to spare, such as the commit file list.
 pub(crate) fn render_status_badge(ui: &mut egui::Ui, display_status: &str, is_conflicted: bool) {
-    let (fill, text) = if is_conflicted {
-        (egui::Color32::from_rgb(160, 92, 32), "CONFLICT")
-    } else {
-        match display_status {
-            "new" => (egui::Color32::from_rgb(48, 128, 88), "NEW"),
-            "untracked" => (egui::Color32::from_rgb(48, 128, 88), "ADDED"),
-            "modified" => (egui::Color32::from_rgb(52, 96, 160), "MODIFIED"),
-            "deleted" => (egui::Color32::from_rgb(152, 64, 64), "DELETED"),
-            "renamed" => (egui::Color32::from_rgb(108, 76, 156), "RENAMED"),
-            _ => (egui::Color32::from_rgb(92, 92, 92), "CHANGED"),
-        }
-    };
+    let (fill, text) = status_style(display_status, is_conflicted);
 
     egui::Frame::new()
         .fill(fill)
@@ -347,3 +353,30 @@ pub(crate) fn render_status_badge(ui: &mut egui::Ui, display_status: &str, is_co
             );
         });
 }
+
+/// One-letter status chip for the narrow working-tree list.
+///
+/// The badge's word costs ~72px of a panel that is mostly filenames; the initial
+/// carries the same distinction in a fifth of the width, with the full word kept
+/// a hover away.
+pub(crate) fn render_status_chip(ui: &mut egui::Ui, display_status: &str, is_conflicted: bool) {
+    let (fill, text) = status_style(display_status, is_conflicted);
+    let initial = text.chars().next().unwrap_or('?');
+
+    let size = egui::vec2(CHIP_SIZE, CHIP_SIZE);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, egui::CornerRadius::same(3), fill);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        initial,
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
+
+    response.on_hover_text(text);
+}
+
+const CHIP_SIZE: f32 = 18.0;

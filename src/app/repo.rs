@@ -30,7 +30,7 @@ impl GitGuiApp {
             .position(|tab| tab.state.repo.path.as_ref() == Some(&repo_path))
         {
             self.active_tab = index;
-            self.tabs[index].state.ui.status_msg = "Repository already open".into();
+            self.tabs[index].state.ui.status = StatusMessage::info("Repository already open");
             self.persist_session();
             return;
         }
@@ -64,10 +64,10 @@ impl GitGuiApp {
         if let Some(detail) = refresh_error {
             logger.log_error("Refresh", &detail);
         } else {
-            state.ui.status_msg = format!(
+            state.ui.status = StatusMessage::success(format!(
                 "Repository loaded: {}",
                 helpers::repo_tab_label(Some(&repo_path))
-            );
+            ));
         }
 
         self.tabs.push(RepoTab {
@@ -77,7 +77,7 @@ impl GitGuiApp {
             logger,
         });
         self.active_tab = self.tabs.len() - 1;
-        self.welcome_status = "Open a Git repository to get started.".into();
+        self.welcome_status = StatusMessage::info("Open a Git repository to get started.");
         self.persist_session();
     }
 
@@ -155,8 +155,8 @@ impl GitGuiApp {
         // Defensive: closing a tab drops its worker thread. Refuse while a
         // network op is in flight so we do not abandon a push/pull mid-flight.
         if self.tabs[index].worker.is_busy() {
-            self.tabs[index].state.ui.status_msg =
-                "Busy — finish or wait before closing this tab".into();
+            self.tabs[index].state.ui.status =
+                StatusMessage::info("Busy — finish or wait before closing this tab");
             return;
         }
 
@@ -172,9 +172,9 @@ impl GitGuiApp {
         self.persist_session();
     }
 
-    pub(super) fn set_status_message(&mut self, message: String) {
+    pub(super) fn set_status_message(&mut self, message: StatusMessage) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.state.ui.status_msg = message;
+            tab.state.ui.status = message;
         } else {
             self.welcome_status = message;
         }
@@ -200,7 +200,7 @@ impl GitGuiApp {
                 self.clone_dialog.github_repos_loading = true;
             } else {
                 let message = helpers::status_message_for_worker_dispatch("Load GitHub repos");
-                self.clone_dialog.status = message.clone();
+                self.clone_dialog.status = message.text().to_string();
                 self.logger
                     .log_error("Load GitHub repos", helpers::WORKER_DISPATCH_ERROR_DETAIL);
                 self.set_status_message(message);
@@ -229,8 +229,8 @@ impl GitGuiApp {
 
     pub(super) fn begin_github_sign_in(&mut self, start_message: &str) {
         if self.welcome_worker.is_busy() {
-            self.welcome_status = "Busy — please wait...".into();
-            self.set_status_message("Busy — please wait...".into());
+            self.welcome_status = StatusMessage::info("Busy — please wait...");
+            self.set_status_message(StatusMessage::info("Busy — please wait..."));
             return;
         }
 
@@ -241,12 +241,12 @@ impl GitGuiApp {
         {
             self.publish_dialog.github_status = start_message.into();
             self.publish_dialog.operation_status.clear();
-            self.welcome_status = start_message.into();
+            self.welcome_status = StatusMessage::info(start_message);
             self.welcome_busy = Some(BusyState::new(BusyAction::GithubSignIn, start_message));
-            self.set_status_message(start_message.into());
+            self.set_status_message(StatusMessage::info(start_message));
         } else {
             let message = helpers::status_message_for_worker_dispatch("GitHub sign-in");
-            self.publish_dialog.github_status = message.clone();
+            self.publish_dialog.github_status = message.text().to_string();
             self.logger
                 .log_error("GitHub sign-in", helpers::WORKER_DISPATCH_ERROR_DETAIL);
             self.welcome_status = message.clone();

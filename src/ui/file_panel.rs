@@ -8,8 +8,18 @@ use crate::state::{DragFile, InspectorState, UiState, WorktreeState};
 use super::HoveredRow;
 use super::diff_view;
 
-const STATUS_COL_WIDTH: f32 = 72.0;
+const STATUS_COL_WIDTH: f32 = 24.0;
 const ACTION_COL_WIDTH: f32 = 72.0;
+const PANEL_DEFAULT_WIDTH: f32 = 300.0;
+const PANEL_MIN_WIDTH: f32 = 220.0;
+/// Neither section may be squeezed below this, however the divider is dragged.
+const MIN_SECTION_HEIGHT: f32 = 110.0;
+/// The Unstaged section never claims more than this share of the panel on its
+/// own, so the Staged list — and its drop target — is always visible.
+const MAX_UNSTAGED_FRACTION: f32 = 0.65;
+/// Height of a section's header row plus its separator.
+const SECTION_CHROME: f32 = 32.0;
+const CONFLICT_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 170, 80);
 
 pub struct FilePanelState<'a> {
     pub worktree: &'a WorktreeState,
@@ -21,46 +31,69 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
     let mut unstaged_rect = egui::Rect::NOTHING;
     let mut staged_rect = egui::Rect::NOTHING;
 
+    // Copied out so the filtered lists borrow the worktree rather than `state`,
+    // which the tables below need to borrow mutably.
+    let worktree = state.worktree;
+
     egui::Panel::left("file_panel")
-        .default_size(240.0)
-        .min_size(200.0)
+        .default_size(PANEL_DEFAULT_WIDTH)
+        .min_size(PANEL_MIN_WIDTH)
         .show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong(format!("Unstaged ({})", state.worktree.unstaged.len()));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !state.worktree.unstaged.is_empty()
-                        && ui
-                            .small_button("Stage All")
-                            .on_hover_text("Stage all changes")
-                            .clicked()
-                    {
-                        state.ui_state.actions.push(UiAction::stage_all());
-                    }
+            show_filter_row(ui, state.inspector);
+
+            let filter = state.inspector.file_filter.clone();
+            let unstaged = filtered(&worktree.unstaged, &filter);
+            let staged = filtered(&worktree.staged, &filter);
+            let row_height = row_height(ui);
+
+            let unstaged_height =
+                preferred_unstaged_height(unstaged.len(), row_height, ui.available_height());
+
+            egui::Panel::top("unstaged_section")
+                .resizable(true)
+                .default_size(unstaged_height)
+                .min_size(MIN_SECTION_HEIGHT)
+                .show_inside(ui, |ui| {
+                    // egui stores the panel's *content* rect each frame and uses
+                    // it as next frame's size, ignoring `default_size` from then
+                    // on. Content shorter than the section would therefore shrink
+                    // it a little every frame, and a shorter section clips its
+                    // content, so it could never grow back — filtering the list
+                    // down to one row would strand the divider there for good.
+                    // Claiming the whole height keeps the stored size the one the
+                    // user actually set.
+                    ui.set_min_height(ui.available_height());
+
+                    show_section_header(
+                        ui,
+                        SectionHeader {
+                            title: "Unstaged",
+                            shown: unstaged.len(),
+                            total: worktree.unstaged.len(),
+                            button: "Stage All",
+                            tooltip: "Stage all changes",
+                        },
+                        state.ui_state,
+                        UiAction::stage_all,
+                    );
+                    unstaged_rect = show_file_list(ui, &mut state, &unstaged, false);
                 });
-            });
-            ui.separator();
 
-            let first_list_height = (ui.available_height() - 8.0).max(0.0) / 2.0;
-            unstaged_rect = show_file_list(ui, &mut state, false, first_list_height);
+            ui.add_space(4.0);
 
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                ui.strong(format!("Staged ({})", state.worktree.staged.len()));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !state.worktree.staged.is_empty()
-                        && ui
-                            .small_button("Unstage All")
-                            .on_hover_text("Unstage all changes")
-                            .clicked()
-                    {
-                        state.ui_state.actions.push(UiAction::unstage_all());
-                    }
-                });
-            });
-            ui.separator();
-
-            staged_rect = show_file_list(ui, &mut state, true, ui.available_height());
+            show_section_header(
+                ui,
+                SectionHeader {
+                    title: "Staged",
+                    shown: staged.len(),
+                    total: worktree.staged.len(),
+                    button: "Unstage All",
+                    tooltip: "Unstage all changes",
+                },
+                state.ui_state,
+                UiAction::unstage_all,
+            );
+            staged_rect = show_file_list(ui, &mut state, &staged, true);
 
             handle_drop(ui, &mut state, unstaged_rect, staged_rect);
         });
@@ -68,25 +101,135 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
     show_drag_ghost(ui.ctx(), &state);
 }
 
-/// Pick the list for this half of the panel and render it, empty state included.
+fn row_height(ui: &egui::Ui) -> f32 {
+    ui.spacing().interact_size.y.max(28.0)
+}
+
+/// Case-insensitive substring match on the whole path, so both a directory and a
+/// filename fragment narrow the list. An empty filter matches everything.
+fn matches_filter(path: &str, filter: &str) -> bool {
+    let filter = filter.trim();
+    if filter.is_empty() {
+        return true;
+    }
+
+    path.to_lowercase().contains(&filter.to_lowercase())
+}
+
+fn filtered<'a>(files: &'a [FileEntry], filter: &str) -> Vec<&'a FileEntry> {
+    files
+        .iter()
+        .filter(|file| matches_filter(&file.path, filter))
+        .collect()
+}
+
+/// Split a repository-relative path into the filename and its directory.
+///
+/// The filename is what identifies a row, so it is rendered first and the
+/// directory after it — the reverse of a plain truncating path label, which cuts
+/// off exactly the half that matters.
+fn split_display_path(path: &str) -> (&str, &str) {
+    match path.rsplit_once('/') {
+        // A trailing slash leaves nothing to name the row with; show the path as
+        // it is rather than an empty label.
+        Some((_, "")) => (path, ""),
+        Some((dir, name)) => (name, dir),
+        None => (path, ""),
+    }
+}
+
+/// How tall the Unstaged section starts out: enough for its rows, but never so
+/// tall that the Staged list below it disappears.
+///
+/// Only the very first frame's size. egui stores the panel's size after that and
+/// ignores this, which is what makes a dragged divider stay put.
+fn preferred_unstaged_height(rows: usize, row_height: f32, available: f32) -> f32 {
+    // `rows + 1` covers the table's own header row.
+    let content = SECTION_CHROME + row_height * (rows as f32 + 1.0);
+    let max = (available * MAX_UNSTAGED_FRACTION).max(MIN_SECTION_HEIGHT);
+    let min = MIN_SECTION_HEIGHT.min(max);
+
+    content.clamp(min, max)
+}
+
+fn show_filter_row(ui: &mut egui::Ui, inspector: &mut InspectorState) {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !inspector.file_filter.is_empty()
+                && ui
+                    .small_button("\u{2715}")
+                    .on_hover_text("Clear the filter")
+                    .clicked()
+            {
+                inspector.file_filter.clear();
+            }
+
+            ui.add(
+                egui::TextEdit::singleline(&mut inspector.file_filter)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Filter files..."),
+            );
+        });
+    });
+    ui.add_space(4.0);
+}
+
+struct SectionHeader<'a> {
+    title: &'a str,
+    shown: usize,
+    total: usize,
+    button: &'a str,
+    tooltip: &'a str,
+}
+
+fn show_section_header(
+    ui: &mut egui::Ui,
+    header: SectionHeader<'_>,
+    ui_state: &mut UiState,
+    action: fn() -> UiAction,
+) {
+    let filtered = header.shown != header.total;
+    ui.horizontal(|ui| {
+        if filtered {
+            ui.strong(format!(
+                "{} ({} of {})",
+                header.title, header.shown, header.total
+            ));
+        } else {
+            ui.strong(format!("{} ({})", header.title, header.total));
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if header.total > 0
+                && ui
+                    .small_button(header.button)
+                    .on_hover_text(if filtered {
+                        // Bulk actions ignore the filter; saying so beats a
+                        // surprise when a hidden file turns out to be included.
+                        format!("{} — including files hidden by the filter", header.tooltip)
+                    } else {
+                        header.tooltip.to_string()
+                    })
+                    .clicked()
+            {
+                ui_state.actions.push(action());
+            }
+        });
+    });
+    ui.separator();
+}
+
+/// Render one section's list, empty state included.
 fn show_file_list(
     ui: &mut egui::Ui,
     state: &mut FilePanelState<'_>,
+    files: &[&FileEntry],
     staged: bool,
-    max_height: f32,
 ) -> egui::Rect {
-    // Copy the shared reference out of `state` first: taking the slice straight
-    // from `state.worktree` would keep `state` borrowed and block the exclusive
-    // borrows the table needs.
-    let worktree = state.worktree;
-    let files = if staged {
-        &worktree.staged
-    } else {
-        &worktree.unstaged
-    };
+    let max_height = ui.available_height();
 
     if files.is_empty() {
-        return render_empty_section(ui, worktree, staged, max_height);
+        return render_empty_section(ui, state, staged, max_height);
     }
 
     render_file_table(
@@ -103,19 +246,15 @@ fn show_file_list(
 
 /// The file list borrowed apart, so the table can hold the entries and mutate the
 /// inspector at the same time.
-///
-/// Taking `&mut FilePanelState` instead would force a clone of the whole entry
-/// list on every frame just to get past the borrow checker — and this runs twice
-/// per frame, once per list.
-struct FileTable<'a> {
-    files: &'a [FileEntry],
+struct FileTable<'a, 'f> {
+    files: &'a [&'f FileEntry],
     inspector: &'a mut InspectorState,
     ui_state: &'a mut UiState,
 }
 
 fn render_file_table(
     ui: &mut egui::Ui,
-    table: FileTable<'_>,
+    table: FileTable<'_, '_>,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
@@ -124,7 +263,7 @@ fn render_file_table(
         inspector,
         ui_state,
     } = table;
-    let row_height = ui.spacing().interact_size.y.max(28.0);
+    let row_height = row_height(ui);
 
     let scope_id = if staged {
         "staged_file_rows"
@@ -154,11 +293,7 @@ fn render_file_table(
                 header.col(|ui| {
                     ui.weak("File");
                 });
-                header.col(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak("Status");
-                    });
-                });
+                header.col(|_ui| {});
                 header.col(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.weak("Quick action");
@@ -168,7 +303,7 @@ fn render_file_table(
             .body(|body| {
                 body.rows(row_height, files.len(), |mut row| {
                     let index = row.index();
-                    let file = &files[index];
+                    let file = files[index];
                     let is_selected = inspector.selected_file.as_ref().is_some_and(|selected| {
                         selected.path == file.path && selected.staged == staged
                     });
@@ -179,20 +314,12 @@ fn render_file_table(
                     let mut drag_started = false;
 
                     row.col(|ui| {
-                        let label = if file.is_conflicted {
-                            egui::RichText::new(&file.path)
-                                .color(egui::Color32::from_rgb(255, 170, 80))
-                        } else if is_selected {
-                            egui::RichText::new(&file.path).strong()
-                        } else {
-                            egui::RichText::new(&file.path)
-                        };
-                        ui.add(egui::Label::new(label).truncate());
+                        render_path(ui, file, is_selected);
                     });
 
                     row.col(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            diff_view::render_status_badge(
+                            diff_view::render_status_chip(
                                 ui,
                                 &file.display_status,
                                 file.is_conflicted,
@@ -253,7 +380,10 @@ fn render_file_table(
                     hover.observe(index, &row_response);
                     row_response
                         .clone()
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        // The row shows the filename first and elides the rest,
+                        // so the full path has to stay reachable somewhere.
+                        .on_hover_text(&file.path);
 
                     if row_response.clicked() && !action_clicked && !drag_started {
                         ui_state
@@ -270,13 +400,53 @@ fn render_file_table(
     .inner
 }
 
+/// Paint `src/ui/file_panel.rs` as a strong `file_panel.rs` followed by a dimmed
+/// `src/ui`. The directory is the label that runs out of room first, which is
+/// the right thing to lose in a narrow panel.
+fn render_path(ui: &mut egui::Ui, file: &FileEntry, is_selected: bool) {
+    let (name, dir) = split_display_path(&file.path);
+
+    let name_text = if file.is_conflicted {
+        egui::RichText::new(name).color(CONFLICT_TEXT)
+    } else if is_selected {
+        egui::RichText::new(name).strong()
+    } else {
+        egui::RichText::new(name)
+    };
+
+    ui.spacing_mut().item_spacing.x = 6.0;
+    ui.add(egui::Label::new(name_text).truncate());
+
+    if !dir.is_empty() {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(dir)
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .truncate(),
+        );
+    }
+}
+
 fn render_empty_section(
     ui: &mut egui::Ui,
-    worktree: &WorktreeState,
+    state: &FilePanelState<'_>,
     staged: bool,
     max_height: f32,
 ) -> egui::Rect {
-    let (title, hint) = if staged {
+    let worktree = state.worktree;
+    let list = if staged {
+        &worktree.staged
+    } else {
+        &worktree.unstaged
+    };
+
+    // A list emptied by the filter is a different situation from one that is
+    // genuinely empty, and the hint that fits one is misleading for the other.
+    let (title, hint) = if !list.is_empty() {
+        ("No matches", "No file here matches the filter above.")
+    } else if staged {
         if worktree.unstaged.is_empty() {
             (
                 "Nothing staged yet",
@@ -422,5 +592,73 @@ fn show_drag_ghost(ctx: &egui::Context, state: &FilePanelState<'_>) {
                     ui.label(format!("{}{}", arrow, &drag.path));
                 });
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MIN_SECTION_HEIGHT, matches_filter, preferred_unstaged_height, split_display_path,
+    };
+
+    #[test]
+    fn split_display_path_puts_the_filename_first() {
+        assert_eq!(
+            split_display_path("src/ui/file_panel.rs"),
+            ("file_panel.rs", "src/ui")
+        );
+    }
+
+    #[test]
+    fn split_display_path_handles_a_bare_filename() {
+        assert_eq!(split_display_path("README.md"), ("README.md", ""));
+    }
+
+    #[test]
+    fn split_display_path_keeps_a_trailing_slash_visible() {
+        // Nothing after the slash means there is no name to lead with; showing
+        // the path unchanged beats rendering an empty row.
+        assert_eq!(split_display_path("src/ui/"), ("src/ui/", ""));
+        assert_eq!(split_display_path(""), ("", ""));
+    }
+
+    #[test]
+    fn an_empty_filter_matches_every_path() {
+        assert!(matches_filter("src/main.rs", ""));
+        assert!(matches_filter("src/main.rs", "   "));
+    }
+
+    #[test]
+    fn filtering_ignores_case_and_matches_directories() {
+        assert!(matches_filter("src/UI/File_Panel.rs", "file_panel"));
+        assert!(matches_filter("src/ui/file_panel.rs", "SRC/UI"));
+        assert!(!matches_filter("src/ui/file_panel.rs", "worker"));
+    }
+
+    #[test]
+    fn a_short_list_does_not_shrink_below_the_section_minimum() {
+        assert_eq!(
+            preferred_unstaged_height(0, 28.0, 800.0),
+            MIN_SECTION_HEIGHT
+        );
+    }
+
+    #[test]
+    fn a_long_list_leaves_room_for_the_staged_section() {
+        let available = 800.0;
+        let height = preferred_unstaged_height(500, 28.0, available);
+
+        assert!(
+            height <= available * super::MAX_UNSTAGED_FRACTION,
+            "unstaged claimed {height} of {available}"
+        );
+    }
+
+    #[test]
+    fn a_cramped_panel_still_yields_a_usable_height() {
+        // `available` smaller than the minimum must not invert the clamp bounds.
+        let height = preferred_unstaged_height(3, 28.0, 40.0);
+
+        assert_eq!(height, MIN_SECTION_HEIGHT);
     }
 }
