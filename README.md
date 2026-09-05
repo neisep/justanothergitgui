@@ -166,7 +166,7 @@ target\release\justanothergitgui.exe
 6. **Switch branches** or create a new one from the toolbar
 7. Use **Pull** / **Push** and PR shortcuts from the top-right area
 8. When the current branch has local commits that are not on the remote yet, the app shows them as **Push(n)**
-9. Use **More** for secondary actions like settings, publishing, cleanup, tags, and logs
+9. Use **More > Clone Repository...** to clone a GitHub or other Git remote: paste its HTTPS or SSH clone URL, choose a parent folder, and click **Clone**. The repository opens in a new tab when cloning finishes. Cloning is also available on the welcome screen.
 10. On `main` or `master`, use **More > Create Tag...** to tag the current HEAD commit
 11. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
 

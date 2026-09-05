@@ -5,6 +5,7 @@ struct RepoTabsUiOutput {
     next_active: Option<usize>,
     closed_tab: Option<usize>,
     open_clicked: bool,
+    clone_clicked: bool,
     settings_clicked: bool,
     show_logs_clicked: bool,
     publish_clicked: bool,
@@ -402,6 +403,17 @@ impl GitGuiApp {
                 output.open_clicked = true;
                 ui.close();
             }
+            if ui
+                .add_enabled(
+                    !toolbar.welcome_worker_busy,
+                    egui::Button::new("Clone Repository..."),
+                )
+                .on_hover_text("Clone a Git remote into a local folder and open it in a new tab")
+                .clicked()
+            {
+                output.clone_clicked = true;
+                ui.close();
+            }
 
             ui.separator();
 
@@ -660,6 +672,9 @@ impl GitGuiApp {
         if output.open_clicked {
             self.open_repo_dialog();
         }
+        if output.clone_clicked {
+            self.open_clone_repo_dialog();
+        }
         if output.settings_clicked {
             self.open_settings_dialog();
         }
@@ -691,7 +706,9 @@ impl GitGuiApp {
                 ui.add_space(ui.available_height() / 3.0);
                 ui.heading("Just Another Git GUI");
                 ui.add_space(12.0);
-                ui.label("Open a Git repository or publish the current folder to GitHub.");
+                ui.label(
+                    "Open a local repository, clone a Git remote, or publish a folder to GitHub.",
+                );
                 ui.add_space(8.0);
                 if ui.button("Open Repository...").clicked() {
                     self.open_repo_dialog();
