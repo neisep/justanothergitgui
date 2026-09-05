@@ -217,10 +217,57 @@ fn filtered_bulk_action_discloses_total_and_hidden_files_before_click() {
     let mut harness = Harness::new(1280.0);
     let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
     label(&painted, "Unstaged (1 of 2)");
-    label(&painted, "Bulk action includes files hidden by the filter.");
+    label(&painted, "Stage All includes files hidden by the filter.");
     let target = label(&painted, "Stage All 2 files");
     harness.click(target.rect.center(), &mut |ui| draw_files(ui, &mut state));
     assert!(matches!(state.ui.actions.as_slice(), [UiAction::StageAll]));
+}
+
+#[test]
+fn filtered_staging_only_dispatches_matching_non_conflicted_paths() {
+    for staged in [false, true] {
+        let mut state = AppState::default();
+        let files = vec![
+            file("src/review.rs", false),
+            file("src/conflict.rs", true),
+            file("README.md", false),
+        ];
+        if staged {
+            state.worktree.staged = files;
+        } else {
+            state.worktree.unstaged = files;
+        }
+        state.inspector.file_filter = "src/".into();
+        let mut harness = Harness::new(640.0);
+        let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+        let target = label(
+            &painted,
+            if staged {
+                "Unstage matching (1)"
+            } else {
+                "Stage matching (1)"
+            },
+        );
+        assert!(target.clip.expand(0.5).contains_rect(target.rect));
+        harness.click(target.rect.center(), &mut |ui| draw_files(ui, &mut state));
+        match state.ui.actions.as_slice() {
+            [UiAction::StageFiles(paths)] if !staged => assert_eq!(paths, &["src/review.rs"]),
+            [UiAction::UnstageFiles(paths)] if staged => assert_eq!(paths, &["src/review.rs"]),
+            _ => panic!("Expected one action affecting only the matching resolved file"),
+        }
+    }
+}
+
+#[test]
+fn no_filter_matches_disables_matching_action() {
+    let mut state = AppState::default();
+    state.worktree.unstaged.push(file("README.md", false));
+    state.inspector.file_filter = "missing".into();
+    let mut harness = Harness::new(640.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let target = label(&painted, "Stage matching (0)");
+    harness.click(target.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    assert!(state.ui.actions.is_empty());
 }
 
 #[test]

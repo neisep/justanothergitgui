@@ -60,6 +60,7 @@ The application combines:
 - **View unstaged and staged changes** in a compact table-based left panel
 - **Stage / unstage individual files** or use **Stage All** / **Unstage All**
 - **Drag and drop files between staged and unstaged lists**
+- **Stage or unstage matching files** directly from a filtered list, leaving hidden files untouched
 - **Review diffs** in a built-in changes view with line numbers and optional wrapping
 - **Resolve merge conflicts** with current / incoming panes, individual line selection, custom edits, and a live result preview
 - **See loading / busy indicators** while long-running Git and GitHub operations are in flight

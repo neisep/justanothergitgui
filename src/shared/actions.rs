@@ -1,6 +1,8 @@
 pub enum UiAction {
     StageFile(String),
     UnstageFile(String),
+    StageFiles(Vec<String>),
+    UnstageFiles(Vec<String>),
     StageAll,
     UnstageAll,
     Commit,

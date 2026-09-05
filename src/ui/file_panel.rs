@@ -55,7 +55,7 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
                 .min_size(if filter.trim().is_empty() {
                     MIN_SECTION_HEIGHT
                 } else {
-                    MIN_SECTION_HEIGHT + 80.0
+                    MIN_SECTION_HEIGHT + 112.0
                 })
                 .show_inside(ui, |ui| {
                     // egui stores the panel's *content* rect each frame and uses
@@ -76,6 +76,9 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
                             total: worktree.unstaged.len(),
                             button: "Stage All",
                             tooltip: "Stage all changes",
+                            matches: &unstaged,
+                            staged: false,
+                            filtering: !filter.trim().is_empty(),
                         },
                         state.ui_state,
                         UiAction::stage_all,
@@ -93,6 +96,9 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
                     total: worktree.staged.len(),
                     button: "Unstage All",
                     tooltip: "Unstage all changes",
+                    matches: &staged,
+                    staged: true,
+                    filtering: !filter.trim().is_empty(),
                 },
                 state.ui_state,
                 UiAction::unstage_all,
@@ -184,6 +190,9 @@ struct SectionHeader<'a> {
     total: usize,
     button: &'a str,
     tooltip: &'a str,
+    matches: &'a [&'a FileEntry],
+    staged: bool,
+    filtering: bool,
 }
 
 fn show_section_header(
@@ -192,7 +201,7 @@ fn show_section_header(
     ui_state: &mut UiState,
     action: fn() -> UiAction,
 ) {
-    let filtered = header.shown != header.total;
+    let filtered = header.filtering;
     ui.horizontal(|ui| {
         if filtered {
             ui.strong(format!(
@@ -216,6 +225,30 @@ fn show_section_header(
         });
     });
     if filtered {
+        let paths: Vec<String> = header
+            .matches
+            .iter()
+            .filter(|file| !file.is_conflicted)
+            .map(|file| file.path.clone())
+            .collect();
+        let verb = if header.staged { "Unstage" } else { "Stage" };
+        if ui
+            .add_enabled(
+                !paths.is_empty(),
+                egui::Button::new(format!("{verb} matching ({})", paths.len())),
+            )
+            .on_hover_text("Only affects matching files. Conflicted files must be resolved first.")
+            .clicked()
+        {
+            ui_state.actions.push(if header.staged {
+                UiAction::UnstageFiles(paths)
+            } else {
+                UiAction::StageFiles(paths)
+            });
+        }
+        if header.matches.iter().any(|file| file.is_conflicted) {
+            ui.weak("Resolve conflicted files individually.");
+        }
         if ui
             .button(format!(
                 "{} {} {}",
@@ -227,7 +260,10 @@ fn show_section_header(
         {
             ui_state.actions.push(action());
         }
-        ui.label("Bulk action includes files hidden by the filter.");
+        ui.weak(format!(
+            "{} includes files hidden by the filter.",
+            header.button
+        ));
     }
     ui.separator();
 }

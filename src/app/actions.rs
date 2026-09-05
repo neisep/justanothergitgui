@@ -12,6 +12,8 @@ impl UiAction {
         match self {
             Self::StageFile(path) => stage_file(ctx, path),
             Self::UnstageFile(path) => unstage_file(ctx, path),
+            Self::StageFiles(paths) => update_staging(ctx, paths, true),
+            Self::UnstageFiles(paths) => update_staging(ctx, paths, false),
             Self::StageAll => stage_all(ctx),
             Self::UnstageAll => unstage_all(ctx),
             Self::Commit => commit(ctx),
@@ -52,6 +54,36 @@ fn unstage_file(ctx: &mut TabActionContext<'_>, path: String) {
         Ok(()) => ctx.tab.state.ui.status = StatusMessage::success(format!("Unstaged: {path}")),
         Err(error) => log_action_error(ctx, "Unstage", error.to_string()),
     }
+    refresh_tab(ctx);
+}
+
+fn update_staging(ctx: &mut TabActionContext<'_>, paths: Vec<String>, stage: bool) {
+    let verb = if stage { "Staged" } else { "Unstaged" };
+    let mut completed = 0;
+    for path in &paths {
+        let result = if stage {
+            AppRepoWrite::stage_file(&ctx.tab.repo, path)
+        } else {
+            AppRepoWrite::unstage_file(&ctx.tab.repo, path)
+        };
+        if let Err(error) = result {
+            log_action_error(
+                ctx,
+                "Update staging",
+                format!(
+                    "{verb} {completed} of {} files; failed on {path}: {error}",
+                    paths.len()
+                ),
+            );
+            refresh_tab(ctx);
+            return;
+        }
+        completed += 1;
+    }
+    ctx.tab.state.ui.status = StatusMessage::success(format!(
+        "{verb} {completed} matching {}",
+        if completed == 1 { "file" } else { "files" }
+    ));
     refresh_tab(ctx);
 }
 
