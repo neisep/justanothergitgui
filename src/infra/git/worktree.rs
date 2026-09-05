@@ -49,7 +49,8 @@ pub fn get_file_statuses(
             Status::INDEX_NEW
                 | Status::INDEX_MODIFIED
                 | Status::INDEX_DELETED
-                | Status::INDEX_RENAMED,
+                | Status::INDEX_RENAMED
+                | Status::INDEX_TYPECHANGE,
         ) {
             staged.push(FileEntry {
                 path: path.clone(),
@@ -58,7 +59,9 @@ pub fn get_file_statuses(
             });
         }
 
-        if status.intersects(Status::WT_NEW | Status::WT_MODIFIED | Status::WT_DELETED) {
+        if status.intersects(
+            Status::WT_NEW | Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE,
+        ) {
             unstaged.push(FileEntry {
                 path: path.clone(),
                 display_status: status_label_unstaged(status).to_string(),
@@ -74,10 +77,14 @@ pub fn stage_file(repo: &Repository, path: &str) -> Result<(), git2::Error> {
     let mut index = repo.index()?;
     let full_path = repo_workdir(repo)?.join(path);
 
-    if full_path.exists() {
-        index.add_path(Path::new(path))?;
-    } else {
-        index.remove_path(Path::new(path))?;
+    match std::fs::symlink_metadata(&full_path) {
+        Ok(_) => index.add_path(Path::new(path))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            index.remove_path(Path::new(path))?;
+        }
+        Err(error) => {
+            return Err(git2::Error::from_str(&format!("Cannot inspect {path}: {error}")));
+        }
     }
 
     index.write()?;
@@ -228,6 +235,9 @@ pub fn get_file_diff(repo: &Repository, path: &str, staged: bool) -> Result<Stri
         let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
     } else {
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
         repo.diff_index_to_workdir(None, Some(&mut opts))?
     };
 
@@ -335,10 +345,11 @@ pub(crate) fn clean_untracked_files(
         .to_path_buf();
 
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(false);
+    opts.include_untracked(true).recurse_untracked_dirs(true);
     let statuses = repo.statuses(Some(&mut opts))?;
 
     let mut result = CleanUntrackedResult::default();
+    let mut parent_dirs = std::collections::BTreeSet::new();
     for entry in statuses.iter() {
         if entry.status() != Status::WT_NEW {
             continue;
@@ -346,22 +357,47 @@ pub(crate) fn clean_untracked_files(
         let Some(path) = entry.path() else {
             continue;
         };
+        let path = path.trim_end_matches('/');
         let full_path = workdir.join(path);
-        let removal = if full_path.is_dir() {
-            Some(std::fs::remove_dir_all(&full_path))
-        } else if full_path.exists() {
-            Some(std::fs::remove_file(&full_path))
-        } else {
-            None
+        let removal = match std::fs::symlink_metadata(&full_path) {
+            // Recursive statuses enumerate eligible files individually. Remaining
+            // directories can be nested repositories; never recursively delete them.
+            Ok(metadata) if metadata.is_dir() => continue,
+            Ok(_) => std::fs::remove_file(&full_path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => Err(error),
         };
 
         match removal {
-            Some(Ok(())) => result.removed_count += 1,
-            Some(Err(error)) => result.failures.push(UntrackedRemovalFailure {
-                path: path.trim_end_matches('/').to_string(),
+            Ok(()) => {
+                result.removed_count += 1;
+                for parent in Path::new(path).ancestors().skip(1) {
+                    if !parent.as_os_str().is_empty() {
+                        parent_dirs.insert(parent.to_path_buf());
+                    }
+                }
+            }
+            Err(error) => result.failures.push(UntrackedRemovalFailure {
+                path: path.to_string(),
                 error: error.to_string(),
             }),
-            None => {}
+        }
+    }
+
+    // Children sort after their parents, so prune from the bottom up. remove_dir
+    // only removes empty directories, preserving ignored files and nested repos.
+    for path in parent_dirs.iter().rev() {
+        if let Err(error) = std::fs::remove_dir(workdir.join(path)) {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+            ) {
+                continue;
+            }
+            result.failures.push(UntrackedRemovalFailure {
+                path: path.to_string_lossy().into_owned(),
+                error: error.to_string(),
+            });
         }
     }
 
@@ -513,6 +549,152 @@ mod tests {
     }
 
     #[test]
+    fn regression_clean_preserves_ignored_files_and_nested_repositories() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        dir.write(".gitignore", "*.secret\n");
+        commit_all(&repo, "ignore secrets");
+        dir.write("scratch/visible.txt", "remove");
+        dir.write("scratch/local.secret", "preserve");
+        dir.write("empty/child/visible.txt", "remove");
+        let nested = Repository::init(dir.path().join("nested")).expect("nested repo");
+        dir.write("nested/precious.txt", "preserve nested");
+        drop(nested);
+
+        let result = clean_untracked_files(&repo).expect("clean");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("scratch/local.secret")).unwrap(),
+            "preserve"
+        );
+        assert!(dir.path().join("nested/.git").is_dir());
+        assert!(dir.path().join("nested/precious.txt").is_file());
+        assert!(!dir.path().join("scratch/visible.txt").exists());
+        assert!(!dir.path().join("empty").exists());
+        assert_eq!(result.removed_count, 2);
+        assert!(result.failures.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regression_clean_removes_dangling_symlink() {
+        let dir = TestRepoDir::init();
+        std::os::unix::fs::symlink("missing", dir.path().join("link")).unwrap();
+        let result = clean_untracked_files(&dir.open()).expect("clean");
+        assert_eq!(result.removed_count, 1);
+        assert!(std::fs::symlink_metadata(dir.path().join("link")).is_err());
+    }
+
+    #[cfg(unix)]
+    fn type_changed_repo() -> TestRepoDir {
+        let dir = TestRepoDir::init();
+        dir.write("file", "original");
+        dir.write("target", "target");
+        commit_all(&dir.open(), "base");
+        std::fs::remove_file(dir.path().join("file")).unwrap();
+        std::os::unix::fs::symlink("target", dir.path().join("file")).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regression_status_reports_worktree_type_change() {
+        let dir = type_changed_repo();
+        let (unstaged, staged) = get_file_statuses(&dir.open()).unwrap();
+        assert!(staged.is_empty());
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].path, "file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regression_status_reports_index_type_change() {
+        let dir = type_changed_repo();
+        let repo = dir.open();
+        stage_file(&repo, "file").unwrap();
+        let (unstaged, staged) = get_file_statuses(&repo).unwrap();
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].path, "file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regression_unstage_all_restores_type_changed_index_entry() {
+        let dir = type_changed_repo();
+        let repo = dir.open();
+        stage_file(&repo, "file").unwrap();
+        unstage_all(&repo).unwrap();
+        let entry = repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("file"), 0)
+            .unwrap();
+        assert_eq!(entry.mode, 0o100644);
+        assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"original");
+        assert_eq!(
+            std::fs::read_link(dir.path().join("file")).unwrap(),
+            Path::new("target")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regression_stage_dangling_symlink() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        std::os::unix::fs::symlink("missing", dir.path().join("link")).unwrap();
+        stage_file(&repo, "link").unwrap();
+        let entry = repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("link"), 0)
+            .expect("symlink staged");
+        assert_eq!(entry.mode, 0o120000);
+        assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"missing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regression_stage_reports_metadata_errors_without_changing_index() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        dir.write("parent/file", "original");
+        commit_all(&repo, "base");
+        std::fs::remove_file(dir.path().join("parent/file")).unwrap();
+        std::fs::remove_dir(dir.path().join("parent")).unwrap();
+        std::os::unix::fs::symlink("parent", dir.path().join("parent")).unwrap();
+        assert!(stage_file(&repo, "parent/file").is_err());
+        assert!(
+            repo.index()
+                .unwrap()
+                .get_path(Path::new("parent/file"), 0)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn regression_untracked_diff_includes_contents_for_exact_path() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        dir.write("new/a[1].txt", "selected text\n");
+        dir.write("new/a1.txt", "sibling text\n");
+        let patch = get_file_diff(&repo, "new/a[1].txt", false).unwrap();
+        assert!(patch.contains("+selected text"), "patch: {patch}");
+        assert!(!patch.contains("sibling text"));
+        assert!(
+            get_file_diff(&repo, "new/a[1].txt", true)
+                .unwrap()
+                .is_empty()
+        );
+        stage_file(&repo, "new/a[1].txt").unwrap();
+        assert!(
+            get_file_diff(&repo, "new/a[1].txt", true)
+                .unwrap()
+                .contains("+selected text")
+        );
+    }
+
+    #[test]
     fn parses_complete_conflict_markers() {
         let sections = parse_conflict_markers(
             "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\nafter",
@@ -643,7 +825,7 @@ mod tests {
 
         assert_eq!(cleanup.removed_count, 1);
         assert_eq!(cleanup.failures.len(), 1);
-        assert_eq!(cleanup.failures[0].path, "blocked");
+        assert_eq!(cleanup.failures[0].path, "blocked/locked.txt");
         assert!(!cleanup.failures[0].error.is_empty());
         assert!(!repo_dir.path().join("removable.txt").exists());
         assert!(blocked_dir.exists());
