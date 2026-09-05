@@ -30,6 +30,17 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Just Another Git GUI",
         options,
-        Box::new(|cc| Ok(Box::new(app::GitGuiApp::new(cc)))),
+        Box::new(|cc| {
+            let app = app::GitGuiApp::new(cc);
+            cc.egui_ctx.global_style_mut(|style| {
+                style.visuals.widgets.noninteractive.fg_stroke.color =
+                    eframe::egui::Color32::from_gray(210);
+                style.visuals.weak_text_alpha = 0.78;
+                style.visuals.widgets.inactive.fg_stroke.color =
+                    eframe::egui::Color32::from_gray(225);
+                style.spacing.button_padding = eframe::egui::vec2(7.0, 4.0);
+            });
+            Ok(Box::new(app))
+        }),
     )
 }

@@ -18,6 +18,18 @@ const BADGE_VERTICAL_MARGIN: f32 = 2.0;
 /// row index and a patch of any size costs the same handful of widgets. Wrapped
 /// rows have no single height, so that mode still paints the whole patch.
 pub(crate) fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_lines: bool) {
+    egui::CollapsingHeader::new("Patch details").show(ui, |ui| {
+        for row in rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::FileHeader)
+        {
+            ui.monospace(row.content.as_ref());
+        }
+    });
+    let rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.kind != DiffLineKind::FileHeader)
+        .collect();
     let row_height = diff_row_height(ui);
     // `show_rows` wants the height *without* spacing and adds the `Ui`'s own
     // `item_spacing.y` back — so the grid has to be spaced by that same value, or
@@ -34,7 +46,7 @@ pub(crate) fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_l
         .show(ui, |ui| {
             ui.weak(egui::RichText::new("old").monospace());
             ui.weak(egui::RichText::new("new").monospace());
-            ui.weak(egui::RichText::new("chg").monospace());
+            ui.weak(egui::RichText::new("±").monospace());
             ui.weak(egui::RichText::new("content").monospace());
             ui.end_row();
         });
@@ -46,7 +58,7 @@ pub(crate) fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_l
 
     if wrap_lines {
         scroll.show(ui, |ui| {
-            render_diff_rows(ui, rows, 0, row_height, wrap_lines)
+            render_diff_rows(ui, &rows, 0, row_height, wrap_lines)
         });
         return;
     }
@@ -75,7 +87,7 @@ fn diff_row_height(ui: &egui::Ui) -> f32 {
 
 fn render_diff_rows(
     ui: &mut egui::Ui,
-    rows: &[ParsedDiffLine],
+    rows: &[&ParsedDiffLine],
     start_row: usize,
     row_height: f32,
     wrap_lines: bool,
@@ -246,17 +258,17 @@ pub(crate) fn render_diff_badge(ui: &mut egui::Ui, kind: DiffLineKind) {
         DiffLineKind::Added => (
             egui::Color32::from_rgba_premultiplied(32, 110, 64, 72),
             egui::Color32::from_rgb(120, 230, 160),
-            "ADD",
+            "+",
         ),
         DiffLineKind::Removed => (
             egui::Color32::from_rgba_premultiplied(140, 48, 48, 72),
             egui::Color32::from_rgb(255, 150, 150),
-            "DEL",
+            "−",
         ),
         DiffLineKind::HunkHeader => (
             egui::Color32::from_rgba_premultiplied(52, 90, 140, 72),
             egui::Color32::from_rgb(150, 200, 255),
-            "HUNK",
+            "@@",
         ),
         DiffLineKind::FileHeader => (
             egui::Color32::from_rgba_premultiplied(90, 90, 90, 56),
@@ -296,11 +308,15 @@ pub(crate) fn render_diff_content(
     wrap_lines: bool,
 ) {
     let content = if content.is_empty() { " " } else { content };
-    let mut label = egui::Label::new(
-        egui::RichText::new(content)
-            .monospace()
-            .color(diff_line_color(kind, ui)),
-    );
+    let text = egui::RichText::new(content)
+        .monospace()
+        .color(diff_line_color(kind, ui));
+    let text = match kind {
+        DiffLineKind::Added => text.background_color(egui::Color32::from_rgb(25, 55, 35)),
+        DiffLineKind::Removed => text.background_color(egui::Color32::from_rgb(65, 30, 30)),
+        _ => text,
+    };
+    let mut label = egui::Label::new(text);
     label = if wrap_lines {
         label.wrap()
     } else {

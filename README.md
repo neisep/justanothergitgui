@@ -21,8 +21,21 @@ It focuses on the everyday local workflow first—review changes, stage files, c
 ---
 
 
-## 📸 Screenshot
-![Justanothergitgui](software.png)
+## 📸 Screenshots
+
+### Review changes and commit
+
+Filter changed files, review a selected file's diff with line numbers, and stage the files you want to commit. The commit panel holds your summary and optional description.
+
+![Main window showing staged and unstaged files, a selected file's diff, and a commit draft](software.png)
+
+### Merge conflict editor
+
+Select a conflicted file to compare **Current (ours)** and **Incoming (theirs)** alongside a live **Result** preview. Keep individual lines from either side, take a whole side, combine both, or write a custom resolution with **Edit**. Once every conflict in the file is resolved, **Save Merge** writes the result and stages the file; you can then commit the merge.
+
+![Merge conflict editor combining selected lines from current and incoming changes in the result preview](merge-manager.png)
+
+Both screenshots show the application running with local demo repositories.
 
 ---
 
@@ -48,7 +61,7 @@ The application combines:
 - **Stage / unstage individual files** or use **Stage All** / **Unstage All**
 - **Drag and drop files between staged and unstaged lists**
 - **Review diffs** in a built-in changes view with line numbers and optional wrapping
-- **Resolve merge conflicts** with built-in “Accept Ours / Theirs / Both” actions
+- **Resolve merge conflicts** with current / incoming panes, individual line selection, custom edits, and a live result preview
 - **See loading / busy indicators** while long-running Git and GitHub operations are in flight
 
 ### Commits

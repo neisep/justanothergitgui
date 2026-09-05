@@ -245,6 +245,8 @@ pub struct InspectorState {
     pub conflict_edit: Option<ConflictEdit>,
     /// Shared vertical scroll offset for the two top merge-editor panes.
     pub conflict_scroll: f32,
+    /// Ordinal of the conflict selected by Previous/Next navigation.
+    pub conflict_focus: usize,
     /// Commit opened from the History tab, or `None` while the list is showing.
     pub selected_commit: Option<SelectedCommit>,
     pub dragging: Option<DragFile>,
@@ -276,6 +278,23 @@ impl InspectorState {
         self.conflict_data = data;
         self.conflict_edit = None;
         self.conflict_scroll = 0.0;
+        self.conflict_focus = 0;
+    }
+
+    /// Shared by the save control and action handler so queued actions cannot
+    /// write an earlier resolution while a draft is still being edited.
+    pub fn resolution_save_error(&self) -> Option<&'static str> {
+        if self.conflict_edit.is_some() {
+            Some("Apply or cancel your edit before saving.")
+        } else if self
+            .conflict_data
+            .as_ref()
+            .is_none_or(|data| data.unresolved_count() > 0)
+        {
+            Some("Resolve every conflict before saving.")
+        } else {
+            None
+        }
     }
 
     /// Open (or close) the read-only commit view. The whole view state travels
@@ -344,5 +363,46 @@ impl Default for UiState {
             actions: Vec::new(),
             busy: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_safety_tests {
+    use super::*;
+    use crate::shared::conflicts::{ConflictChoice, ConflictPart, FileStyle};
+
+    #[test]
+    fn open_draft_blocks_saving_even_when_previous_choice_is_resolved() {
+        let mut inspector = InspectorState::default();
+        inspector.set_conflict(Some(ConflictData::new(
+            "test.txt".into(),
+            vec![ConflictPart::Conflict {
+                ours: "ours".into(),
+                theirs: "theirs".into(),
+                resolution: ConflictChoice::Ours,
+            }],
+            FileStyle::default(),
+        )));
+        assert!(inspector.resolution_save_error().is_none());
+        inspector.conflict_edit = Some(ConflictEdit {
+            index: 0,
+            buffer: "unapplied".into(),
+        });
+        assert_eq!(
+            inspector.resolution_save_error(),
+            Some("Apply or cancel your edit before saving.")
+        );
+        inspector.conflict_edit = None;
+        assert!(inspector.resolution_save_error().is_none());
+        inspector
+            .conflict_data
+            .as_mut()
+            .unwrap()
+            .set_resolution(0, ConflictChoice::Unresolved);
+        assert!(inspector.resolution_save_error().is_some());
+        inspector.conflict_focus = 4;
+        inspector.set_conflict(None);
+        assert_eq!(inspector.conflict_focus, 0);
+        assert!(inspector.resolution_save_error().is_some());
     }
 }

@@ -379,6 +379,10 @@ fn undo_last_commit(ctx: &mut TabActionContext<'_>) {
 }
 
 fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
+    if let Some(detail) = ctx.tab.state.inspector.resolution_save_error() {
+        log_action_error(ctx, "Save resolution", detail.to_string());
+        return;
+    }
     let Some(data) = ctx.tab.state.inspector.conflict_data.as_ref() else {
         ctx.tab.state.ui.status = StatusMessage::info("No conflict selected");
         refresh_tab(ctx);

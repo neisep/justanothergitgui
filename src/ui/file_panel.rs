@@ -9,7 +9,7 @@ use super::HoveredRow;
 use super::diff_view;
 
 const STATUS_COL_WIDTH: f32 = 24.0;
-const ACTION_COL_WIDTH: f32 = 72.0;
+const ACTION_COL_WIDTH: f32 = 100.0;
 const PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const PANEL_MIN_WIDTH: f32 = 220.0;
 /// Neither section may be squeezed below this, however the divider is dragged.
@@ -18,7 +18,7 @@ const MIN_SECTION_HEIGHT: f32 = 110.0;
 /// own, so the Staged list — and its drop target — is always visible.
 const MAX_UNSTAGED_FRACTION: f32 = 0.65;
 /// Height of a section's header row plus its separator.
-const SECTION_CHROME: f32 = 32.0;
+const SECTION_CHROME: f32 = 52.0;
 const CONFLICT_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 170, 80);
 
 pub struct FilePanelState<'a> {
@@ -52,7 +52,11 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
             egui::Panel::top("unstaged_section")
                 .resizable(true)
                 .default_size(unstaged_height)
-                .min_size(MIN_SECTION_HEIGHT)
+                .min_size(if filter.trim().is_empty() {
+                    MIN_SECTION_HEIGHT
+                } else {
+                    MIN_SECTION_HEIGHT + 80.0
+                })
                 .show_inside(ui, |ui| {
                     // egui stores the panel's *content* rect each frame and uses
                     // it as next frame's size, ignoring `default_size` from then
@@ -157,7 +161,7 @@ fn show_filter_row(ui: &mut egui::Ui, inspector: &mut InspectorState) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !inspector.file_filter.is_empty()
                 && ui
-                    .small_button("\u{2715}")
+                    .small_button("Clear")
                     .on_hover_text("Clear the filter")
                     .clicked()
             {
@@ -200,22 +204,31 @@ fn show_section_header(
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if header.total > 0
+            if !filtered
+                && header.total > 0
                 && ui
                     .small_button(header.button)
-                    .on_hover_text(if filtered {
-                        // Bulk actions ignore the filter; saying so beats a
-                        // surprise when a hidden file turns out to be included.
-                        format!("{} — including files hidden by the filter", header.tooltip)
-                    } else {
-                        header.tooltip.to_string()
-                    })
+                    .on_hover_text(header.tooltip)
                     .clicked()
             {
                 ui_state.actions.push(action());
             }
         });
     });
+    if filtered {
+        if ui
+            .button(format!(
+                "{} {} {}",
+                header.button,
+                header.total,
+                if header.total == 1 { "file" } else { "files" }
+            ))
+            .clicked()
+        {
+            ui_state.actions.push(action());
+        }
+        ui.label("Bulk action includes files hidden by the filter.");
+    }
     ui.separator();
 }
 
@@ -338,7 +351,7 @@ fn render_file_table(
                                 } else {
                                     "Drag to move this file to staged"
                                 });
-                            if handle.drag_started() {
+                            if handle.drag_started() && !file.is_conflicted {
                                 drag_started = true;
                                 inspector.dragging = Some(DragFile {
                                     path: file.path.clone(),
@@ -350,6 +363,11 @@ fn render_file_table(
                                 (
                                     "Unstage",
                                     "Unstage this file\nShortcut: Ctrl/Cmd+S when selected",
+                                )
+                            } else if file.is_conflicted {
+                                (
+                                    "Resolve…",
+                                    "Open the merge editor; save the result there before staging",
                                 )
                             } else {
                                 (
@@ -363,7 +381,11 @@ fn render_file_table(
                                 .clicked()
                             {
                                 action_clicked = true;
-                                if staged {
+                                if file.is_conflicted {
+                                    ui_state
+                                        .actions
+                                        .push(UiAction::select_file(file.path.clone(), false));
+                                } else if staged {
                                     ui_state
                                         .actions
                                         .push(UiAction::unstage_file(file.path.clone()));

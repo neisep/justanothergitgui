@@ -8,6 +8,9 @@ pub mod file_panel;
 pub mod history_panel;
 pub mod tab_bar;
 
+#[cfg(test)]
+mod ux_tests;
+
 use eframe::egui;
 
 /// Prepare a `Ui` to host a table whose whole rows are clickable.

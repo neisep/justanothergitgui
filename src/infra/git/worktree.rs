@@ -74,6 +74,19 @@ pub fn get_file_statuses(
 }
 
 pub fn stage_file(repo: &Repository, path: &str) -> Result<(), git2::Error> {
+    let index = repo.index()?;
+    if [1, 2, 3]
+        .iter()
+        .any(|stage| index.get_path(Path::new(path), *stage).is_some())
+    {
+        return Err(git2::Error::from_str(
+            "Open Resolve and use Save and stage resolution for conflicted files.",
+        ));
+    }
+    stage_file_unchecked(repo, path)
+}
+
+fn stage_file_unchecked(repo: &Repository, path: &str) -> Result<(), git2::Error> {
     let mut index = repo.index()?;
     let full_path = repo_workdir(repo)?.join(path);
 
@@ -83,7 +96,9 @@ pub fn stage_file(repo: &Repository, path: &str) -> Result<(), git2::Error> {
             index.remove_path(Path::new(path))?;
         }
         Err(error) => {
-            return Err(git2::Error::from_str(&format!("Cannot inspect {path}: {error}")));
+            return Err(git2::Error::from_str(&format!(
+                "Cannot inspect {path}: {error}"
+            )));
         }
     }
 
@@ -132,6 +147,11 @@ pub fn unstage_file(repo: &Repository, path: &str) -> Result<(), git2::Error> {
 
 pub fn stage_all(repo: &Repository) -> Result<(), git2::Error> {
     let mut index = repo.index()?;
+    if index.has_conflicts() {
+        return Err(git2::Error::from_str(
+            "Stage all is blocked while files have conflicts. Resolve and save them first, or stage non-conflicted files individually.",
+        ));
+    }
     index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
     index.update_all(["*"], None)?;
     index.write()?;
@@ -272,7 +292,40 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
         }
     };
 
-    Ok(ConflictData::new(path.to_string(), sections, style))
+    let mut data = ConflictData::new(path.to_string(), sections, style);
+    // Stage 2 is HEAD, even during a rebase; stage 3 is the incoming commit.
+    data.current_label = repo.head().ok().and_then(|head| {
+        if head.is_branch() {
+            head.shorthand().map(str::to_owned)
+        } else {
+            head.target().map(|oid| oid.to_string()[..8].to_string())
+        }
+    });
+    data.incoming_label = ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD"]
+        .iter()
+        .find_map(|name| repo.revparse_single(name).ok())
+        .map(|object| {
+            let oid = object.id();
+            let branches: Vec<String> = repo
+                .branches(None)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|(branch, _)| branch.get().target() == Some(oid))
+                .filter_map(|(branch, _)| branch.name().ok().flatten().map(str::to_owned))
+                .collect();
+            if branches.is_empty() {
+                oid.to_string()[..8].to_string()
+            } else {
+                format!(
+                    "{} ({})",
+                    branches.join(", "),
+                    oid.to_string()[..8].to_string()
+                )
+            }
+        });
+    Ok(data)
 }
 
 /// Build the conflict sections from the index's ancestor/ours/theirs stages via
@@ -331,7 +384,7 @@ pub fn write_resolved_content(
     let full_path = conflict_workdir(repo)?.join(path);
 
     std::fs::write(&full_path, content)?;
-    stage_file(repo, path)?;
+    stage_file_unchecked(repo, path)?;
 
     Ok(())
 }
@@ -691,6 +744,72 @@ mod tests {
             get_file_diff(&repo, "new/a[1].txt", true)
                 .unwrap()
                 .contains("+selected text")
+        );
+    }
+
+    #[test]
+    fn staging_cannot_bypass_resolution_and_explicit_save_stages_preview() {
+        let dir = TestRepoDir::init();
+        let repo = dir.open();
+        dir.write("conflict.txt", "base\n");
+        let base = commit_all(&repo, "base");
+        repo.branch("incoming", &repo.find_commit(base).unwrap(), false)
+            .unwrap();
+        dir.write("conflict.txt", "current\n");
+        commit_all(&repo, "current");
+        repo.set_head("refs/heads/incoming").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        dir.write("conflict.txt", "incoming\n");
+        let incoming = commit_all(&repo, "incoming");
+        repo.set_head("refs/heads/main").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        let incoming_commit = repo.find_annotated_commit(incoming).unwrap();
+        repo.merge(&[&incoming_commit], None, None).unwrap();
+        assert!(repo.index().unwrap().has_conflicts());
+        let original = std::fs::read(dir.path().join("conflict.txt")).unwrap();
+        dir.write("unrelated.txt", "safe\n");
+        assert!(
+            stage_file(&repo, "conflict.txt")
+                .unwrap_err()
+                .message()
+                .contains("Resolve")
+        );
+        assert!(stage_all(&repo).unwrap_err().message().contains("blocked"));
+        assert!(repo.index().unwrap().has_conflicts());
+        assert!(
+            repo.index()
+                .unwrap()
+                .get_path(Path::new("unrelated.txt"), 0)
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("conflict.txt")).unwrap(),
+            original
+        );
+        stage_file(&repo, "unrelated.txt").unwrap();
+        let mut data = read_conflict_file(&repo, "conflict.txt").unwrap();
+        assert_eq!(data.current_label.as_deref(), Some("main"));
+        assert!(
+            data.incoming_label
+                .as_ref()
+                .unwrap()
+                .starts_with("incoming (")
+        );
+        data.set_resolution(0, ConflictChoice::Custom("chosen preview".into()));
+        let preview = data.compose();
+        write_resolved_content(&repo, "conflict.txt", &preview).unwrap();
+        let index = repo.index().unwrap();
+        assert!(!index.has_conflicts());
+        let entry = index.get_path(Path::new("conflict.txt"), 0).unwrap();
+        assert_eq!(
+            repo.find_blob(entry.id).unwrap().content(),
+            preview.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("conflict.txt")).unwrap(),
+            preview.as_bytes()
         );
     }
 

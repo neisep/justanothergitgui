@@ -10,11 +10,32 @@ pub fn show(
     ruleset: CommitMessageRuleSet,
     custom_scopes: &[String],
 ) {
+    let merging = state.inspector.conflict_data.is_some();
+    let collapse_id = ui.id().with("commit_panel_expanded_during_merge");
+    let mut expanded = ui
+        .data(|data| data.get_temp::<bool>(collapse_id))
+        .unwrap_or(false);
+    if merging && !expanded {
+        egui::Panel::right("commit_panel_collapsed")
+            .exact_size(92.0)
+            .show_inside(ui, |ui| {
+                if ui.button("Commit…").clicked() {
+                    ui.data_mut(|data| data.insert_temp(collapse_id, true));
+                }
+            });
+        return;
+    }
     egui::Panel::right("commit_panel")
         .default_size(260.0)
         .min_size(180.0)
         .show_inside(ui, |ui| {
-            ui.strong("Commit");
+            ui.horizontal(|ui| {
+                ui.strong("Commit");
+                if merging && ui.button("Collapse").clicked() {
+                    expanded = false;
+                    ui.data_mut(|data| data.insert_temp(collapse_id, expanded));
+                }
+            });
             ui.separator();
 
             ui.label("Summary:");
@@ -61,13 +82,46 @@ pub fn show(
                 ui.add_space(8.0);
             }
 
-            let can_commit = !state.worktree.staged.is_empty()
-                && !state.commit.commit_summary.trim().is_empty()
-                && validation_error.is_none();
+            let blocked = if state
+                .worktree
+                .unstaged
+                .iter()
+                .any(|file| file.is_conflicted)
+            {
+                Some("Resolve and save all conflicted files first")
+            } else if state.worktree.staged.is_empty() {
+                Some("Stage files to include in this commit")
+            } else if state.commit.commit_summary.trim().is_empty() {
+                Some("Enter a commit summary")
+            } else if validation_error.is_some() {
+                Some("Fix the commit message format first")
+            } else {
+                None
+            };
+            let can_commit = blocked.is_none();
+            let count = state.worktree.staged.len();
+            ui.strong(format!(
+                "Committing {count} staged {}",
+                if count == 1 { "file" } else { "files" }
+            ));
+            if let Some(reason) = blocked {
+                ui.label(reason);
+            }
+            ui.add_space(8.0);
 
             ui.add_enabled_ui(can_commit, |ui| {
                 if ui
-                    .button("Commit")
+                    .add(
+                        egui::Button::new(format!(
+                            "Commit {count} {}",
+                            if count == 1 { "file" } else { "files" }
+                        ))
+                        .fill(if can_commit {
+                            egui::Color32::from_rgb(0, 95, 125)
+                        } else {
+                            ui.visuals().widgets.inactive.bg_fill
+                        }),
+                    )
                     .on_hover_text(if can_commit {
                         "Create a commit with staged changes\nShortcut: Ctrl/Cmd+Enter"
                     } else if validation_error.is_some() {
@@ -82,10 +136,6 @@ pub fn show(
                     state.ui.actions.push(UiAction::commit());
                 }
             });
-
-            ui.add_space(16.0);
-            ui.separator();
-            ui.weak(format!("{} file(s) staged", state.worktree.staged.len()));
         });
 }
 
