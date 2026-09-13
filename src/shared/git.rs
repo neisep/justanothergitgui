@@ -1,8 +1,36 @@
+/// What git reports happened to a file, independent of the words the UI shows
+/// for it.
+///
+/// [`FileEntry::display_status`] is derived from this and never the other way
+/// round: the labels are display copy — the same [`FileChangeKind::Added`] reads
+/// "untracked" in the unstaged list but "new" in the staged one — so anything
+/// that has to *act* on a file, above all the destructive context-menu items,
+/// matches on this instead of on the label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileChangeKind {
+    /// Git has no committed copy of this path: `WT_NEW` unstaged, `INDEX_NEW`
+    /// staged. Such a file can only be deleted, never restored.
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    /// A type change, or any flag combination the file lists do not name.
+    TypeChange,
+    Conflicted,
+}
+
 #[derive(Clone, Debug)]
 pub struct FileEntry {
     pub path: String,
+    /// Display copy only — badge wording and colour. Never dispatch on this.
     pub display_status: String,
-    pub is_conflicted: bool,
+    pub kind: FileChangeKind,
+}
+
+impl FileEntry {
+    pub fn is_conflicted(&self) -> bool {
+        self.kind == FileChangeKind::Conflicted
+    }
 }
 
 /// One file touched by a commit, relative to that commit's first parent.

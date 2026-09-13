@@ -18,6 +18,18 @@ const BADGE_VERTICAL_MARGIN: f32 = 2.0;
 /// row index and a patch of any size costs the same handful of widgets. Wrapped
 /// rows have no single height, so that mode still paints the whole patch.
 pub(crate) fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_lines: bool) {
+    egui::CollapsingHeader::new("Patch details").show(ui, |ui| {
+        for row in rows
+            .iter()
+            .filter(|row| row.kind == DiffLineKind::FileHeader)
+        {
+            ui.monospace(row.content.as_ref());
+        }
+    });
+    let rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.kind != DiffLineKind::FileHeader)
+        .collect();
     let row_height = diff_row_height(ui);
     // `show_rows` wants the height *without* spacing and adds the `Ui`'s own
     // `item_spacing.y` back — so the grid has to be spaced by that same value, or
@@ -34,7 +46,7 @@ pub(crate) fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_l
         .show(ui, |ui| {
             ui.weak(egui::RichText::new("old").monospace());
             ui.weak(egui::RichText::new("new").monospace());
-            ui.weak(egui::RichText::new("chg").monospace());
+            ui.weak(egui::RichText::new("±").monospace());
             ui.weak(egui::RichText::new("content").monospace());
             ui.end_row();
         });
@@ -46,7 +58,7 @@ pub(crate) fn show_diff_table(ui: &mut egui::Ui, rows: &[ParsedDiffLine], wrap_l
 
     if wrap_lines {
         scroll.show(ui, |ui| {
-            render_diff_rows(ui, rows, 0, row_height, wrap_lines)
+            render_diff_rows(ui, &rows, 0, row_height, wrap_lines)
         });
         return;
     }
@@ -75,7 +87,7 @@ fn diff_row_height(ui: &egui::Ui) -> f32 {
 
 fn render_diff_rows(
     ui: &mut egui::Ui,
-    rows: &[ParsedDiffLine],
+    rows: &[&ParsedDiffLine],
     start_row: usize,
     row_height: f32,
     wrap_lines: bool,
@@ -246,17 +258,17 @@ pub(crate) fn render_diff_badge(ui: &mut egui::Ui, kind: DiffLineKind) {
         DiffLineKind::Added => (
             egui::Color32::from_rgba_premultiplied(32, 110, 64, 72),
             egui::Color32::from_rgb(120, 230, 160),
-            "ADD",
+            "+",
         ),
         DiffLineKind::Removed => (
             egui::Color32::from_rgba_premultiplied(140, 48, 48, 72),
             egui::Color32::from_rgb(255, 150, 150),
-            "DEL",
+            "−",
         ),
         DiffLineKind::HunkHeader => (
             egui::Color32::from_rgba_premultiplied(52, 90, 140, 72),
             egui::Color32::from_rgb(150, 200, 255),
-            "HUNK",
+            "@@",
         ),
         DiffLineKind::FileHeader => (
             egui::Color32::from_rgba_premultiplied(90, 90, 90, 56),
@@ -296,11 +308,15 @@ pub(crate) fn render_diff_content(
     wrap_lines: bool,
 ) {
     let content = if content.is_empty() { " " } else { content };
-    let mut label = egui::Label::new(
-        egui::RichText::new(content)
-            .monospace()
-            .color(diff_line_color(kind, ui)),
-    );
+    let text = egui::RichText::new(content)
+        .monospace()
+        .color(diff_line_color(kind, ui));
+    let text = match kind {
+        DiffLineKind::Added => text.background_color(egui::Color32::from_rgb(25, 55, 35)),
+        DiffLineKind::Removed => text.background_color(egui::Color32::from_rgb(65, 30, 30)),
+        _ => text,
+    };
+    let mut label = egui::Label::new(text);
     label = if wrap_lines {
         label.wrap()
     } else {
@@ -320,20 +336,26 @@ pub(crate) fn diff_line_color(kind: DiffLineKind, ui: &egui::Ui) -> egui::Color3
     }
 }
 
-/// Status badge shared by the working-tree file list and the commit file list.
+/// The color and wording one file status is shown with, shared by both the wide
+/// badge and the narrow chip so the two can never disagree about a status.
+pub(crate) fn status_style(display_status: &str, is_conflicted: bool) -> (egui::Color32, &str) {
+    if is_conflicted {
+        return (egui::Color32::from_rgb(160, 92, 32), "CONFLICT");
+    }
+
+    match display_status {
+        "new" => (egui::Color32::from_rgb(48, 128, 88), "NEW"),
+        "untracked" => (egui::Color32::from_rgb(48, 128, 88), "ADDED"),
+        "modified" => (egui::Color32::from_rgb(52, 96, 160), "MODIFIED"),
+        "deleted" => (egui::Color32::from_rgb(152, 64, 64), "DELETED"),
+        "renamed" => (egui::Color32::from_rgb(108, 76, 156), "RENAMED"),
+        _ => (egui::Color32::from_rgb(92, 92, 92), "CHANGED"),
+    }
+}
+
+/// Status badge for lists with room to spare, such as the commit file list.
 pub(crate) fn render_status_badge(ui: &mut egui::Ui, display_status: &str, is_conflicted: bool) {
-    let (fill, text) = if is_conflicted {
-        (egui::Color32::from_rgb(160, 92, 32), "CONFLICT")
-    } else {
-        match display_status {
-            "new" => (egui::Color32::from_rgb(48, 128, 88), "NEW"),
-            "untracked" => (egui::Color32::from_rgb(48, 128, 88), "ADDED"),
-            "modified" => (egui::Color32::from_rgb(52, 96, 160), "MODIFIED"),
-            "deleted" => (egui::Color32::from_rgb(152, 64, 64), "DELETED"),
-            "renamed" => (egui::Color32::from_rgb(108, 76, 156), "RENAMED"),
-            _ => (egui::Color32::from_rgb(92, 92, 92), "CHANGED"),
-        }
-    };
+    let (fill, text) = status_style(display_status, is_conflicted);
 
     egui::Frame::new()
         .fill(fill)
@@ -347,3 +369,30 @@ pub(crate) fn render_status_badge(ui: &mut egui::Ui, display_status: &str, is_co
             );
         });
 }
+
+/// One-letter status chip for the narrow working-tree list.
+///
+/// The badge's word costs ~72px of a panel that is mostly filenames; the initial
+/// carries the same distinction in a fifth of the width, with the full word kept
+/// a hover away.
+pub(crate) fn render_status_chip(ui: &mut egui::Ui, display_status: &str, is_conflicted: bool) {
+    let (fill, text) = status_style(display_status, is_conflicted);
+    let initial = text.chars().next().unwrap_or('?');
+
+    let size = egui::vec2(CHIP_SIZE, CHIP_SIZE);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, egui::CornerRadius::same(3), fill);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        initial,
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
+
+    response.on_hover_text(text);
+}
+
+const CHIP_SIZE: f32 = 18.0;

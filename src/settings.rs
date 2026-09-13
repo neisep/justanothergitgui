@@ -12,6 +12,17 @@ pub struct AppSettings {
     pub commit_message_ruleset: CommitMessageRuleSet,
     #[serde(default)]
     pub commit_message_custom_scopes: Vec<String>,
+    /// Re-read the repository whenever the window regains focus.
+    ///
+    /// `bool`'s own default is `false`, so this needs its own default function:
+    /// settings files written before the option existed must still come back
+    /// with the feature on.
+    #[serde(default = "auto_refresh_on_focus_default")]
+    pub auto_refresh_on_focus: bool,
+}
+
+fn auto_refresh_on_focus_default() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -19,6 +30,7 @@ impl Default for AppSettings {
         Self {
             commit_message_ruleset: CommitMessageRuleSet::Off,
             commit_message_custom_scopes: Vec::new(),
+            auto_refresh_on_focus: auto_refresh_on_focus_default(),
         }
     }
 }

@@ -19,6 +19,7 @@ impl GitGuiApp {
             || state.dialogs.tag.show_create_tag_dialog
             || state.dialogs.cleanup.show_cleanup_branches_dialog
             || state.dialogs.discard.show_discard_dialog
+            || state.dialogs.file_action.pending.is_some()
     }
 
     pub(super) fn close_topmost_dialog(&mut self) -> bool {
@@ -44,6 +45,11 @@ impl GitGuiApp {
                 .busy
                 .as_ref()
                 .is_some_and(|busy| busy.action == BusyAction::DiscardAndReset);
+
+            if state.dialogs.file_action.pending.is_some() {
+                state.dialogs.file_action.pending = None;
+                return true;
+            }
 
             if state.dialogs.cleanup.show_cleanup_branches_dialog {
                 state.dialogs.cleanup.show_cleanup_branches_dialog = false;
@@ -106,17 +112,20 @@ impl GitGuiApp {
             ctx,
             &mut self.settings_dialog,
             self.settings.commit_message_ruleset,
+            self.settings.auto_refresh_on_focus,
         );
 
         let parsed_custom_scopes =
             commit_rules::parse_custom_scopes(&self.settings_dialog.custom_scopes_input);
         if output.custom_scope_error.is_none()
             && (output.selected_ruleset != self.settings.commit_message_ruleset
+                || output.auto_refresh_on_focus != self.settings.auto_refresh_on_focus
                 || parsed_custom_scopes.as_ref().ok()
                     != Some(&self.settings.commit_message_custom_scopes))
         {
             let mut next_settings = self.settings.clone();
             next_settings.commit_message_ruleset = output.selected_ruleset;
+            next_settings.auto_refresh_on_focus = output.auto_refresh_on_focus;
             next_settings.commit_message_custom_scopes = parsed_custom_scopes.unwrap_or_default();
             match settings::save_app_settings(&next_settings) {
                 Ok(()) => {
@@ -125,9 +134,9 @@ impl GitGuiApp {
                 }
                 Err(error) => {
                     self.logger.log_error("Settings", &error);
-                    self.settings_dialog.status =
-                        helpers::status_message_for_error("Settings", &error);
-                    self.set_status_message(self.settings_dialog.status.clone());
+                    let status = helpers::status_message_for_error("Settings", &error);
+                    self.settings_dialog.status = status.text().to_string();
+                    self.set_status_message(status);
                 }
             }
         }
@@ -206,7 +215,7 @@ impl GitGuiApp {
             self.welcome_busy = Some(BusyState::new(BusyAction::CloneRepository, "Cloning..."));
         } else {
             let dispatch_message = helpers::status_message_for_worker_dispatch("Clone");
-            self.clone_dialog.status = dispatch_message.clone();
+            self.clone_dialog.status = dispatch_message.text().to_string();
             self.logger
                 .log_error("Clone", helpers::WORKER_DISPATCH_ERROR_DETAIL);
             self.welcome_status = dispatch_message.clone();
@@ -275,7 +284,7 @@ impl GitGuiApp {
                         } else {
                             let message =
                                 helpers::status_message_for_worker_dispatch("Publish to GitHub");
-                            self.publish_dialog.operation_status = message.clone();
+                            self.publish_dialog.operation_status = message.text().to_string();
                             self.logger.log_error(
                                 "Publish to GitHub",
                                 helpers::WORKER_DISPATCH_ERROR_DETAIL,
@@ -481,6 +490,25 @@ impl GitGuiApp {
         if !state.dialogs.discard.show_discard_dialog {
             state.dialogs.discard.discard_preview = None;
             state.dialogs.discard.discard_clean_untracked = false;
+        }
+    }
+
+    pub(super) fn show_file_action_dialog(&mut self, ctx: &egui::Context) {
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
+        let state = &mut self.tabs[active_index].state;
+
+        let Some(pending) = state.dialogs.file_action.pending.clone() else {
+            return;
+        };
+
+        let output = ui::dialogs::file_action::show(ctx, &pending);
+
+        if output.confirm_requested {
+            state.ui.actions.push(UiAction::confirm_file_action());
+        } else if !output.keep_open {
+            state.dialogs.file_action.pending = None;
         }
     }
 

@@ -46,9 +46,10 @@ pub fn show(
                     url_response.request_focus();
                     dialog.focus_url_requested = false;
                 }
+                ui.weak("Paste an HTTPS or SSH clone URL from GitHub or another Git host.");
 
                 ui.add_space(8.0);
-                ui.label("Destination folder");
+                ui.label("Parent folder");
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut dialog.parent_folder).desired_width(320.0),

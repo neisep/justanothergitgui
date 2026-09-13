@@ -150,11 +150,13 @@ const UNRESOLVED_ACCENT: egui::Color32 = egui::Color32::from_rgb(240, 180, 70);
 const EDIT_ACCENT: egui::Color32 = egui::Color32::from_rgb(230, 160, 230);
 
 fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
+    let save_error = state.inspector.resolution_save_error();
     let save_clicked = {
         let InspectorState {
             conflict_data,
             conflict_edit,
             conflict_scroll,
+            conflict_focus,
             ..
         } = &mut *state.inspector;
 
@@ -165,7 +167,7 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
         let unresolved = data.unresolved_count();
 
         let mut save_clicked = false;
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.strong(format!("Conflict: {}", &data.path));
             if unresolved > 0 {
                 ui.colored_label(
@@ -173,18 +175,53 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
                     format!("{unresolved} conflict(s) left — pick a side or edit"),
                 );
             } else {
-                ui.colored_label(CURRENT_TEXT, "All conflicts resolved — ready to save");
+                ui.colored_label(CURRENT_TEXT, "Resolution selected — not saved");
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                save_clicked = ui
-                    .add_enabled(unresolved == 0, egui::Button::new("Save Merge"))
-                    .on_hover_text(if unresolved == 0 {
-                        "Write the merged file and stage it"
-                    } else {
-                        "Resolve every conflict before saving"
-                    })
-                    .clicked();
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    save_clicked = ui
+                        .add_enabled(
+                            save_error.is_none(),
+                            egui::Button::new("Save and stage resolution")
+                                .fill(ui.visuals().selection.bg_fill),
+                        )
+                        .on_hover_text(save_error.unwrap_or("Write the merged file and stage it"))
+                        .clicked();
+                });
             });
+        });
+        if conflict_edit.is_some() {
+            ui.colored_label(EDIT_ACCENT, "Apply or cancel your edit before saving.");
+        }
+        let count = data
+            .sections()
+            .iter()
+            .filter(|part| matches!(part, ConflictPart::Conflict { .. }))
+            .count();
+        *conflict_focus = (*conflict_focus).min(count.saturating_sub(1));
+        let mut scroll_target = None;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(*conflict_focus > 0, egui::Button::new("Previous conflict"))
+                .clicked()
+            {
+                *conflict_focus -= 1;
+                scroll_target = Some(*conflict_focus);
+            }
+            ui.label(format!(
+                "Conflict {} of {count}",
+                if count == 0 { 0 } else { *conflict_focus + 1 }
+            ));
+            if ui
+                .add_enabled(
+                    *conflict_focus + 1 < count,
+                    egui::Button::new("Next conflict"),
+                )
+                .clicked()
+            {
+                *conflict_focus += 1;
+                scroll_target = Some(*conflict_focus);
+            }
         });
         ui.separator();
 
@@ -201,7 +238,7 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
                     ui.weak("Tick the lines to keep, or use the buttons on each conflict.");
                 });
                 ui.separator();
-                result_action = render_result_document(ui, data, conflict_edit);
+                result_action = render_result_document(ui, data, conflict_edit, scroll_target);
             });
         apply_result_action(data, result_action, ui.ctx());
 
@@ -211,13 +248,18 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
         let scroll = *conflict_scroll;
         let mut pane_action: Option<ResultAction> = None;
         let mut offsets = [scroll; 2];
+        let source_rect = ui.available_rect_before_wrap();
         ui.columns(2, |columns| {
+            for column in columns.iter_mut() {
+                column.set_clip_rect(column.clip_rect().intersect(source_rect));
+            }
             offsets[0] = render_input_pane(
                 &mut columns[0],
                 data,
                 MergeSide::Current,
                 scroll,
-                conflict_edit,
+                conflict_edit.is_none(),
+                scroll_target,
                 &mut pane_action,
             );
             offsets[1] = render_input_pane(
@@ -225,7 +267,8 @@ fn show_conflict_view(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
                 data,
                 MergeSide::Incoming,
                 scroll,
-                conflict_edit,
+                conflict_edit.is_none(),
+                scroll_target,
                 &mut pane_action,
             );
         });
@@ -289,6 +332,7 @@ fn render_result_document(
     ui: &mut egui::Ui,
     data: &ConflictData,
     conflict_edit: &mut Option<ConflictEdit>,
+    scroll_target: Option<usize>,
 ) -> Option<ResultAction> {
     let mut action: Option<ResultAction> = None;
 
@@ -303,21 +347,25 @@ fn render_result_document(
                         render_plain_lines(ui, text, ui.visuals().text_color());
                     }
                     ConflictPart::Conflict { resolution, .. } => {
+                        if scroll_target == Some(conflict_no) {
+                            ui.scroll_to_cursor(Some(egui::Align::TOP));
+                        }
                         conflict_no += 1;
+                        ui.strong(format!("Conflict {conflict_no}"));
+                        render_resolution_buttons(ui, data, index, conflict_edit, &mut action);
                         if conflict_edit
                             .as_ref()
                             .is_some_and(|edit| edit.index == index)
                         {
                             render_edit_zone(ui, conflict_no, conflict_edit, &mut action);
                         } else if let ConflictChoice::Custom(text) = resolution {
-                            render_custom_zone(
-                                ui,
-                                index,
-                                conflict_no,
-                                text,
-                                conflict_edit,
-                                &mut action,
-                            );
+                            conflict_zone_frame(ui, CUSTOM_ACCENT, |ui| {
+                                if text.is_empty() {
+                                    ui.label("Region removed — neither side kept");
+                                } else {
+                                    render_plain_lines(ui, text, ui.visuals().text_color());
+                                }
+                            });
                         } else if !resolution.is_resolved() {
                             ui.label(
                                 egui::RichText::new(format!(
@@ -342,6 +390,16 @@ fn render_result_document(
 /// Render the kept lines of one resolved conflict in the result, colored by the
 /// side each line came from (green = current, blue = incoming, plain = shared).
 fn render_result_conflict(ui: &mut egui::Ui, data: &ConflictData, index: usize) {
+    if matches!(
+        data.sections()[index],
+        ConflictPart::Conflict {
+            resolution: ConflictChoice::Both,
+            ..
+        }
+    ) {
+        render_plain_lines(ui, &data.resolution_text(index), ui.visuals().text_color());
+        return;
+    }
     let Some((segments, mask)) = data.conflict_segments(index) else {
         return;
     };
@@ -386,49 +444,6 @@ fn line_checkbox(ui: &mut egui::Ui, keep: bool, text: &str, kept_color: egui::Co
             .strikethrough()
     };
     ui.checkbox(&mut checked, label).changed()
-}
-
-fn render_custom_zone(
-    ui: &mut egui::Ui,
-    index: usize,
-    conflict_no: usize,
-    text: &str,
-    conflict_edit: &mut Option<ConflictEdit>,
-    action: &mut Option<ResultAction>,
-) {
-    conflict_zone_frame(ui, CUSTOM_ACCENT, |ui| {
-        ui.horizontal(|ui| {
-            ui.colored_label(
-                CUSTOM_ACCENT,
-                format!("✎ Conflict {conflict_no} — custom edit"),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Edit").clicked() {
-                    *conflict_edit = Some(ConflictEdit {
-                        index,
-                        buffer: edit_buffer(text),
-                    });
-                }
-                if ui
-                    .small_button("Reopen")
-                    .on_hover_text("Discard the custom edit and pick lines again")
-                    .clicked()
-                {
-                    *action = Some(ResultAction::Choose(index, ConflictChoice::Unresolved));
-                }
-            });
-        });
-        if text.is_empty() {
-            ui.label(
-                egui::RichText::new("(empty)")
-                    .monospace()
-                    .italics()
-                    .color(ui.visuals().weak_text_color()),
-            );
-        } else {
-            render_plain_lines(ui, text, ui.visuals().text_color());
-        }
-    });
 }
 
 fn render_edit_zone(
@@ -504,7 +519,8 @@ fn render_input_pane(
     data: &ConflictData,
     side: MergeSide,
     scroll_offset: f32,
-    conflict_edit: &mut Option<ConflictEdit>,
+    picking_enabled: bool,
+    scroll_target: Option<usize>,
     action: &mut Option<ResultAction>,
 ) -> f32 {
     let (title, text_color, id_salt, mine) = match side {
@@ -522,21 +538,35 @@ fn render_input_pane(
         ),
     };
 
+    let source = match side {
+        MergeSide::Current => &data.current_label,
+        MergeSide::Incoming => &data.incoming_label,
+    };
+    let title = source
+        .as_ref()
+        .map_or_else(|| title.to_string(), |source| format!("{title}: {source}"));
     ui.colored_label(text_color, egui::RichText::new(title).strong());
     ui.weak("tick the lines you want in the result");
     ui.separator();
 
     let output = egui::ScrollArea::vertical()
         .id_salt(id_salt)
+        .min_scrolled_height(0.0)
+        .max_height(ui.available_height())
         .vertical_scroll_offset(scroll_offset)
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            let mut conflict_no = 0;
             for (index, section) in data.sections().iter().enumerate() {
                 match section {
                     ConflictPart::Common(text) => {
                         render_plain_lines(ui, text, ui.visuals().weak_text_color())
                     }
-                    ConflictPart::Conflict { .. } => {
+                    ConflictPart::Conflict { resolution, .. } => {
+                        if scroll_target == Some(conflict_no) {
+                            ui.scroll_to_cursor(Some(egui::Align::TOP));
+                        }
+                        conflict_no += 1;
                         let Some((segments, mask)) = data.conflict_segments(index) else {
                             continue;
                         };
@@ -546,18 +576,18 @@ fn render_input_pane(
                             .inner_margin(6.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                render_input_conflict_lines(
-                                    ui, index, segments, mask, mine, text_color, action,
-                                );
-                                ui.add_space(2.0);
-                                render_input_buttons(
-                                    ui,
-                                    side,
-                                    index,
-                                    segments,
-                                    conflict_edit,
-                                    action,
-                                );
+                                ui.label(format!("Conflict {conflict_no}"));
+                                let custom = matches!(resolution, ConflictChoice::Custom(_));
+                                ui.add_enabled_ui(picking_enabled && !custom, |ui| {
+                                    render_input_conflict_lines(
+                                        ui, index, segments, mask, mine, text_color, action,
+                                    );
+                                });
+                                if custom {
+                                    ui.weak(
+                                        "Custom result — use Reset resolution to pick lines again.",
+                                    );
+                                }
                             });
                         ui.add_space(6.0);
                     }
@@ -609,54 +639,45 @@ fn render_input_conflict_lines(
     }
 }
 
-fn render_input_buttons(
+fn render_resolution_buttons(
     ui: &mut egui::Ui,
-    side: MergeSide,
+    data: &ConflictData,
     index: usize,
-    segments: &[MergeSegment],
     conflict_edit: &mut Option<ConflictEdit>,
     action: &mut Option<ResultAction>,
 ) {
-    let (accept_label, accept_choice) = match side {
-        MergeSide::Current => ("Take all current", ConflictChoice::Ours),
-        MergeSide::Incoming => ("Take all incoming", ConflictChoice::Theirs),
-    };
-
-    ui.horizontal_wrapped(|ui| {
-        if ui.button(accept_label).clicked() {
-            *action = Some(ResultAction::Choose(index, accept_choice));
-        }
-        if ui.button("Both").clicked() {
-            *action = Some(ResultAction::Choose(index, ConflictChoice::Both));
-        }
-        if ui
-            .button("Clear")
-            .on_hover_text("Untick every line on this conflict")
-            .clicked()
-        {
-            let cleared = segments
-                .iter()
-                .map(|segment| segment.origin == SegmentOrigin::Common)
-                .collect();
-            *action = Some(ResultAction::Choose(index, ConflictChoice::Picked(cleared)));
-        }
-        if ui
-            .button("Edit")
-            .on_hover_text("Type a custom resolution")
-            .clicked()
-        {
-            // Segment text is terminator-free, so joining with LF is already the
-            // editor's own format; `set_resolution` restores the file's on apply.
-            let current = segments
-                .iter()
-                .map(|segment| segment.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            *conflict_edit = Some(ConflictEdit {
-                index,
-                buffer: current,
-            });
-        }
+    ui.add_enabled_ui(conflict_edit.is_none(), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (label, choice) in [
+                ("Use current", ConflictChoice::Ours),
+                ("Use incoming", ConflictChoice::Theirs),
+                ("Keep both", ConflictChoice::Both),
+                ("Reset resolution", ConflictChoice::Unresolved),
+                ("Keep neither", ConflictChoice::Custom(String::new())),
+            ] {
+                let hint = match label {
+                    "Keep both" => {
+                        "Keep the entire current region followed by the entire incoming region."
+                    }
+                    "Reset resolution" => {
+                        "Remove this choice and mark the conflict unresolved again."
+                    }
+                    "Keep neither" => {
+                        "Delete this entire conflict region from the result and mark it resolved."
+                    }
+                    _ => "Replace this conflict region with the selected side.",
+                };
+                if ui.button(label).on_hover_text(hint).clicked() {
+                    *action = Some(ResultAction::Choose(index, choice));
+                }
+            }
+            if ui.button("Edit result").clicked() {
+                *conflict_edit = Some(ConflictEdit {
+                    index,
+                    buffer: edit_buffer(&data.resolution_text(index)),
+                });
+            }
+        });
     });
 }
 
@@ -667,5 +688,278 @@ fn render_plain_lines(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
                 .monospace()
                 .color(color),
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_render_tests {
+    use super::*;
+    use crate::shared::conflicts::FileStyle;
+    use crate::state::AppState;
+    use eframe::egui::{Event, Pos2, Rect, Shape};
+    struct PaintedText {
+        text: String,
+        rect: Rect,
+        clip: Rect,
+    }
+
+    struct Harness {
+        ctx: egui::Context,
+        width: f32,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new(width: f32) -> Self {
+            let ctx = egui::Context::default();
+            ctx.global_style_mut(|style| style.animation_time = 0.0);
+            Self {
+                ctx,
+                width,
+                time: 0.0,
+            }
+        }
+
+        fn frame(
+            &mut self,
+            events: Vec<Event>,
+            draw: &mut impl FnMut(&mut egui::Ui),
+        ) -> Vec<PaintedText> {
+            self.time += 0.05;
+            let output = self.ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        Pos2::ZERO,
+                        egui::vec2(self.width, 820.0),
+                    )),
+                    time: Some(self.time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show_inside(ui, |ui| draw(ui));
+                },
+            );
+            fn collect(shape: &Shape, clip: Rect, text: &mut Vec<PaintedText>) {
+                match shape {
+                    Shape::Text(shape) => text.push(PaintedText {
+                        text: shape.galley.text().to_owned(),
+                        rect: Rect::from_min_size(shape.pos, shape.galley.size()),
+                        clip,
+                    }),
+                    Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, clip, text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut text = Vec::new();
+            for shape in output.shapes {
+                collect(&shape.shape, shape.clip_rect, &mut text);
+            }
+            text
+        }
+
+        fn settled(&mut self, draw: &mut impl FnMut(&mut egui::Ui)) -> Vec<PaintedText> {
+            for _ in 0..20 {
+                self.frame(vec![], draw);
+            }
+            self.frame(vec![], draw)
+        }
+
+        fn click(&mut self, pos: Pos2, draw: &mut impl FnMut(&mut egui::Ui)) -> Vec<PaintedText> {
+            self.frame(vec![Event::PointerMoved(pos)], draw);
+            self.frame(
+                vec![Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                draw,
+            );
+            self.frame(
+                vec![Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+                draw,
+            );
+            self.settled(draw)
+        }
+    }
+
+    fn label<'a>(painted: &'a [PaintedText], expected: &str) -> &'a PaintedText {
+        painted
+            .iter()
+            .find(|item| item.text == expected)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Missing {expected:?}; painted: {:?}",
+                    painted.iter().map(|item| &item.text).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    fn state() -> AppState {
+        let mut state = AppState::default();
+        let mut data = ConflictData::new(
+            "merge.rs".into(),
+            vec![
+                ConflictPart::Conflict {
+                    ours: "ours".into(),
+                    theirs: "theirs".into(),
+                    resolution: ConflictChoice::Unresolved,
+                },
+                ConflictPart::Common(
+                    (0..60)
+                        .map(|n| format!("context {n}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                ConflictPart::Conflict {
+                    ours: "second ours".into(),
+                    theirs: "second theirs".into(),
+                    resolution: ConflictChoice::Unresolved,
+                },
+            ],
+            FileStyle::default(),
+        );
+        data.current_label = Some("main".into());
+        data.incoming_label = Some("feature".into());
+        state.inspector.set_conflict(Some(data));
+        state
+    }
+
+    fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+        show(
+            ui,
+            DiffPanelState {
+                repo: &state.repo,
+                worktree: &state.worktree,
+                inspector: &mut state.inspector,
+                ui_state: &mut state.ui,
+            },
+        );
+    }
+
+    fn assert_visible(painted: &[PaintedText], text: &str, width: f32) {
+        let label = label(painted, text);
+        assert!(
+            label.clip.expand(1.0).contains_rect(label.rect),
+            "{text} clipped: {:?}, {:?}",
+            label.rect,
+            label.clip
+        );
+        assert!(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 820.0)).contains_rect(label.rect),
+            "{text} outside viewport: {:?}",
+            label.rect
+        );
+    }
+
+    #[test]
+    fn merge_header_keeps_sources_result_and_navigation_in_viewport() {
+        for width in [640.0, 960.0] {
+            let mut state = state();
+            let mut harness = Harness::new(width);
+            let painted = harness.settled(&mut |ui| draw(ui, &mut state));
+            for text in [
+                "Current (ours): main",
+                "Incoming (theirs): feature",
+                "Result",
+                "Previous conflict",
+                "Next conflict",
+                "Save and stage resolution",
+            ] {
+                assert_visible(&painted, text, width);
+            }
+            let result_top = label(&painted, "Result").rect.top();
+            for source in ["Current (ours): main", "Incoming (theirs): feature"] {
+                assert!(
+                    label(&painted, source).clip.bottom() <= result_top,
+                    "source pane clip must stop before Result header"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn navigation_scrolls_to_second_conflict_and_back() {
+        let mut state = state();
+        let mut harness = Harness::new(960.0);
+        let painted = harness.settled(&mut |ui| draw(ui, &mut state));
+        let next = label(&painted, "Next conflict").rect.center();
+        let painted = harness.click(next, &mut |ui| draw(ui, &mut state));
+        assert_eq!(state.inspector.conflict_focus, 1);
+        let second = painted
+            .iter()
+            .find(|item| item.text == "Conflict 2" && item.clip.contains_rect(item.rect));
+        assert!(second.is_some(), "second conflict must scroll into view");
+        let previous = label(&painted, "Previous conflict").rect.center();
+        let painted = harness.click(previous, &mut |ui| draw(ui, &mut state));
+        assert_eq!(state.inspector.conflict_focus, 0);
+        assert!(
+            painted
+                .iter()
+                .any(|item| item.text == "Conflict 1" && item.clip.contains_rect(item.rect))
+        );
+    }
+
+    #[test]
+    fn editing_blocks_save_until_apply_and_dispatches_selected_preview() {
+        let mut state = state();
+        state
+            .inspector
+            .conflict_data
+            .as_mut()
+            .unwrap()
+            .set_resolution(0, ConflictChoice::Theirs);
+        state
+            .inspector
+            .conflict_data
+            .as_mut()
+            .unwrap()
+            .set_resolution(2, ConflictChoice::Ours);
+        let mut harness = Harness::new(960.0);
+        let painted = harness.settled(&mut |ui| draw(ui, &mut state));
+        let edit = painted
+            .iter()
+            .find(|item| item.text == "Edit result" && item.clip.contains_rect(item.rect))
+            .unwrap()
+            .rect
+            .center();
+        let painted = harness.click(edit, &mut |ui| draw(ui, &mut state));
+        assert_eq!(
+            state.inspector.conflict_edit.as_ref().unwrap().buffer,
+            "theirs"
+        );
+        assert_visible(&painted, "Apply or cancel your edit before saving.", 960.0);
+        let save = label(&painted, "Save and stage resolution").rect.center();
+        let painted = harness.click(save, &mut |ui| draw(ui, &mut state));
+        assert!(state.ui.actions.is_empty());
+        state.inspector.conflict_edit.as_mut().unwrap().buffer = "custom resolution".into();
+        let apply = label(&painted, "Apply").rect.center();
+        let painted = harness.click(apply, &mut |ui| draw(ui, &mut state));
+        assert!(state.inspector.conflict_edit.is_none());
+        assert_eq!(
+            state
+                .inspector
+                .conflict_data
+                .as_ref()
+                .unwrap()
+                .resolution_text(0),
+            "custom resolution"
+        );
+        let save = label(&painted, "Save and stage resolution").rect.center();
+        harness.click(save, &mut |ui| draw(ui, &mut state));
+        assert!(matches!(
+            state.ui.actions.as_slice(),
+            [UiAction::SaveConflictResolution]
+        ));
     }
 }

@@ -1,6 +1,28 @@
+/// Which destructive per-file operation a confirmation dialog is guarding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileActionKind {
+    /// Restore the working tree from the index.
+    DiscardWorktree,
+    /// Restore index and working tree from HEAD.
+    DiscardStaged,
+    /// Remove a file git has no committed copy of.
+    DeleteUntracked,
+}
+
+/// A destructive file operation waiting for the user's confirmation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingFileAction {
+    pub path: String,
+    pub staged: bool,
+    pub kind: FileActionKind,
+}
+
+#[derive(Debug)]
 pub enum UiAction {
     StageFile(String),
     UnstageFile(String),
+    StageFiles(Vec<String>),
+    UnstageFiles(Vec<String>),
     StageAll,
     UnstageAll,
     Commit,
@@ -24,6 +46,8 @@ pub enum UiAction {
     DiscardAndReset { clean_untracked: bool },
     UndoLastCommit,
     SaveConflictResolution,
+    OpenFileActionDialog(PendingFileAction),
+    ConfirmFileAction,
 }
 
 impl UiAction {
@@ -128,5 +152,13 @@ impl UiAction {
 
     pub fn save_conflict_resolution() -> Self {
         Self::SaveConflictResolution
+    }
+
+    pub fn open_file_action_dialog(pending: PendingFileAction) -> Self {
+        Self::OpenFileActionDialog(pending)
+    }
+
+    pub fn confirm_file_action() -> Self {
+        Self::ConfirmFileAction
     }
 }

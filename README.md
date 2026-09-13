@@ -21,8 +21,21 @@ It focuses on the everyday local workflow first—review changes, stage files, c
 ---
 
 
-## 📸 Screenshot
-![Justanothergitgui](software.png)
+## 📸 Screenshots
+
+### Review changes and commit
+
+Filter changed files, review a selected file's diff with line numbers, and stage the files you want to commit. The commit panel holds your summary and optional description.
+
+![Main window showing staged and unstaged files, a selected file's diff, and a commit draft](software.png)
+
+### Merge conflict editor
+
+Select a conflicted file to compare **Current (ours)** and **Incoming (theirs)** alongside a live **Result** preview. Keep individual lines from either side, take a whole side, combine both, or write a custom resolution with **Edit**. Once every conflict in the file is resolved, **Save Merge** writes the result and stages the file; you can then commit the merge.
+
+![Merge conflict editor combining selected lines from current and incoming changes in the result preview](merge-manager.png)
+
+Both screenshots show the application running with local demo repositories.
 
 ---
 
@@ -47,8 +60,9 @@ The application combines:
 - **View unstaged and staged changes** in a compact table-based left panel
 - **Stage / unstage individual files** or use **Stage All** / **Unstage All**
 - **Drag and drop files between staged and unstaged lists**
+- **Stage or unstage matching files** directly from a filtered list, leaving hidden files untouched
 - **Review diffs** in a built-in changes view with line numbers and optional wrapping
-- **Resolve merge conflicts** with built-in “Accept Ours / Theirs / Both” actions
+- **Resolve merge conflicts** with current / incoming panes, individual line selection, custom edits, and a live result preview
 - **See loading / busy indicators** while long-running Git and GitHub operations are in flight
 
 ### Commits
@@ -152,7 +166,7 @@ target\release\justanothergitgui.exe
 6. **Switch branches** or create a new one from the toolbar
 7. Use **Pull** / **Push** and PR shortcuts from the top-right area
 8. When the current branch has local commits that are not on the remote yet, the app shows them as **Push(n)**
-9. Use **More** for secondary actions like settings, publishing, cleanup, tags, and logs
+9. Use **More > Clone Repository...** to clone a GitHub or other Git remote: paste its HTTPS or SSH clone URL, choose a parent folder, and click **Clone**. The repository opens in a new tab when cloning finishes. Cloning is also available on the welcome screen.
 10. On `main` or `master`, use **More > Create Tag...** to tag the current HEAD commit
 11. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
 

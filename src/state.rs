@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::shared::actions::UiAction;
+use crate::shared::actions::{PendingFileAction, UiAction};
 use crate::shared::conflicts::ConflictData;
 use crate::shared::diff::{DiffLineKind, ParsedDiffLine, SideBySideEntry, parse_diff_rows};
 use crate::shared::git::{
@@ -96,6 +96,57 @@ pub struct DragFile {
     pub from_staged: bool,
 }
 
+/// How much attention a status message deserves.
+///
+/// Kept inside [`StatusMessage`] rather than beside it in [`UiState`] so the two
+/// can never drift apart: every writer has to state the severity it means.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusLevel {
+    #[default]
+    Info,
+    Success,
+    Error,
+}
+
+/// The one-line message shown in the bottom bar, with the severity the status
+/// area renders it at.
+#[derive(Clone, Debug, Default)]
+pub struct StatusMessage {
+    text: String,
+    level: StatusLevel,
+}
+
+impl StatusMessage {
+    pub fn info(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            level: StatusLevel::Info,
+        }
+    }
+
+    pub fn success(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            level: StatusLevel::Success,
+        }
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            level: StatusLevel::Error,
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn level(&self) -> StatusLevel {
+        self.level
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusyAction {
     Push,
@@ -184,6 +235,9 @@ pub struct InspectorState {
     /// [`Self::set_diff`] / [`Self::clear_diff`], which are the only two ways in.
     pub parsed_diff: ParsedDiff,
     pub diff_wrap: bool,
+    /// Substring the file panel narrows both of its lists by. View state only —
+    /// it never reaches git.
+    pub file_filter: String,
     pub center_view: CenterView,
     pub conflict_data: Option<ConflictData>,
     /// Which conflict (by section index) is open for inline editing, plus its
@@ -191,6 +245,8 @@ pub struct InspectorState {
     pub conflict_edit: Option<ConflictEdit>,
     /// Shared vertical scroll offset for the two top merge-editor panes.
     pub conflict_scroll: f32,
+    /// Ordinal of the conflict selected by Previous/Next navigation.
+    pub conflict_focus: usize,
     /// Commit opened from the History tab, or `None` while the list is showing.
     pub selected_commit: Option<SelectedCommit>,
     pub dragging: Option<DragFile>,
@@ -222,6 +278,23 @@ impl InspectorState {
         self.conflict_data = data;
         self.conflict_edit = None;
         self.conflict_scroll = 0.0;
+        self.conflict_focus = 0;
+    }
+
+    /// Shared by the save control and action handler so queued actions cannot
+    /// write an earlier resolution while a draft is still being edited.
+    pub fn resolution_save_error(&self) -> Option<&'static str> {
+        if self.conflict_edit.is_some() {
+            Some("Apply or cancel your edit before saving.")
+        } else if self
+            .conflict_data
+            .as_ref()
+            .is_none_or(|data| data.unresolved_count() > 0)
+        {
+            Some("Resolve every conflict before saving.")
+        } else {
+            None
+        }
     }
 
     /// Open (or close) the read-only commit view. The whole view state travels
@@ -245,6 +318,7 @@ pub struct DialogState {
     pub tag: TagDialogState,
     pub cleanup: CleanupBranchesDialogState,
     pub discard: DiscardDialogState,
+    pub file_action: FileActionDialogState,
 }
 
 #[derive(Default)]
@@ -277,8 +351,14 @@ pub struct DiscardDialogState {
     pub discard_clean_untracked: bool,
 }
 
+/// Open exactly while `pending` holds the file operation awaiting confirmation.
+#[derive(Default)]
+pub struct FileActionDialogState {
+    pub pending: Option<PendingFileAction>,
+}
+
 pub struct UiState {
-    pub status_msg: String,
+    pub status: StatusMessage,
     pub actions: Vec<UiAction>,
     pub busy: Option<BusyState>,
 }
@@ -286,9 +366,50 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            status_msg: "No repository open".into(),
+            status: StatusMessage::info("No repository open"),
             actions: Vec::new(),
             busy: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_safety_tests {
+    use super::*;
+    use crate::shared::conflicts::{ConflictChoice, ConflictPart, FileStyle};
+
+    #[test]
+    fn open_draft_blocks_saving_even_when_previous_choice_is_resolved() {
+        let mut inspector = InspectorState::default();
+        inspector.set_conflict(Some(ConflictData::new(
+            "test.txt".into(),
+            vec![ConflictPart::Conflict {
+                ours: "ours".into(),
+                theirs: "theirs".into(),
+                resolution: ConflictChoice::Ours,
+            }],
+            FileStyle::default(),
+        )));
+        assert!(inspector.resolution_save_error().is_none());
+        inspector.conflict_edit = Some(ConflictEdit {
+            index: 0,
+            buffer: "unapplied".into(),
+        });
+        assert_eq!(
+            inspector.resolution_save_error(),
+            Some("Apply or cancel your edit before saving.")
+        );
+        inspector.conflict_edit = None;
+        assert!(inspector.resolution_save_error().is_none());
+        inspector
+            .conflict_data
+            .as_mut()
+            .unwrap()
+            .set_resolution(0, ConflictChoice::Unresolved);
+        assert!(inspector.resolution_save_error().is_some());
+        inspector.conflict_focus = 4;
+        inspector.set_conflict(None);
+        assert_eq!(inspector.conflict_focus, 0);
+        assert!(inspector.resolution_save_error().is_some());
     }
 }

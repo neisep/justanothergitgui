@@ -7,17 +7,20 @@ pub struct SettingsDialogOutput {
     pub keep_open: bool,
     pub selected_ruleset: CommitMessageRuleSet,
     pub custom_scope_error: Option<String>,
+    pub auto_refresh_on_focus: bool,
 }
 
 pub fn show(
     ctx: &egui::Context,
     dialog: &mut SettingsDialogState,
     current_ruleset: CommitMessageRuleSet,
+    current_auto_refresh: bool,
 ) -> SettingsDialogOutput {
     let mut keep_open = dialog.show;
     let mut selected_ruleset = current_ruleset;
     let mut custom_scope_error = None;
     let mut close_requested = false;
+    let mut auto_refresh_on_focus = current_auto_refresh;
 
     egui::Window::new("Settings")
         .id(egui::Id::new("settings_dialog"))
@@ -79,6 +82,18 @@ pub fn show(
                 }
             }
 
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label("Repository status");
+            ui.checkbox(
+                &mut auto_refresh_on_focus,
+                "Refresh when the window regains focus",
+            );
+            ui.weak(
+                "Keeps the file lists in step with edits made outside the app. Turn it off for very large repositories.",
+            );
+
             if !dialog.status.is_empty() {
                 ui.add_space(8.0);
                 ui.colored_label(egui::Color32::from_rgb(220, 120, 120), &dialog.status);
@@ -102,5 +117,6 @@ pub fn show(
         keep_open,
         selected_ruleset,
         custom_scope_error,
+        auto_refresh_on_focus,
     }
 }

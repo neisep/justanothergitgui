@@ -396,6 +396,8 @@ fn join_non_empty(parts: [&str; 2], sep: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct ConflictData {
     pub path: String,
+    pub current_label: Option<String>,
+    pub incoming_label: Option<String>,
     /// Formatting of the source file, restored by [`Self::compose`].
     pub style: FileStyle,
     sections: Vec<ConflictPart>,
@@ -441,6 +443,8 @@ impl ConflictData {
 
         Self {
             path,
+            current_label: None,
+            incoming_label: None,
             style,
             sections,
             segments,
@@ -451,6 +455,29 @@ impl ConflictData {
     /// Read-only view of the ordered sections.
     pub fn sections(&self) -> &[ConflictPart] {
         &self.sections
+    }
+
+    /// Exact chosen text for one region, also used to seed the custom editor.
+    /// An unresolved region has no chosen result yet.
+    pub fn resolution_text(&self, index: usize) -> String {
+        let Some(ConflictPart::Conflict {
+            ours,
+            theirs,
+            resolution,
+        }) = self.sections.get(index)
+        else {
+            return String::new();
+        };
+        match resolution {
+            ConflictChoice::Ours => ours.clone(),
+            ConflictChoice::Theirs => theirs.clone(),
+            ConflictChoice::Both => join_non_empty([ours, theirs], self.style.eol.as_str()),
+            ConflictChoice::Custom(text) => text.clone(),
+            ConflictChoice::Picked(mask) => {
+                compose_picked(self.segments_at(index), mask, self.style.eol.as_str())
+            }
+            ConflictChoice::Unresolved => String::new(),
+        }
     }
 
     /// Record the user's choice for one conflict. The only sanctioned mutation:
@@ -646,6 +673,28 @@ mod tests {
             ],
             RAW_LF,
         )
+    }
+
+    #[test]
+    fn editor_seed_matches_chosen_region_and_reset_differs_from_keep_neither() {
+        for (choice, text) in [
+            (ConflictChoice::Ours, "mine"),
+            (ConflictChoice::Theirs, "yours"),
+            (ConflictChoice::Both, "mine\nyours"),
+            (ConflictChoice::Picked(vec![false, true]), "yours"),
+            (ConflictChoice::Custom("typed".into()), "typed"),
+        ] {
+            let data = conflict(choice);
+            assert_eq!(data.resolution_text(1), text);
+            assert_eq!(data.compose(), format!("top\n{text}\nbottom"));
+        }
+        let mut data = conflict(ConflictChoice::Ours);
+        data.set_resolution(1, ConflictChoice::Unresolved);
+        assert_eq!(data.unresolved_count(), 1);
+        assert!(data.compose().contains("<<<<<<<"));
+        data.set_resolution(1, ConflictChoice::Custom(String::new()));
+        assert_eq!(data.unresolved_count(), 0);
+        assert_eq!(data.compose(), "top\nbottom");
     }
 
     #[test]

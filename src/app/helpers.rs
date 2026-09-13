@@ -3,8 +3,8 @@ use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
 
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
-    DiscardDialogState, InspectorState, RepoState, SelectedCommit, SelectedFile, TagDialogState,
-    UiState, WorktreeState,
+    DiscardDialogState, FileActionDialogState, InspectorState, RepoState, SelectedCommit,
+    SelectedFile, TagDialogState, UiState, WorktreeState,
 };
 
 pub(super) fn refresh_status(
@@ -79,7 +79,7 @@ pub(super) fn refresh_status(
         None
     } else {
         let detail = errors.join("; ");
-        ui_state.status_msg = status_message_for_error("Refresh", &detail);
+        ui_state.status = status_message_for_error("Refresh", &detail);
         Some(detail)
     }
 }
@@ -111,6 +111,7 @@ pub(super) fn reset_inspector_state(inspector_state: &mut InspectorState) {
     inspector_state.selected_file = None;
     inspector_state.clear_diff();
     inspector_state.diff_wrap = false;
+    inspector_state.file_filter.clear();
     inspector_state.center_view = CenterView::Diff;
     inspector_state.set_conflict(None);
     inspector_state.set_commit(None);
@@ -122,6 +123,7 @@ pub(super) fn reset_dialog_state(dialog_state: &mut DialogState) {
     reset_tag_dialog_state(&mut dialog_state.tag);
     reset_cleanup_dialog_state(&mut dialog_state.cleanup);
     reset_discard_dialog_state(&mut dialog_state.discard);
+    reset_file_action_dialog_state(&mut dialog_state.file_action);
 }
 
 pub(super) fn reset_ui_state(ui_state: &mut UiState) {
@@ -155,6 +157,10 @@ fn reset_discard_dialog_state(dialog_state: &mut DiscardDialogState) {
     dialog_state.discard_clean_untracked = false;
 }
 
+fn reset_file_action_dialog_state(dialog_state: &mut FileActionDialogState) {
+    dialog_state.pending = None;
+}
+
 pub(super) fn load_selected_file(
     worktree_state: &WorktreeState,
     inspector_state: &mut InspectorState,
@@ -165,7 +171,7 @@ pub(super) fn load_selected_file(
     let is_conflicted = worktree_state
         .unstaged
         .iter()
-        .any(|file| file.path == path && file.is_conflicted);
+        .any(|file| file.path == path && file.is_conflicted());
 
     if is_conflicted {
         inspector_state.selected_file = Some(SelectedFile {
@@ -312,18 +318,18 @@ pub(super) fn default_repo_name_for_path(path: &Path) -> String {
     repo_tab_label(Some(path))
 }
 
-pub(super) fn status_message_for_error(context: &str, detail: &str) -> String {
-    format!(
+pub(super) fn status_message_for_error(context: &str, detail: &str) -> StatusMessage {
+    StatusMessage::error(format!(
         "{} failed: {}. See Logs.",
         context,
         logging::summarize_for_ui(detail)
-    )
+    ))
 }
 
 pub(super) const WORKER_DISPATCH_ERROR_DETAIL: &str = "worker rejected task dispatch";
 
-pub(super) fn status_message_for_worker_dispatch(context: &str) -> String {
-    format!("{context} could not start. Please try again.")
+pub(super) fn status_message_for_worker_dispatch(context: &str) -> StatusMessage {
+    StatusMessage::error(format!("{context} could not start. Please try again."))
 }
 
 fn sync_pull_request_prompt(repo_state: &mut RepoState) {
@@ -392,7 +398,7 @@ fn sync_selected_file(
         && worktree_state
             .unstaged
             .iter()
-            .any(|file| file.path == selected.path && file.is_conflicted);
+            .any(|file| file.path == selected.path && file.is_conflicted());
     if editing_this_conflict {
         return;
     }
@@ -410,13 +416,21 @@ fn sync_selected_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{SelectedFile, sync_selected_file};
+    use super::{
+        SelectedFile, status_message_for_error, status_message_for_worker_dispatch,
+        sync_selected_file,
+    };
     use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, FileStyle};
-    use crate::shared::git::FileEntry;
-    use crate::state::{InspectorState, WorktreeState};
+    use crate::shared::git::{FileChangeKind, FileEntry};
+    use crate::state::{InspectorState, StatusLevel, WorktreeState};
     use crate::testutil::TestRepoDir;
 
     fn entry(path: &str, is_conflicted: bool) -> FileEntry {
+        let kind = if is_conflicted {
+            FileChangeKind::Conflicted
+        } else {
+            FileChangeKind::Modified
+        };
         FileEntry {
             path: path.to_string(),
             display_status: if is_conflicted {
@@ -424,7 +438,7 @@ mod tests {
             } else {
                 "modified".to_string()
             },
-            is_conflicted,
+            kind,
         }
     }
 
@@ -492,6 +506,27 @@ mod tests {
             inspector.conflict_data.is_none(),
             "a file that stopped being conflicted must leave the merge editor"
         );
+    }
+
+    #[test]
+    fn failures_report_at_error_level_and_keep_the_summary() {
+        let status = status_message_for_error("Push", "fatal: could not read Username");
+
+        assert_eq!(status.level(), StatusLevel::Error);
+        assert!(
+            status.text().starts_with("Push failed: "),
+            "unexpected text: {}",
+            status.text()
+        );
+        assert!(status.text().ends_with("See Logs."));
+    }
+
+    #[test]
+    fn a_worker_that_will_not_start_is_an_error_too() {
+        let status = status_message_for_worker_dispatch("Pull");
+
+        assert_eq!(status.level(), StatusLevel::Error);
+        assert_eq!(status.text(), "Pull could not start. Please try again.");
     }
 
     #[test]
