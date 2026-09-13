@@ -296,6 +296,7 @@ impl eframe::App for GitGuiApp {
             self.show_create_branch_confirm_dialog(&ctx);
             self.show_create_tag_dialog(&ctx);
             self.show_discard_dialog(&ctx);
+            self.show_file_action_dialog(&ctx);
             self.show_cleanup_branches_dialog(&ctx);
             self.show_github_auth_dialog(&ctx);
             self.show_log_viewer_dialog(&ctx);
@@ -357,6 +358,7 @@ impl eframe::App for GitGuiApp {
         self.show_create_branch_confirm_dialog(&ctx);
         self.show_create_tag_dialog(&ctx);
         self.show_discard_dialog(&ctx);
+        self.show_file_action_dialog(&ctx);
         self.show_cleanup_branches_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);
         self.show_log_viewer_dialog(&ctx);

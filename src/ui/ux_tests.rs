@@ -2,7 +2,10 @@
 use eframe::egui::{self, Event, Pos2, Rect, Shape};
 
 use crate::commit_rules::CommitMessageRuleSet;
-use crate::shared::{actions::UiAction, git::FileEntry};
+use crate::shared::{
+    actions::{FileActionKind, PendingFileAction, UiAction},
+    git::{FileChangeKind, FileEntry},
+};
 use crate::state::AppState;
 
 struct PaintedText {
@@ -76,11 +79,24 @@ impl Harness {
     }
 
     fn click(&mut self, pos: Pos2, draw: &mut impl FnMut(&mut egui::Ui)) -> Vec<PaintedText> {
+        self.press(pos, egui::PointerButton::Primary, draw)
+    }
+
+    fn right_click(&mut self, pos: Pos2, draw: &mut impl FnMut(&mut egui::Ui)) -> Vec<PaintedText> {
+        self.press(pos, egui::PointerButton::Secondary, draw)
+    }
+
+    fn press(
+        &mut self,
+        pos: Pos2,
+        button: egui::PointerButton,
+        draw: &mut impl FnMut(&mut egui::Ui),
+    ) -> Vec<PaintedText> {
         self.frame(vec![Event::PointerMoved(pos)], draw);
         self.frame(
             vec![Event::PointerButton {
                 pos,
-                button: egui::PointerButton::Primary,
+                button,
                 pressed: true,
                 modifiers: Default::default(),
             }],
@@ -89,7 +105,7 @@ impl Harness {
         self.frame(
             vec![Event::PointerButton {
                 pos,
-                button: egui::PointerButton::Primary,
+                button,
                 pressed: false,
                 modifiers: Default::default(),
             }],
@@ -97,6 +113,10 @@ impl Harness {
         );
         self.settled(draw)
     }
+}
+
+fn has_label(painted: &[PaintedText], expected: &str) -> bool {
+    painted.iter().any(|item| item.text == expected)
 }
 
 fn label<'a>(painted: &'a [PaintedText], expected: &str) -> &'a PaintedText {
@@ -115,7 +135,19 @@ fn file(path: &str, conflicted: bool) -> FileEntry {
     FileEntry {
         path: path.into(),
         display_status: if conflicted { "C" } else { "M" }.into(),
-        is_conflicted: conflicted,
+        kind: if conflicted {
+            FileChangeKind::Conflicted
+        } else {
+            FileChangeKind::Modified
+        },
+    }
+}
+
+fn file_with_kind(path: &str, status: &str, kind: FileChangeKind) -> FileEntry {
+    FileEntry {
+        path: path.into(),
+        display_status: status.into(),
+        kind,
     }
 }
 
@@ -207,6 +239,106 @@ fn conflicted_file_resolve_button_opens_editor_without_staging() {
             matches!(state.ui.actions.as_slice(), [UiAction::SelectFile { path, staged: false }] if path == "src/review.rs")
         );
     }
+}
+
+#[test]
+fn right_click_on_a_modified_row_offers_discard_and_only_opens_a_confirmation() {
+    let mut state = AppState::default();
+    state.worktree.unstaged.push(file_with_kind(
+        "src/review.rs",
+        "modified",
+        FileChangeKind::Modified,
+    ));
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let row = label(&painted, "review.rs");
+
+    let painted = harness.right_click(row.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    assert!(
+        matches!(state.ui.actions.as_slice(), [UiAction::SelectFile { path, staged: false }] if path == "src/review.rs"),
+        "right-click selects the row so the diff shows what is about to go"
+    );
+    state.ui.actions.clear();
+    assert!(!has_label(&painted, "Delete file…"));
+    let item = label(&painted, "Discard changes…");
+
+    let painted = harness.click(item.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    assert_eq!(
+        state.ui.actions.len(),
+        1,
+        "menu item queues exactly one action: {:?}",
+        state.ui.actions
+    );
+    assert!(matches!(
+        &state.ui.actions[0],
+        UiAction::OpenFileActionDialog(PendingFileAction { path, staged: false, kind: FileActionKind::DiscardWorktree })
+            if path == "src/review.rs"
+    ));
+    assert!(
+        !has_label(&painted, "Discard changes…"),
+        "menu closes after choosing an item"
+    );
+}
+
+#[test]
+fn right_click_on_an_untracked_row_offers_delete_instead_of_discard() {
+    let mut state = AppState::default();
+    state.worktree.unstaged.push(file_with_kind(
+        "notes.txt",
+        "untracked",
+        FileChangeKind::Added,
+    ));
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let row = label(&painted, "notes.txt");
+
+    let painted = harness.right_click(row.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    state.ui.actions.clear();
+    assert!(!has_label(&painted, "Discard changes…"));
+    let item = label(&painted, "Delete file…");
+
+    harness.click(item.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    assert!(matches!(
+        state.ui.actions.as_slice(),
+        [UiAction::OpenFileActionDialog(PendingFileAction { path, staged: false, kind: FileActionKind::DeleteUntracked })]
+            if path == "notes.txt"
+    ));
+}
+
+#[test]
+fn right_click_on_a_conflicted_row_offers_only_resolve() {
+    let mut state = AppState::default();
+    state.worktree.unstaged.push(file("src/review.rs", true));
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let row = label(&painted, "review.rs");
+
+    let painted = harness.right_click(row.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    assert!(!has_label(&painted, "Discard changes…"));
+    assert!(!has_label(&painted, "Delete file…"));
+    // The quick-action button and the menu item share the label.
+    assert!(
+        painted
+            .iter()
+            .filter(|item| item.text == "Resolve…")
+            .count()
+            >= 2,
+        "menu shows Resolve…"
+    );
+
+    // Right-clicking must not queue the selection that "Resolve…" itself
+    // queues; the action reaches the queue exactly once.
+    let item = painted
+        .iter()
+        .filter(|item| item.text == "Resolve…")
+        .max_by(|a, b| a.rect.top().total_cmp(&b.rect.top()))
+        .expect("menu item");
+    harness.click(item.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    assert!(
+        matches!(state.ui.actions.as_slice(), [UiAction::SelectFile { path, staged: false }] if path == "src/review.rs"),
+        "expected one SelectFile, got {:?}",
+        state.ui.actions
+    );
 }
 
 #[test]

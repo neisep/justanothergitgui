@@ -1,8 +1,8 @@
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use crate::shared::actions::UiAction;
-use crate::shared::git::FileEntry;
+use crate::shared::actions::{FileActionKind, PendingFileAction, UiAction};
+use crate::shared::git::{FileChangeKind, FileEntry};
 use crate::state::{DragFile, InspectorState, UiState, WorktreeState};
 
 use super::HoveredRow;
@@ -148,6 +148,37 @@ fn split_display_path(path: &str) -> (&str, &str) {
     }
 }
 
+/// The destructive item a row's context menu offers, if any.
+///
+/// Files git has no committed copy of can only be deleted; everything else is
+/// restored — from the index for an unstaged row, from HEAD for a staged one.
+///
+/// The rule reads [`FileEntry::kind`], never `display_status`: the labels are
+/// display copy, so renaming one must not silently turn "Delete file…" into
+/// "Discard changes…". Cases with no correct single-path restore offer nothing
+/// rather than an item that would fail — conflicts go through the merge editor,
+/// and a rename's new path is not in HEAD to restore from.
+fn destructive_action_for(file: &FileEntry, staged: bool) -> Option<FileActionKind> {
+    match file.kind {
+        FileChangeKind::Added => Some(FileActionKind::DeleteUntracked),
+        FileChangeKind::Modified | FileChangeKind::Deleted | FileChangeKind::TypeChange => {
+            Some(if staged {
+                FileActionKind::DiscardStaged
+            } else {
+                FileActionKind::DiscardWorktree
+            })
+        }
+        FileChangeKind::Renamed | FileChangeKind::Conflicted => None,
+    }
+}
+
+fn destructive_menu_label(kind: FileActionKind) -> &'static str {
+    match kind {
+        FileActionKind::DiscardWorktree | FileActionKind::DiscardStaged => "Discard changes…",
+        FileActionKind::DeleteUntracked => "Delete file…",
+    }
+}
+
 /// How tall the Unstaged section starts out: enough for its rows, but never so
 /// tall that the Staged list below it disappears.
 ///
@@ -228,7 +259,7 @@ fn show_section_header(
         let paths: Vec<String> = header
             .matches
             .iter()
-            .filter(|file| !file.is_conflicted)
+            .filter(|file| !file.is_conflicted())
             .map(|file| file.path.clone())
             .collect();
         let verb = if header.staged { "Unstage" } else { "Stage" };
@@ -246,7 +277,7 @@ fn show_section_header(
                 UiAction::StageFiles(paths)
             });
         }
-        if header.matches.iter().any(|file| file.is_conflicted) {
+        if header.matches.iter().any(|file| file.is_conflicted()) {
             ui.weak("Resolve conflicted files individually.");
         }
         if ui
@@ -371,7 +402,7 @@ fn render_file_table(
                             diff_view::render_status_chip(
                                 ui,
                                 &file.display_status,
-                                file.is_conflicted,
+                                file.is_conflicted(),
                             );
                         });
                     });
@@ -387,7 +418,7 @@ fn render_file_table(
                                 } else {
                                     "Drag to move this file to staged"
                                 });
-                            if handle.drag_started() && !file.is_conflicted {
+                            if handle.drag_started() && !file.is_conflicted() {
                                 drag_started = true;
                                 inspector.dragging = Some(DragFile {
                                     path: file.path.clone(),
@@ -400,7 +431,7 @@ fn render_file_table(
                                     "Unstage",
                                     "Unstage this file\nShortcut: Ctrl/Cmd+S when selected",
                                 )
-                            } else if file.is_conflicted {
+                            } else if file.is_conflicted() {
                                 (
                                     "Resolve…",
                                     "Open the merge editor; save the result there before staging",
@@ -417,7 +448,7 @@ fn render_file_table(
                                 .clicked()
                             {
                                 action_clicked = true;
-                                if file.is_conflicted {
+                                if file.is_conflicted() {
                                     ui_state
                                         .actions
                                         .push(UiAction::select_file(file.path.clone(), false));
@@ -441,13 +472,27 @@ fn render_file_table(
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         // The row shows the filename first and elides the rest,
                         // so the full path has to stay reachable somewhere.
-                        .on_hover_text(&file.path);
+                        .on_hover_text(format!("{}\nRight-click for more actions", file.path));
 
                     if row_response.clicked() && !action_clicked && !drag_started {
                         ui_state
                             .actions
                             .push(UiAction::select_file(file.path.clone(), staged));
                     }
+
+                    // Select on right-click too, so the diff shows what the menu
+                    // is about to discard. Conflicted rows are the exception:
+                    // their only menu item is this very selection, so leave it
+                    // to that item rather than queueing the same action twice.
+                    if row_response.secondary_clicked() && !file.is_conflicted() {
+                        ui_state
+                            .actions
+                            .push(UiAction::select_file(file.path.clone(), staged));
+                    }
+
+                    row_response.context_menu(|ui| {
+                        show_row_context_menu(ui, file, staged, ui_state);
+                    });
                 });
             })
             .inner_rect;
@@ -458,13 +503,50 @@ fn render_file_table(
     .inner
 }
 
+/// The right-click menu of one row: the quick action again, then the one
+/// destructive action that fits the file, which only opens a confirmation.
+fn show_row_context_menu(
+    ui: &mut egui::Ui,
+    file: &FileEntry,
+    staged: bool,
+    ui_state: &mut UiState,
+) {
+    ui.set_min_width(160.0);
+
+    let (quick_label, quick_action) = if file.is_conflicted() {
+        ("Resolve…", UiAction::select_file(file.path.clone(), false))
+    } else if staged {
+        ("Unstage", UiAction::unstage_file(file.path.clone()))
+    } else {
+        ("Stage", UiAction::stage_file(file.path.clone()))
+    };
+    if ui.button(quick_label).clicked() {
+        ui_state.actions.push(quick_action);
+        ui.close();
+    }
+
+    if let Some(kind) = destructive_action_for(file, staged) {
+        ui.separator();
+        if ui.button(destructive_menu_label(kind)).clicked() {
+            ui_state
+                .actions
+                .push(UiAction::open_file_action_dialog(PendingFileAction {
+                    path: file.path.clone(),
+                    staged,
+                    kind,
+                }));
+            ui.close();
+        }
+    }
+}
+
 /// Paint `src/ui/file_panel.rs` as a strong `file_panel.rs` followed by a dimmed
 /// `src/ui`. The directory is the label that runs out of room first, which is
 /// the right thing to lose in a narrow panel.
 fn render_path(ui: &mut egui::Ui, file: &FileEntry, is_selected: bool) {
     let (name, dir) = split_display_path(&file.path);
 
-    let name_text = if file.is_conflicted {
+    let name_text = if file.is_conflicted() {
         egui::RichText::new(name).color(CONFLICT_TEXT)
     } else if is_selected {
         egui::RichText::new(name).strong()
@@ -656,8 +738,62 @@ fn show_drag_ghost(ctx: &egui::Context, state: &FilePanelState<'_>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MIN_SECTION_HEIGHT, matches_filter, preferred_unstaged_height, split_display_path,
+        MIN_SECTION_HEIGHT, destructive_action_for, matches_filter, preferred_unstaged_height,
+        split_display_path,
     };
+    use crate::shared::actions::FileActionKind;
+    use crate::shared::git::{FileChangeKind, FileEntry};
+
+    /// The label is deliberately nonsense: the rule must read the kind only.
+    fn entry(kind: FileChangeKind) -> FileEntry {
+        FileEntry {
+            path: "src/lib.rs".into(),
+            display_status: "whatever the UI calls it".into(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn tracked_rows_offer_discard_and_added_rows_offer_delete() {
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::Modified), false),
+            Some(FileActionKind::DiscardWorktree)
+        );
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::Deleted), false),
+            Some(FileActionKind::DiscardWorktree)
+        );
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::TypeChange), false),
+            Some(FileActionKind::DiscardWorktree)
+        );
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::Added), false),
+            Some(FileActionKind::DeleteUntracked)
+        );
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::Modified), true),
+            Some(FileActionKind::DiscardStaged)
+        );
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::Added), true),
+            Some(FileActionKind::DeleteUntracked)
+        );
+    }
+
+    #[test]
+    fn conflicted_and_renamed_rows_offer_no_destructive_action() {
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::Conflicted), false),
+            None
+        );
+        // Restoring a staged rename from HEAD would look up a path that is not
+        // in HEAD; offer nothing rather than an item that errors out.
+        assert_eq!(
+            destructive_action_for(&entry(FileChangeKind::Renamed), true),
+            None
+        );
+    }
 
     #[test]
     fn split_display_path_puts_the_filename_first() {

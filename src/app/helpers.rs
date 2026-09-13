@@ -3,8 +3,8 @@ use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
 
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
-    DiscardDialogState, InspectorState, RepoState, SelectedCommit, SelectedFile, TagDialogState,
-    UiState, WorktreeState,
+    DiscardDialogState, FileActionDialogState, InspectorState, RepoState, SelectedCommit,
+    SelectedFile, TagDialogState, UiState, WorktreeState,
 };
 
 pub(super) fn refresh_status(
@@ -123,6 +123,7 @@ pub(super) fn reset_dialog_state(dialog_state: &mut DialogState) {
     reset_tag_dialog_state(&mut dialog_state.tag);
     reset_cleanup_dialog_state(&mut dialog_state.cleanup);
     reset_discard_dialog_state(&mut dialog_state.discard);
+    reset_file_action_dialog_state(&mut dialog_state.file_action);
 }
 
 pub(super) fn reset_ui_state(ui_state: &mut UiState) {
@@ -156,6 +157,10 @@ fn reset_discard_dialog_state(dialog_state: &mut DiscardDialogState) {
     dialog_state.discard_clean_untracked = false;
 }
 
+fn reset_file_action_dialog_state(dialog_state: &mut FileActionDialogState) {
+    dialog_state.pending = None;
+}
+
 pub(super) fn load_selected_file(
     worktree_state: &WorktreeState,
     inspector_state: &mut InspectorState,
@@ -166,7 +171,7 @@ pub(super) fn load_selected_file(
     let is_conflicted = worktree_state
         .unstaged
         .iter()
-        .any(|file| file.path == path && file.is_conflicted);
+        .any(|file| file.path == path && file.is_conflicted());
 
     if is_conflicted {
         inspector_state.selected_file = Some(SelectedFile {
@@ -393,7 +398,7 @@ fn sync_selected_file(
         && worktree_state
             .unstaged
             .iter()
-            .any(|file| file.path == selected.path && file.is_conflicted);
+            .any(|file| file.path == selected.path && file.is_conflicted());
     if editing_this_conflict {
         return;
     }
@@ -416,11 +421,16 @@ mod tests {
         sync_selected_file,
     };
     use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, FileStyle};
-    use crate::shared::git::FileEntry;
+    use crate::shared::git::{FileChangeKind, FileEntry};
     use crate::state::{InspectorState, StatusLevel, WorktreeState};
     use crate::testutil::TestRepoDir;
 
     fn entry(path: &str, is_conflicted: bool) -> FileEntry {
+        let kind = if is_conflicted {
+            FileChangeKind::Conflicted
+        } else {
+            FileChangeKind::Modified
+        };
         FileEntry {
             path: path.to_string(),
             display_status: if is_conflicted {
@@ -428,7 +438,7 @@ mod tests {
             } else {
                 "modified".to_string()
             },
-            is_conflicted,
+            kind,
         }
     }
 

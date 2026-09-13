@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::infra::git::error::ConflictError;
 use crate::shared::conflicts::{ConflictChoice, ConflictData, ConflictPart, Eol, FileStyle, diff3};
-use crate::shared::git::FileEntry;
+use crate::shared::git::{FileChangeKind, FileEntry};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct CleanUntrackedResult {
@@ -39,8 +39,8 @@ pub fn get_file_statuses(
         if status.contains(Status::CONFLICTED) {
             unstaged.push(FileEntry {
                 path,
-                display_status: "conflicted".to_string(),
-                is_conflicted: true,
+                display_status: status_label_unstaged(FileChangeKind::Conflicted).to_string(),
+                kind: FileChangeKind::Conflicted,
             });
             continue;
         }
@@ -52,20 +52,22 @@ pub fn get_file_statuses(
                 | Status::INDEX_RENAMED
                 | Status::INDEX_TYPECHANGE,
         ) {
+            let kind = staged_change_kind(status);
             staged.push(FileEntry {
                 path: path.clone(),
-                display_status: status_label_staged(status).to_string(),
-                is_conflicted: false,
+                display_status: status_label_staged(kind).to_string(),
+                kind,
             });
         }
 
         if status.intersects(
             Status::WT_NEW | Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE,
         ) {
+            let kind = unstaged_change_kind(status);
             unstaged.push(FileEntry {
                 path: path.clone(),
-                display_status: status_label_unstaged(status).to_string(),
-                is_conflicted: false,
+                display_status: status_label_unstaged(kind).to_string(),
+                kind,
             });
         }
     }
@@ -315,14 +317,11 @@ pub fn read_conflict_file(repo: &Repository, path: &str) -> Result<ConflictData,
                 .filter(|(branch, _)| branch.get().target() == Some(oid))
                 .filter_map(|(branch, _)| branch.name().ok().flatten().map(str::to_owned))
                 .collect();
+            let short = oid.to_string()[..8].to_string();
             if branches.is_empty() {
-                oid.to_string()[..8].to_string()
+                short
             } else {
-                format!(
-                    "{} ({})",
-                    branches.join(", "),
-                    oid.to_string()[..8].to_string()
-                )
+                format!("{} ({short})", branches.join(", "))
             }
         });
     Ok(data)
@@ -457,29 +456,193 @@ pub(crate) fn clean_untracked_files(
     Ok(result)
 }
 
-fn status_label_staged(status: Status) -> &'static str {
+/// Restore one path's working-tree content from the index (`git checkout -- path`).
+///
+/// Only touches paths that actually differ from the index, so a stale row cannot
+/// overwrite something the user changed since the list was drawn. A partially
+/// staged file keeps its staged version.
+pub fn discard_worktree_changes(repo: &Repository, path: &str) -> Result<(), git2::Error> {
+    let status = path_status(repo, path)?;
+    if !status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE) {
+        return Err(git2::Error::from_str(&format!(
+            "{path} has no unstaged changes to discard"
+        )));
+    }
+
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    // `path` is one exact entry from `get_file_statuses`, not a pattern, so don't
+    // let `*`, `?` or `[..]` in a filename glob-match its siblings into the checkout
+    // and overwrite files the user never asked to discard.
+    checkout.force().disable_pathspec_match(true).path(path);
+    repo.checkout_index(None, Some(&mut checkout))
+}
+
+/// Restore one path in both the index and the working tree from HEAD
+/// (`git checkout HEAD -- path`). Refuses paths HEAD does not know about: a
+/// staged-new file has nothing to restore to and belongs to
+/// [`delete_untracked_file`], and the new name of a staged rename has to be
+/// unstaged as a whole instead.
+pub fn discard_staged_changes(repo: &Repository, path: &str) -> Result<(), git2::Error> {
+    let status = path_status(repo, path)?;
+    if !status.intersects(
+        Status::INDEX_MODIFIED
+            | Status::INDEX_DELETED
+            | Status::INDEX_RENAMED
+            | Status::INDEX_TYPECHANGE,
+    ) {
+        return Err(git2::Error::from_str(&format!(
+            "{path} has no staged changes to a committed file"
+        )));
+    }
+    let head_tree = repo.head()?.peel_to_tree()?;
+    if head_tree.get_path(Path::new(path)).is_err() {
+        // The new name of a staged rename has no HEAD entry to restore from: the
+        // committed content still lives under the old path, so deleting this one
+        // would lose it and leave the old path staged-deleted.
+        if status.contains(Status::INDEX_RENAMED) {
+            return Err(git2::Error::from_str(&format!(
+                "{path} is the new name of a staged rename; unstage the rename first"
+            )));
+        }
+        return Err(git2::Error::from_str(&format!(
+            "{path} is not in the last commit; delete it instead"
+        )));
+    }
+
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    // Exact path, not a pathspec — see `discard_worktree_changes`.
+    checkout.force().disable_pathspec_match(true).path(path);
+    repo.checkout_head(Some(&mut checkout))
+}
+
+/// Delete a file git has no committed copy of: untracked, or newly added to the
+/// index. A staged-new file is dropped from the index first, so a failure there
+/// leaves the working tree untouched. Directories emptied by the removal are
+/// pruned, as in [`clean_untracked_files`]; a directory named directly is
+/// refused — it can be a nested repository.
+pub fn delete_untracked_file(repo: &Repository, path: &str) -> Result<(), git2::Error> {
+    let status = path_status(repo, path)?;
+    if !status.intersects(Status::WT_NEW | Status::INDEX_NEW) {
+        return Err(git2::Error::from_str(&format!(
+            "{path} is tracked by git; discard its changes instead"
+        )));
+    }
+
+    let workdir = repo_workdir(repo)?;
+    let full_path = workdir.join(path);
+    let exists_on_disk = match std::fs::symlink_metadata(&full_path) {
+        Ok(metadata) if metadata.is_dir() => {
+            return Err(git2::Error::from_str(&format!(
+                "{path} is a directory and cannot be deleted from here"
+            )));
+        }
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(git2::Error::from_str(&format!(
+                "Cannot inspect {path}: {error}"
+            )));
+        }
+    };
+
+    // Drop the index entry before touching the disk: a failing index write (a
+    // concurrent git process holding `index.lock`) then leaves the file in place
+    // rather than staged-new with no working-tree content behind it.
     if status.contains(Status::INDEX_NEW) {
-        "new"
-    } else if status.contains(Status::INDEX_MODIFIED) {
-        "modified"
-    } else if status.contains(Status::INDEX_DELETED) {
-        "deleted"
-    } else if status.contains(Status::INDEX_RENAMED) {
-        "renamed"
-    } else {
-        "changed"
+        let mut index = repo.index()?;
+        index.remove_path(Path::new(path))?;
+        index.write()?;
+    }
+
+    if exists_on_disk {
+        std::fs::remove_file(&full_path)
+            .map_err(|error| git2::Error::from_str(&format!("Cannot delete {path}: {error}")))?;
+        prune_empty_parents(workdir, Path::new(path));
+    }
+
+    Ok(())
+}
+
+/// Remove the directories a just-deleted file left empty, bottom up, matching
+/// what [`clean_untracked_files`] does for a bulk clean. `remove_dir` only
+/// removes empty directories, so ignored files and nested repos are preserved;
+/// the first non-empty ancestor stops the walk and failures are not worth
+/// reporting — the file the user asked about is already gone.
+fn prune_empty_parents(workdir: &Path, path: &Path) {
+    for parent in path.ancestors().skip(1) {
+        if parent.as_os_str().is_empty() || std::fs::remove_dir(workdir.join(parent)).is_err() {
+            return;
+        }
     }
 }
 
-fn status_label_unstaged(status: Status) -> &'static str {
-    if status.contains(Status::WT_NEW) {
-        "untracked"
-    } else if status.contains(Status::WT_MODIFIED) {
-        "modified"
-    } else if status.contains(Status::WT_DELETED) {
-        "deleted"
+/// The combined status flags of one exact path, as the file list reported them.
+///
+/// Rejects a conflicted path: none of the per-file destructive operations can
+/// act on one, and the caller's own status check would reject it with a worse
+/// message.
+fn path_status(repo: &Repository, path: &str) -> Result<Status, git2::Error> {
+    if path.is_empty() {
+        return Err(git2::Error::from_str("Empty path"));
+    }
+    let status = repo.status_file(Path::new(path))?;
+    if status.contains(Status::CONFLICTED) {
+        return Err(git2::Error::from_str(&format!(
+            "Resolve the conflict in {path} first"
+        )));
+    }
+    Ok(status)
+}
+
+/// What the index says happened to a file, for a row of the staged list.
+fn staged_change_kind(status: Status) -> FileChangeKind {
+    if status.contains(Status::INDEX_NEW) {
+        FileChangeKind::Added
+    } else if status.contains(Status::INDEX_MODIFIED) {
+        FileChangeKind::Modified
+    } else if status.contains(Status::INDEX_DELETED) {
+        FileChangeKind::Deleted
+    } else if status.contains(Status::INDEX_RENAMED) {
+        FileChangeKind::Renamed
     } else {
-        "changed"
+        FileChangeKind::TypeChange
+    }
+}
+
+/// What the working tree says happened to a file, for a row of the unstaged
+/// list. Only the index detects renames, so a worktree change is never one.
+fn unstaged_change_kind(status: Status) -> FileChangeKind {
+    if status.contains(Status::WT_NEW) {
+        FileChangeKind::Added
+    } else if status.contains(Status::WT_MODIFIED) {
+        FileChangeKind::Modified
+    } else if status.contains(Status::WT_DELETED) {
+        FileChangeKind::Deleted
+    } else {
+        FileChangeKind::TypeChange
+    }
+}
+
+/// Display copy for a staged row. Both label tables are derived from the kind
+/// so the two can never drift apart from the semantics they describe.
+fn status_label_staged(kind: FileChangeKind) -> &'static str {
+    match kind {
+        FileChangeKind::Added => "new",
+        FileChangeKind::Modified => "modified",
+        FileChangeKind::Deleted => "deleted",
+        FileChangeKind::Renamed => "renamed",
+        FileChangeKind::TypeChange => "changed",
+        FileChangeKind::Conflicted => "conflicted",
+    }
+}
+
+/// Display copy for an unstaged row. Deliberately says "untracked" where the
+/// staged list says "new": both are [`FileChangeKind::Added`].
+fn status_label_unstaged(kind: FileChangeKind) -> &'static str {
+    match kind {
+        FileChangeKind::Added => "untracked",
+        FileChangeKind::Renamed | FileChangeKind::TypeChange => "changed",
+        other => status_label_staged(other),
     }
 }
 
@@ -556,12 +719,14 @@ fn conflict_workdir(repo: &Repository) -> Result<&Path, ConflictError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_untracked_files, create_commit, get_file_diff, get_file_statuses,
-        parse_conflict_markers, read_conflict_file, short_object_id, stage_all, stage_file,
-        undo_last_commit, unstage_all, unstage_file, write_resolved_content,
+        clean_untracked_files, create_commit, delete_untracked_file, discard_staged_changes,
+        discard_worktree_changes, get_file_diff, get_file_statuses, parse_conflict_markers,
+        read_conflict_file, short_object_id, stage_all, stage_file, undo_last_commit, unstage_all,
+        unstage_file, write_resolved_content,
     };
     use crate::infra::git::repository::{get_commit_history, get_current_branch};
     use crate::shared::conflicts::{ConflictChoice, ConflictPart, Eol};
+    use crate::shared::git::{FileChangeKind, FileEntry};
     use crate::testutil::{TestRepoDir, commit_all, signature};
     use git2::{Repository, RepositoryState};
     use std::path::{Path, PathBuf};
@@ -635,6 +800,45 @@ mod tests {
         let result = clean_untracked_files(&dir.open()).expect("clean");
         assert_eq!(result.removed_count, 1);
         assert!(std::fs::symlink_metadata(dir.path().join("link")).is_err());
+    }
+
+    /// The file lists carry git's own verdict, not a re-reading of the label:
+    /// the UI dispatches destructive actions off `kind`, so this is where that
+    /// mapping has to be pinned down.
+    #[test]
+    fn file_kinds_come_from_git_flags_and_labels_stay_display_copy() {
+        let dir = TestRepoDir::init();
+        dir.write("tracked.txt", "one");
+        dir.write("doomed.txt", "gone soon");
+        commit_all(&dir.open(), "base");
+        dir.write("tracked.txt", "two");
+        dir.write("fresh.txt", "brand new");
+        std::fs::remove_file(dir.path().join("doomed.txt")).unwrap();
+        let repo = dir.open();
+        stage_file(&repo, "fresh.txt").unwrap();
+
+        let (unstaged, staged) = get_file_statuses(&repo).unwrap();
+        let entry = |list: &[FileEntry], path: &str| {
+            list.iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} missing from {list:?}"))
+                .clone()
+        };
+
+        assert_eq!(
+            entry(&unstaged, "tracked.txt").kind,
+            FileChangeKind::Modified
+        );
+        assert_eq!(entry(&unstaged, "doomed.txt").kind, FileChangeKind::Deleted);
+        assert_eq!(entry(&staged, "fresh.txt").kind, FileChangeKind::Added);
+
+        // Same kind, two different words: that asymmetry is why the menu rule
+        // must not read these strings.
+        assert_eq!(entry(&staged, "fresh.txt").display_status, "new");
+        dir.write("loose.txt", "untracked");
+        let (unstaged, _) = get_file_statuses(&dir.open()).unwrap();
+        assert_eq!(entry(&unstaged, "loose.txt").kind, FileChangeKind::Added);
+        assert_eq!(entry(&unstaged, "loose.txt").display_status, "untracked");
     }
 
     #[cfg(unix)]
@@ -1018,6 +1222,235 @@ mod tests {
         assert!(unstaged.is_empty());
         assert_eq!(staged.len(), 1);
         assert_eq!(staged[0].path, "tracked.txt");
+    }
+
+    // --- per-file discard / delete -----------------------------------------
+
+    #[test]
+    fn discard_worktree_changes_restores_the_staged_version_not_head() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "base");
+        repo_dir.write("tracked.txt", "v2");
+        stage_file(&repo, "tracked.txt").expect("stage v2");
+        repo_dir.write("tracked.txt", "v3");
+
+        discard_worktree_changes(&repo, "tracked.txt").expect("discard");
+
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("tracked.txt")).expect("read"),
+            "v2"
+        );
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 1, "staged v2 survives");
+    }
+
+    #[test]
+    fn discard_worktree_changes_restores_a_deleted_file() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "base");
+        std::fs::remove_file(repo_dir.path().join("tracked.txt")).expect("remove");
+
+        discard_worktree_changes(&repo, "tracked.txt").expect("discard");
+
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("tracked.txt")).expect("read"),
+            "v1"
+        );
+    }
+
+    #[test]
+    fn discard_worktree_changes_refuses_untracked_and_unchanged_paths() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "base");
+        repo_dir.write("new.txt", "hello");
+
+        assert!(discard_worktree_changes(&repo, "new.txt").is_err());
+        assert!(discard_worktree_changes(&repo, "tracked.txt").is_err());
+        assert!(discard_worktree_changes(&repo, "").is_err());
+        assert!(
+            repo_dir.path().join("new.txt").exists(),
+            "nothing was touched"
+        );
+    }
+
+    #[test]
+    fn discard_staged_changes_restores_index_and_worktree_from_head() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "base");
+        repo_dir.write("tracked.txt", "v2");
+        stage_file(&repo, "tracked.txt").expect("stage v2");
+        repo_dir.write("tracked.txt", "v3");
+
+        discard_staged_changes(&repo, "tracked.txt").expect("discard staged");
+
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("tracked.txt")).expect("read"),
+            "v1"
+        );
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn discard_staged_changes_restores_a_staged_deletion() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "base");
+        std::fs::remove_file(repo_dir.path().join("tracked.txt")).expect("remove");
+        stage_file(&repo, "tracked.txt").expect("stage deletion");
+
+        discard_staged_changes(&repo, "tracked.txt").expect("discard staged");
+
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("tracked.txt")).expect("read"),
+            "v1"
+        );
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn discard_worktree_changes_treats_glob_metacharacters_as_a_literal_path() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("[id].tsx", "v1");
+        repo_dir.write("i.tsx", "sibling v1");
+        commit_all(&repo, "base");
+        repo_dir.write("[id].tsx", "v2");
+        repo_dir.write("i.tsx", "sibling v2");
+
+        discard_worktree_changes(&repo, "[id].tsx").expect("discard");
+
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("[id].tsx")).expect("read"),
+            "v1",
+            "the named file is the one restored"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("i.tsx")).expect("read"),
+            "sibling v2",
+            "a sibling matching the character class keeps its work"
+        );
+    }
+
+    #[test]
+    fn discard_staged_changes_treats_glob_metacharacters_as_a_literal_path() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("[id].tsx", "v1");
+        repo_dir.write("i.tsx", "sibling v1");
+        commit_all(&repo, "base");
+        repo_dir.write("[id].tsx", "v2");
+        stage_file(&repo, "[id].tsx").expect("stage");
+        repo_dir.write("i.tsx", "sibling v2");
+        stage_file(&repo, "i.tsx").expect("stage sibling");
+
+        discard_staged_changes(&repo, "[id].tsx").expect("discard staged");
+
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("[id].tsx")).expect("read"),
+            "v1",
+            "the named file is the one reset to HEAD"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("i.tsx")).expect("read"),
+            "sibling v2",
+            "a sibling matching the character class keeps its staged work"
+        );
+    }
+
+    #[test]
+    fn discard_staged_changes_refuses_a_staged_new_file() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("base.txt", "base");
+        commit_all(&repo, "base");
+        repo_dir.write("new.txt", "hello");
+        stage_file(&repo, "new.txt").expect("stage new");
+
+        assert!(discard_staged_changes(&repo, "new.txt").is_err());
+        assert!(repo_dir.path().join("new.txt").exists());
+        let (_, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert_eq!(staged.len(), 1, "index untouched");
+    }
+
+    #[test]
+    fn delete_untracked_file_removes_an_untracked_file() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("scratch/new.txt", "hello");
+
+        delete_untracked_file(&repo, "scratch/new.txt").expect("delete");
+
+        assert!(!repo_dir.path().join("scratch/new.txt").exists());
+        // The bulk clean prunes directories it empties; a single delete must match it.
+        assert!(!repo_dir.path().join("scratch").exists());
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn delete_untracked_file_keeps_a_parent_directory_that_still_has_files() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("scratch/new.txt", "hello");
+        repo_dir.write("scratch/keep.txt", "keep");
+
+        delete_untracked_file(&repo, "scratch/new.txt").expect("delete");
+
+        assert!(!repo_dir.path().join("scratch/new.txt").exists());
+        assert!(repo_dir.path().join("scratch/keep.txt").exists());
+    }
+
+    #[test]
+    fn delete_untracked_file_drops_a_staged_new_file_from_index_and_disk() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("base.txt", "base");
+        commit_all(&repo, "base");
+        repo_dir.write("new.txt", "hello");
+        stage_file(&repo, "new.txt").expect("stage new");
+
+        delete_untracked_file(&repo, "new.txt").expect("delete");
+
+        assert!(!repo_dir.path().join("new.txt").exists());
+        let (unstaged, staged) = get_file_statuses(&repo).expect("file statuses");
+        assert!(unstaged.is_empty());
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn delete_untracked_file_refuses_tracked_files_and_directories() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+        repo_dir.write("tracked.txt", "v1");
+        commit_all(&repo, "base");
+        repo_dir.write("tracked.txt", "v2");
+        std::fs::create_dir(repo_dir.path().join("dir")).expect("mkdir");
+        repo_dir.write("dir/inner.txt", "x");
+
+        assert!(delete_untracked_file(&repo, "tracked.txt").is_err());
+        assert!(delete_untracked_file(&repo, "dir").is_err());
+        assert!(delete_untracked_file(&repo, "dir/").is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("tracked.txt")).expect("read"),
+            "v2"
+        );
+        assert!(repo_dir.path().join("dir/inner.txt").exists());
     }
 
     // --- get_file_statuses classification ---------------------------------

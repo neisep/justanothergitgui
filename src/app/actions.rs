@@ -1,4 +1,5 @@
 use super::{helpers, *};
+use crate::shared::actions::{FileActionKind, PendingFileAction};
 use crate::state::{CenterView, InspectorState, SelectedFile};
 
 struct TabActionContext<'a> {
@@ -37,6 +38,8 @@ impl UiAction {
             Self::DiscardAndReset { clean_untracked } => discard_and_reset(ctx, clean_untracked),
             Self::UndoLastCommit => undo_last_commit(ctx),
             Self::SaveConflictResolution => save_conflict_resolution(ctx),
+            Self::OpenFileActionDialog(pending) => open_file_action_dialog(ctx, pending),
+            Self::ConfirmFileAction => confirm_file_action(ctx),
         }
     }
 }
@@ -444,6 +447,55 @@ fn save_conflict_resolution(ctx: &mut TabActionContext<'_>) {
         Err(error) => log_action_error(ctx, "Save resolution", error.to_string()),
     }
 
+    refresh_tab(ctx);
+}
+
+fn open_file_action_dialog(ctx: &mut TabActionContext<'_>, pending: PendingFileAction) {
+    ctx.tab.state.dialogs.file_action.pending = Some(pending);
+}
+
+/// Run the confirmed destructive file operation. The infra layer re-validates the
+/// path's status, so a row that went stale while the dialog was open fails with
+/// a message instead of acting on the wrong state.
+fn confirm_file_action(ctx: &mut TabActionContext<'_>) {
+    let Some(pending) = ctx.tab.state.dialogs.file_action.pending.take() else {
+        ctx.tab.state.ui.status = StatusMessage::info("No file action pending");
+        return;
+    };
+    let PendingFileAction { path, staged, kind } = pending;
+
+    let (context, success, result) = match kind {
+        FileActionKind::DiscardWorktree => (
+            "Discard changes",
+            format!("Discarded changes: {path}"),
+            AppRepoWrite::discard_worktree_changes(&ctx.tab.repo, &path),
+        ),
+        FileActionKind::DiscardStaged => (
+            "Discard changes",
+            format!("Discarded changes: {path}"),
+            AppRepoWrite::discard_staged_changes(&ctx.tab.repo, &path),
+        ),
+        FileActionKind::DeleteUntracked => (
+            "Delete file",
+            format!("Deleted: {path}"),
+            AppRepoWrite::delete_untracked_file(&ctx.tab.repo, &path),
+        ),
+    };
+
+    match result {
+        Ok(()) => {
+            ctx.tab.state.ui.status = StatusMessage::success(success);
+            let inspector = &mut ctx.tab.state.inspector;
+            let acted_on_selection = inspector
+                .selected_file
+                .as_ref()
+                .is_some_and(|selected| selected.path == path && selected.staged == staged);
+            if acted_on_selection {
+                clear_repo_selection(inspector);
+            }
+        }
+        Err(error) => log_action_error(ctx, context, error.to_string()),
+    }
     refresh_tab(ctx);
 }
 

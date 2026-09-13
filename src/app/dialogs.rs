@@ -19,6 +19,7 @@ impl GitGuiApp {
             || state.dialogs.tag.show_create_tag_dialog
             || state.dialogs.cleanup.show_cleanup_branches_dialog
             || state.dialogs.discard.show_discard_dialog
+            || state.dialogs.file_action.pending.is_some()
     }
 
     pub(super) fn close_topmost_dialog(&mut self) -> bool {
@@ -44,6 +45,11 @@ impl GitGuiApp {
                 .busy
                 .as_ref()
                 .is_some_and(|busy| busy.action == BusyAction::DiscardAndReset);
+
+            if state.dialogs.file_action.pending.is_some() {
+                state.dialogs.file_action.pending = None;
+                return true;
+            }
 
             if state.dialogs.cleanup.show_cleanup_branches_dialog {
                 state.dialogs.cleanup.show_cleanup_branches_dialog = false;
@@ -484,6 +490,25 @@ impl GitGuiApp {
         if !state.dialogs.discard.show_discard_dialog {
             state.dialogs.discard.discard_preview = None;
             state.dialogs.discard.discard_clean_untracked = false;
+        }
+    }
+
+    pub(super) fn show_file_action_dialog(&mut self, ctx: &egui::Context) {
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
+        let state = &mut self.tabs[active_index].state;
+
+        let Some(pending) = state.dialogs.file_action.pending.clone() else {
+            return;
+        };
+
+        let output = ui::dialogs::file_action::show(ctx, &pending);
+
+        if output.confirm_requested {
+            state.ui.actions.push(UiAction::confirm_file_action());
+        } else if !output.keep_open {
+            state.dialogs.file_action.pending = None;
         }
     }
 

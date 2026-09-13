@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::shared::actions::UiAction;
+use crate::shared::actions::{PendingFileAction, UiAction};
 use crate::shared::conflicts::ConflictData;
 use crate::shared::diff::{DiffLineKind, ParsedDiffLine, SideBySideEntry, parse_diff_rows};
 use crate::shared::git::{
@@ -318,6 +318,7 @@ pub struct DialogState {
     pub tag: TagDialogState,
     pub cleanup: CleanupBranchesDialogState,
     pub discard: DiscardDialogState,
+    pub file_action: FileActionDialogState,
 }
 
 #[derive(Default)]
@@ -348,6 +349,12 @@ pub struct DiscardDialogState {
     pub show_discard_dialog: bool,
     pub discard_preview: Option<DiscardPreview>,
     pub discard_clean_untracked: bool,
+}
+
+/// Open exactly while `pending` holds the file operation awaiting confirmation.
+#[derive(Default)]
+pub struct FileActionDialogState {
+    pub pending: Option<PendingFileAction>,
 }
 
 pub struct UiState {

@@ -86,7 +86,7 @@ pub fn show(
                 .worktree
                 .unstaged
                 .iter()
-                .any(|file| file.is_conflicted)
+                .any(|file| file.is_conflicted())
             {
                 Some("Resolve and save all conflicted files first")
             } else if state.worktree.staged.is_empty() {

@@ -127,6 +127,21 @@ impl AppRepoWrite {
         worktree::unstage_all(repo)
     }
 
+    pub(super) fn discard_worktree_changes(
+        repo: &Repository,
+        path: &str,
+    ) -> Result<(), git2::Error> {
+        worktree::discard_worktree_changes(repo, path)
+    }
+
+    pub(super) fn discard_staged_changes(repo: &Repository, path: &str) -> Result<(), git2::Error> {
+        worktree::discard_staged_changes(repo, path)
+    }
+
+    pub(super) fn delete_untracked_file(repo: &Repository, path: &str) -> Result<(), git2::Error> {
+        worktree::delete_untracked_file(repo, path)
+    }
+
     pub(super) fn create_commit(
         repo: &Repository,
         message: &str,
