@@ -300,6 +300,7 @@ impl eframe::App for GitGuiApp {
             self.show_cleanup_branches_dialog(&ctx);
             self.show_new_worktree_dialog(&ctx);
             self.show_remove_worktree_dialog(&ctx);
+            self.show_worktree_metadata_dialog(&ctx);
             self.show_github_auth_dialog(&ctx);
             self.show_log_viewer_dialog(&ctx);
             self.process_actions();
@@ -325,6 +326,7 @@ impl eframe::App for GitGuiApp {
                 ui::file_panel::FilePanelState {
                     worktree: &tab.state.worktree,
                     worktrees: &tab.state.repo.linked_worktrees,
+                    worktree_metadata: &tab.state.repo.worktree_metadata,
                     inspector: &mut tab.state.inspector,
                     ui_state: &mut tab.state.ui,
                 },
@@ -372,6 +374,7 @@ impl eframe::App for GitGuiApp {
         self.show_cleanup_branches_dialog(&ctx);
         self.show_new_worktree_dialog(&ctx);
         self.show_remove_worktree_dialog(&ctx);
+        self.show_worktree_metadata_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);
         self.show_log_viewer_dialog(&ctx);
 

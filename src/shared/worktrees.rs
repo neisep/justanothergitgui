@@ -128,6 +128,21 @@ pub struct NewWorktreeRequest {
     pub path: PathBuf,
 }
 
+/// What the app learned by creating a worktree.
+///
+/// Carries the base commit out of the git layer because nothing above it can
+/// recover the value afterwards: by the time the background task's result is
+/// applied the refreshed worktree list does not exist yet, and a commit the user
+/// typed by hand would be worthless. Per-worktree metadata records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreatedWorktree {
+    pub name: String,
+    pub branch: String,
+    pub path: PathBuf,
+    /// Full oid the new checkout starts from.
+    pub base_commit: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

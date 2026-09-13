@@ -96,6 +96,29 @@ impl HoveredRow {
     }
 }
 
+/// A small filled pill carrying one short word.
+///
+/// Painted rather than assembled from glyph characters: the bundled fonts have
+/// no `●`/`✓`/`✗`, and a missing glyph renders as a box that the headless tests
+/// — which scrape painted *text* — would happily accept.
+pub fn render_pill(ui: &mut egui::Ui, text: &str, fill: egui::Color32) -> egui::Response {
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .small()
+                        .color(egui::Color32::WHITE),
+                )
+                .truncate(),
+            );
+        })
+        .response
+}
+
 pub fn show_inline_busy(ui: &mut egui::Ui, label: &str) {
     ui.horizontal(|ui| {
         ui.add(egui::Spinner::new().size(12.0));

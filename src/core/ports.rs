@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::shared::github::{GithubAuthSession, GithubRepoVisibility, PullRequestPrompt};
-use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
+use crate::shared::worktrees::{CreatedWorktree, LinkedWorktree, NewWorktreeRequest};
 
 pub enum GitRemoteAuth<'a> {
     GitHub(&'a GithubAuthSession),
@@ -75,7 +75,7 @@ pub trait GitLinkedWorktreePort {
         &self,
         repo_path: &Path,
         request: &NewWorktreeRequest,
-    ) -> Result<PathBuf, String>;
+    ) -> Result<CreatedWorktree, String>;
     /// `force` decides only whether uncommitted changes may be destroyed. The
     /// worktree service never passes `true`; the parameter is the seam an
     /// explicit discard-and-remove flow would use.

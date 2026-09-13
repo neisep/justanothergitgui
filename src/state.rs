@@ -7,6 +7,9 @@ use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
 use crate::shared::github::PullRequestPrompt;
+use crate::shared::worktree_metadata::{
+    ReviewState, TestState, WorktreeMetadata, WorktreeMetadataMap,
+};
 use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
 #[derive(Clone, Debug)]
@@ -222,6 +225,10 @@ pub struct RepoState {
     pub branches: Vec<String>,
     pub commit_history: Vec<CommitEntry>,
     pub pull_request_prompt: Option<PullRequestPrompt>,
+    /// What the user recorded about this repository's worktrees, keyed by
+    /// worktree name. Loaded once when the tab opens and written back on edit —
+    /// it is app state, not something a refresh re-reads from git.
+    pub worktree_metadata: WorktreeMetadataMap,
     /// Every checkout sharing this repository's object store, main tree first.
     ///
     /// Lives on [`RepoState`] rather than beside the file lists because it
@@ -329,6 +336,7 @@ pub struct DialogState {
     pub discard: DiscardDialogState,
     pub file_action: FileActionDialogState,
     pub worktree: WorktreeDialogState,
+    pub worktree_metadata: WorktreeMetadataDialogState,
 }
 
 #[derive(Default)]
@@ -396,6 +404,55 @@ impl WorktreeDialogState {
             branch: self.branch.trim().to_string(),
             base_branch: self.base_branch.clone(),
             path: PathBuf::from(self.path.trim()),
+        }
+    }
+}
+
+/// Draft state for the worktree metadata form.
+///
+/// Open exactly while `editing` names the worktree being edited, the way
+/// [`FileActionDialogState::pending`] gates its own dialog.
+#[derive(Default)]
+pub struct WorktreeMetadataDialogState {
+    /// The worktree's display name, and what makes the dialog open.
+    pub editing: Option<String>,
+    /// Its [`crate::shared::worktree_metadata::storage_key`], captured when the
+    /// dialog opened so the write cannot drift onto a different worktree.
+    pub key: String,
+    /// Why the last save failed, shown in the form rather than only the status
+    /// bar, so the user can see it while fixing it.
+    pub save_error: Option<String>,
+    pub task: String,
+    pub agent: String,
+    /// Shown read-only: the app records this when it creates a worktree and
+    /// there is nothing sensible for the user to type here.
+    pub base_commit: String,
+    pub review: ReviewState,
+    pub test: TestState,
+    pub focus_task_requested: bool,
+}
+
+impl WorktreeMetadataDialogState {
+    /// Fill the form from a worktree's stored metadata.
+    pub fn open(&mut self, name: &str, metadata: &WorktreeMetadata) {
+        self.editing = Some(name.to_string());
+        self.save_error = None;
+        self.task = metadata.task.clone();
+        self.agent = metadata.agent.clone();
+        self.base_commit = metadata.base_commit.clone();
+        self.review = metadata.review;
+        self.test = metadata.test;
+        self.focus_task_requested = true;
+    }
+
+    /// What the form currently describes.
+    pub fn metadata(&self) -> WorktreeMetadata {
+        WorktreeMetadata {
+            task: self.task.trim().to_string(),
+            agent: self.agent.trim().to_string(),
+            base_commit: self.base_commit.clone(),
+            review: self.review,
+            test: self.test,
         }
     }
 }

@@ -7,7 +7,7 @@ use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
 use crate::infra::git::error::ConflictError;
 use crate::infra::git::{clone, commits, linked_worktrees, repository, worktree};
 use crate::infra::github::{auth, pulls, repos};
-use crate::infra::system::browser;
+use crate::infra::system::{browser, worktree_metadata};
 use crate::shared::conflicts::ConflictData;
 use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
@@ -16,6 +16,7 @@ use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthCheck, GithubAuthPrompt,
     GithubAuthSession, GithubRepoSummary, PushSuccess,
 };
+use crate::shared::worktree_metadata::{WorktreeMetadata, WorktreeMetadataMap};
 use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
 pub(super) struct AppRepoRead;
@@ -296,7 +297,7 @@ impl AppRepoWorkerOps {
     pub(crate) fn create_worktree(
         repo_path: &Path,
         request: &NewWorktreeRequest,
-    ) -> Result<String, String> {
+    ) -> Result<worktrees::service::CreateOutcome, String> {
         let git = InfraGitPort;
         worktrees::service::create(repo_path, request, &git)
     }
@@ -304,6 +305,32 @@ impl AppRepoWorkerOps {
     pub(crate) fn remove_worktree(repo_path: &Path, name: &str) -> Result<String, String> {
         let git = InfraGitPort;
         worktrees::service::remove(repo_path, name, &git)
+    }
+}
+
+/// Per-worktree metadata persistence, the app's seam onto the metadata store.
+pub(super) struct AppWorktreeMetadata;
+
+impl AppWorktreeMetadata {
+    pub(super) fn load(repo: &Repository) -> Result<WorktreeMetadataMap, String> {
+        worktree_metadata::load_for_repo(&Self::repository_key(repo)?)
+    }
+
+    /// Set or clear one worktree's entry, returning the repository's metadata as
+    /// it now stands on disk.
+    pub(super) fn update(
+        repo: &Repository,
+        worktree_key: &str,
+        entry: Option<WorktreeMetadata>,
+    ) -> Result<WorktreeMetadataMap, String> {
+        worktree_metadata::update_entry(&Self::repository_key(repo)?, worktree_key, entry)
+    }
+
+    /// The shared object store, so a tab opened on a linked worktree files its
+    /// metadata under the same repository as the main tab.
+    fn repository_key(repo: &Repository) -> Result<PathBuf, String> {
+        linked_worktrees::repository_key(repo)
+            .map_err(|error| format!("Could not identify repository: {}", error))
     }
 }
 

@@ -54,6 +54,9 @@ pub enum UiAction {
     CreateWorktree(NewWorktreeRequest),
     OpenRemoveWorktreeDialog(Box<LinkedWorktree>),
     ConfirmRemoveWorktree,
+    OpenWorktreeMetadataDialog(Box<LinkedWorktree>),
+    SaveWorktreeMetadata,
+    ClearWorktreeMetadata,
 }
 
 impl UiAction {
@@ -182,5 +185,17 @@ impl UiAction {
 
     pub fn confirm_remove_worktree() -> Self {
         Self::ConfirmRemoveWorktree
+    }
+
+    pub fn open_worktree_metadata_dialog(worktree: LinkedWorktree) -> Self {
+        Self::OpenWorktreeMetadataDialog(Box::new(worktree))
+    }
+
+    pub fn save_worktree_metadata() -> Self {
+        Self::SaveWorktreeMetadata
+    }
+
+    pub fn clear_worktree_metadata() -> Self {
+        Self::ClearWorktreeMetadata
     }
 }

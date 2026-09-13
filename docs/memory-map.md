@@ -88,7 +88,8 @@ src/
 │   └── system/
 │       ├── browser.rs
 │       ├── keychain.rs
-│       └── mod.rs
+│       ├── mod.rs
+│       └── worktree_metadata.rs
 ├── shared/
 │   ├── actions.rs
 │   ├── conflicts.rs
@@ -96,6 +97,7 @@ src/
 │   ├── git.rs
 │   ├── github.rs
 │   ├── mod.rs
+│   ├── worktree_metadata.rs
 │   └── worktrees.rs
 ├── ui/
 │   ├── bottom_bar.rs
@@ -118,7 +120,8 @@ src/
 │       ├── publish_repo.rs
 │       ├── settings.rs
 │       ├── tag.rs
-│       └── worktree.rs
+│       ├── worktree.rs
+│       └── worktree_metadata.rs
 ├── commit_rules.rs
 ├── git_ops.rs
 ├── logging.rs
@@ -149,6 +152,7 @@ src/
 | `src/infra/core_ports.rs` | Concrete port adapters | `InfraGitPort` and `InfraGitHubPort` implement the focused core traits | Opens repositories per operation; acceptable for now, but still adapter glue rather than a richer gateway layer |
 | `src/infra/git/*` | Low-level git adapters | Repository/worktree/remotes/clone/commits behavior is split by IO concern; `commits.rs` is read-only history diffing (commit vs first parent); `linked_worktrees.rs` is the `git worktree` set, kept apart from the working-tree module `worktree.rs` | Some functions still power both new ports and the legacy `git_ops` shim |
 | `src/infra/github/auth.rs` / `repos.rs` / `pulls.rs` | GitHub HTTP + auth adapters | Auth persistence, repo APIs, and PR prompt detection are separated; PR lookup derives owner/repo from the repo's origin remote | Still tightly coupled to current GitHub API shapes; no separate request/response modules yet |
+| `src/infra/system/worktree_metadata.rs` | Per-worktree metadata store | One JSON file for every repository under `settings::config_dir()`; writes one entry at a time (read-modify-write) so tabs sharing a repository cannot clobber each other, via temp-file + rename | Deviates from `settings.rs`/`session.rs`, which write whole files in place; deliberate, since this holds the user's own prose |
 | `src/infra/system/*` | Browser/keychain adapters | Keeps desktop side effects out of `app/` and `core/` | Likely stable as-is |
 | `src/ui/bottom_bar.rs`, `file_panel.rs`, `diff_panel.rs`, `history_panel.rs`, `commit_view.rs` | Narrowed render modules | Already consume focused view/state structs instead of the whole `AppState` | Good pattern to copy elsewhere |
 | `src/ui/diff_view.rs` | State-free diff renderers | Unified patch table, side-by-side panes, and the status badge shared by the file list and commit view | Only the commit view uses the side-by-side renderer so far; the Changes tab still shows the unified table |

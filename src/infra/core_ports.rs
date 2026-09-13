@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use git2::Repository;
 
@@ -13,7 +13,7 @@ use crate::infra::git::{
 };
 use crate::infra::github::{pulls as github_pulls, repos as github_repos};
 use crate::shared::github::{GithubAuthSession, GithubRepoVisibility, PullRequestPrompt};
-use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
+use crate::shared::worktrees::{CreatedWorktree, LinkedWorktree, NewWorktreeRequest};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InfraGitPort;
@@ -174,7 +174,7 @@ impl GitLinkedWorktreePort for InfraGitPort {
         &self,
         repo_path: &Path,
         request: &NewWorktreeRequest,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<CreatedWorktree, String> {
         let repo = open_repository(repo_path)?;
         // The worktree adapter already produces finished user-facing sentences
         // ("Destination '...' already exists and is not empty."), so they are

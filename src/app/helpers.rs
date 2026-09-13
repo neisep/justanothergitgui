@@ -1,10 +1,12 @@
+use super::ports::AppWorktreeMetadata;
 use super::*;
 use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
 
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
     DiscardDialogState, FileActionDialogState, InspectorState, RepoState, SelectedCommit,
-    SelectedFile, TagDialogState, UiState, WorktreeDialogState, WorktreeState,
+    SelectedFile, TagDialogState, UiState, WorktreeDialogState, WorktreeMetadataDialogState,
+    WorktreeState,
 };
 
 pub(super) fn refresh_status(
@@ -79,6 +81,15 @@ pub(super) fn refresh_status(
             repo_state.linked_worktrees = Vec::new();
         }
     }
+    // Re-read rather than cache across refreshes: several tabs can be showing
+    // the same repository, and the file on disk is the only thing they share.
+    match AppWorktreeMetadata::load(repo) {
+        Ok(metadata) => repo_state.worktree_metadata = metadata,
+        Err(error) => {
+            errors.push(format!("worktree metadata: {error}"));
+            repo_state.worktree_metadata.clear();
+        }
+    }
     sync_pull_request_prompt(repo_state);
     sync_selected_file(worktree_state, inspector_state, repo);
     sync_selected_commit(repo_state, inspector_state);
@@ -101,6 +112,7 @@ pub(super) fn reset_repo_state(repo_state: &mut RepoState) {
     repo_state.commit_history.clear();
     repo_state.pull_request_prompt = None;
     repo_state.linked_worktrees.clear();
+    repo_state.worktree_metadata.clear();
 }
 
 pub(super) fn reset_worktree_state(worktree_state: &mut WorktreeState) {
@@ -133,6 +145,7 @@ pub(super) fn reset_dialog_state(dialog_state: &mut DialogState) {
     reset_discard_dialog_state(&mut dialog_state.discard);
     reset_file_action_dialog_state(&mut dialog_state.file_action);
     reset_worktree_dialog_state(&mut dialog_state.worktree);
+    reset_worktree_metadata_dialog_state(&mut dialog_state.worktree_metadata);
 }
 
 pub(super) fn reset_ui_state(ui_state: &mut UiState) {
@@ -168,6 +181,10 @@ fn reset_discard_dialog_state(dialog_state: &mut DiscardDialogState) {
 
 fn reset_file_action_dialog_state(dialog_state: &mut FileActionDialogState) {
     dialog_state.pending = None;
+}
+
+pub(super) fn reset_worktree_metadata_dialog_state(dialog_state: &mut WorktreeMetadataDialogState) {
+    *dialog_state = WorktreeMetadataDialogState::default();
 }
 
 pub(super) fn reset_worktree_dialog_state(dialog_state: &mut WorktreeDialogState) {

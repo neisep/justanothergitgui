@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::app::{AppRepoWorkerOps, AppWelcomeWorkerOps, RepoWorkerContext, WelcomeWorkerContext};
+use crate::core::worktrees::service::CreateOutcome;
 use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthPrompt, GithubAuthSession,
     GithubRepoSummary, PushSuccess,
@@ -33,7 +34,7 @@ pub(crate) struct OpenPullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct CreatePullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct DiscardAndResetResult(pub(crate) Result<String, String>);
 pub(crate) struct UndoLastCommitResult(pub(crate) Result<String, String>);
-pub(crate) struct CreateWorktreeResult(pub(crate) Result<String, String>);
+pub(crate) struct CreateWorktreeResult(pub(crate) Result<CreateOutcome, String>);
 pub(crate) struct RemoveWorktreeResult(pub(crate) Result<String, String>);
 pub(crate) struct ListGithubReposResult(pub(crate) Result<Vec<GithubRepoSummary>, String>);
 pub(crate) struct CloneRepoResult(pub(crate) Result<PathBuf, String>);
@@ -110,7 +111,7 @@ impl RepoTaskResult {
         Self::new(UndoLastCommitResult(result))
     }
 
-    fn create_worktree(result: Result<String, String>) -> Self {
+    fn create_worktree(result: Result<CreateOutcome, String>) -> Self {
         Self::new(CreateWorktreeResult(result))
     }
 

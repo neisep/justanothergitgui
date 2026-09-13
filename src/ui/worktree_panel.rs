@@ -11,6 +11,9 @@ use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
 use crate::shared::actions::UiAction;
+use crate::shared::worktree_metadata::{
+    ReviewState, TestState, WorktreeMetadata, WorktreeMetadataMap, storage_key,
+};
 use crate::shared::worktrees::{LinkedWorktree, LinkedWorktreeStatus};
 use crate::state::UiState;
 
@@ -30,10 +33,27 @@ const CURRENT_MARK: egui::Color32 = egui::Color32::from_rgb(120, 190, 255);
 const CLEAN_MARK: egui::Color32 = egui::Color32::from_rgb(120, 190, 130);
 const DIRTY_MARK: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
 const BROKEN_MARK: egui::Color32 = egui::Color32::from_rgb(220, 120, 120);
+const REVIEW_PENDING: egui::Color32 = egui::Color32::from_rgb(96, 84, 156);
+const REVIEW_CHANGES: egui::Color32 = egui::Color32::from_rgb(160, 92, 32);
+const REVIEW_APPROVED: egui::Color32 = egui::Color32::from_rgb(48, 112, 80);
+const TEST_PASSING: egui::Color32 = egui::Color32::from_rgb(48, 112, 80);
+const TEST_FAILING: egui::Color32 = egui::Color32::from_rgb(152, 64, 64);
+/// Width of the chip column. Two short pills, or nothing at all.
+const CHIP_COL_WIDTH: f32 = 74.0;
+/// Height of the detail strip under the table.
+const DETAIL_STRIP_HEIGHT: f32 = 20.0;
 
 pub struct WorktreePanelState<'a> {
     pub worktrees: &'a [LinkedWorktree],
+    /// What the user recorded about them, keyed by [`storage_key`].
+    pub metadata: &'a WorktreeMetadataMap,
     pub ui_state: &'a mut UiState,
+}
+
+impl WorktreePanelState<'_> {
+    fn metadata_for(&self, worktree: &LinkedWorktree) -> Option<&WorktreeMetadata> {
+        self.metadata.get(&storage_key(worktree))
+    }
 }
 
 /// What the section asks the app root to do. Git operations do not travel here —
@@ -61,6 +81,14 @@ pub fn show(ui: &mut egui::Ui, mut state: WorktreePanelState<'_>) -> WorktreePan
         .default_size(default_height)
         .min_size(SECTION_CHROME + row_stride)
         .show_inside(ui, |ui| {
+            // egui stores this panel's *content* rect each frame and uses it as
+            // next frame's size. Content even slightly taller than the panel
+            // therefore makes it grow again next frame, and again — a nested
+            // panel here grew the section by 2px per frame without ever
+            // settling. Claiming exactly the panel's height pins the stored size
+            // to the one the user set, as the file lists below do.
+            ui.set_min_height(ui.available_height());
+
             show_header(ui, state.worktrees.len(), state.ui_state);
 
             if state.worktrees.is_empty() {
@@ -71,7 +99,14 @@ pub fn show(ui: &mut egui::Ui, mut state: WorktreePanelState<'_>) -> WorktreePan
                 return;
             }
 
-            response.open = show_table(ui, &mut state, row_height);
+            // The table is bounded so it can never claim the strip's line; both
+            // are ordinary content, never nested panels.
+            let table_height =
+                (ui.available_height() - DETAIL_STRIP_HEIGHT - ui.spacing().item_spacing.y)
+                    .max(row_height);
+            response.open = show_table(ui, &mut state, row_height, table_height);
+
+            show_detail_strip(ui, &state);
         });
 
     response
@@ -82,8 +117,9 @@ pub fn show(ui: &mut egui::Ui, mut state: WorktreePanelState<'_>) -> WorktreePan
 /// `row_stride` is one row's full cost - its height plus the gap after it.
 fn preferred_height(count: usize, row_stride: f32, available_height: f32) -> f32 {
     let rows = count.clamp(1, PREFERRED_VISIBLE_ROWS) as f32;
-    let wanted = SECTION_CHROME + rows * row_stride;
-    let ceiling = (available_height * MAX_PANEL_FRACTION).max(SECTION_CHROME + row_stride);
+    let chrome = SECTION_CHROME + DETAIL_STRIP_HEIGHT;
+    let wanted = chrome + rows * row_stride;
+    let ceiling = (available_height * MAX_PANEL_FRACTION).max(chrome + row_stride);
     wanted.min(ceiling)
 }
 
@@ -108,10 +144,10 @@ fn show_table(
     ui: &mut egui::Ui,
     state: &mut WorktreePanelState<'_>,
     row_height: f32,
+    max_height: f32,
 ) -> Option<PathBuf> {
     let mut open = None;
     let worktrees = state.worktrees;
-    let max_height = ui.available_height();
 
     ui.push_id("worktree_rows", |ui| {
         // Both are required for clickable rows: labels are selectable by default
@@ -126,8 +162,9 @@ fn show_table(
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::remainder().at_least(80.0).clip(true))
-            .column(Column::remainder().at_least(70.0).clip(true))
-            .column(Column::remainder().at_least(70.0).clip(true))
+            .column(Column::remainder().at_least(60.0).clip(true))
+            .column(Column::remainder().at_least(60.0).clip(true))
+            .column(Column::exact(CHIP_COL_WIDTH))
             .min_scrolled_height(0.0)
             .max_scroll_height(max_height.max(row_height * 2.0))
             .body(|body| {
@@ -137,9 +174,11 @@ fn show_table(
                     row.set_selected(worktree.is_current);
                     row.set_hovered(hover.is_hovered(index));
 
+                    let metadata = state.metadata.get(&storage_key(worktree));
                     row.col(|ui| render_name(ui, worktree));
                     row.col(|ui| render_branch(ui, worktree));
                     row.col(|ui| render_status(ui, worktree));
+                    row.col(|ui| render_state_chips(ui, metadata));
 
                     let row_response = row.response();
                     hover.observe(index, &row_response);
@@ -150,7 +189,7 @@ fn show_table(
 
                     row_response
                         .clone()
-                        .on_hover_text(hover_text(worktree))
+                        .on_hover_text(hover_text(worktree, metadata))
                         .context_menu(|ui| {
                             if show_row_context_menu(ui, worktree, state.ui_state) {
                                 open = Some(worktree.path.clone());
@@ -246,13 +285,126 @@ fn mark_color(worktree: &LinkedWorktree) -> egui::Color32 {
     }
 }
 
+/// The two states as pills, shown only when they say something.
+fn render_state_chips(ui: &mut egui::Ui, metadata: Option<&WorktreeMetadata>) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        if metadata.review.is_noteworthy() {
+            super::render_pill(
+                ui,
+                review_chip_text(metadata.review),
+                review_color(metadata.review),
+            )
+            .on_hover_text(format!("Review: {}", metadata.review.label()));
+        }
+        if metadata.test.is_noteworthy() {
+            super::render_pill(ui, test_chip_text(metadata.test), test_color(metadata.test))
+                .on_hover_text(format!("Tests: {}", metadata.test.label()));
+        }
+    });
+}
+
+/// Chip wording is abbreviated; the full label is a hover away.
+fn review_chip_text(review: ReviewState) -> &'static str {
+    match review {
+        ReviewState::Unreviewed => "",
+        ReviewState::NeedsReview => "review",
+        ReviewState::ChangesRequested => "changes",
+        ReviewState::Approved => "ok",
+    }
+}
+
+fn review_color(review: ReviewState) -> egui::Color32 {
+    match review {
+        ReviewState::Unreviewed | ReviewState::NeedsReview => REVIEW_PENDING,
+        ReviewState::ChangesRequested => REVIEW_CHANGES,
+        ReviewState::Approved => REVIEW_APPROVED,
+    }
+}
+
+fn test_chip_text(test: TestState) -> &'static str {
+    match test {
+        TestState::Unknown => "",
+        TestState::Passing => "pass",
+        TestState::Failing => "fail",
+    }
+}
+
+fn test_color(test: TestState) -> egui::Color32 {
+    match test {
+        TestState::Unknown | TestState::Passing => TEST_PASSING,
+        TestState::Failing => TEST_FAILING,
+    }
+}
+
+/// The task of the checkout this tab has open, under the table.
+///
+/// The rows are three narrow columns in a 300px sidebar, with no room for prose;
+/// this is where the current worktree's task gets to be readable.
+fn show_detail_strip(ui: &mut egui::Ui, state: &WorktreePanelState<'_>) {
+    let current = state.worktrees.iter().find(|worktree| worktree.is_current);
+
+    ui.horizontal(|ui| {
+        let Some(current) = current else {
+            return;
+        };
+
+        match state.metadata_for(current) {
+            Some(metadata) if !metadata.task.trim().is_empty() => {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("task")
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    )
+                    .truncate(),
+                );
+                ui.add(egui::Label::new(egui::RichText::new(&metadata.task).small()).truncate())
+                    .on_hover_text(&metadata.task);
+            }
+            _ => {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("No task recorded for this worktree")
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    )
+                    .truncate(),
+                );
+            }
+        }
+    });
+}
+
 /// Everything the narrow row could not show.
-fn hover_text(worktree: &LinkedWorktree) -> String {
+fn hover_text(worktree: &LinkedWorktree, metadata: Option<&WorktreeMetadata>) -> String {
     let mut lines = vec![
         format!("branch: {}", worktree.branch_label()),
         worktree.path.display().to_string(),
         worktree.status.summary(),
     ];
+
+    if let Some(metadata) = metadata {
+        if !metadata.task.trim().is_empty() {
+            lines.push(format!("task: {}", metadata.task));
+        }
+        if !metadata.agent.trim().is_empty() {
+            lines.push(format!("agent: {}", metadata.agent));
+        }
+        if let Some(base) = metadata.short_base_commit() {
+            lines.push(format!("base: {base}"));
+        }
+        if metadata.review.is_noteworthy() {
+            lines.push(format!("review: {}", metadata.review.label()));
+        }
+        if metadata.test.is_noteworthy() {
+            lines.push(format!("tests: {}", metadata.test.label()));
+        }
+    }
 
     if worktree.is_main {
         lines.push("Main worktree".into());
@@ -287,6 +439,13 @@ fn show_row_context_menu(
         .clicked()
     {
         open = true;
+        ui.close();
+    }
+
+    if ui.button("Edit metadata…").clicked() {
+        ui_state
+            .actions
+            .push(UiAction::open_worktree_metadata_dialog(worktree.clone()));
         ui.close();
     }
 
@@ -373,7 +532,7 @@ mod tests {
         locked.is_locked = true;
         locked.lock_reason = Some("release build".into());
 
-        let text = hover_text(&locked);
+        let text = hover_text(&locked, None);
 
         assert!(text.contains("branch: feature/wt"));
         assert!(text.contains("/tmp/wt"));

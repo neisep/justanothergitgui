@@ -3,6 +3,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::shared::actions::{FileActionKind, PendingFileAction, UiAction};
 use crate::shared::git::{FileChangeKind, FileEntry};
+use crate::shared::worktree_metadata::WorktreeMetadataMap;
 use crate::shared::worktrees::LinkedWorktree;
 use crate::state::{DragFile, InspectorState, UiState, WorktreeState};
 
@@ -25,9 +26,11 @@ const CONFLICT_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 170, 80);
 
 pub struct FilePanelState<'a> {
     pub worktree: &'a WorktreeState,
-    /// The repository's checkouts, rendered by the Worktrees section at the
-    /// bottom of this panel.
+    /// The repository's checkouts, rendered by the Worktrees section at the top
+    /// of this panel.
     pub worktrees: &'a [LinkedWorktree],
+    /// What the user recorded about them.
+    pub worktree_metadata: &'a WorktreeMetadataMap,
     pub inspector: &'a mut InspectorState,
     pub ui_state: &'a mut UiState,
 }
@@ -59,6 +62,7 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) -> FilePanelRespon
                 ui,
                 WorktreePanelState {
                     worktrees: state.worktrees,
+                    metadata: state.worktree_metadata,
                     ui_state: state.ui_state,
                 },
             );

@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use crate::core::ports::GitLinkedWorktreePort;
-use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
+use crate::shared::worktrees::{CreatedWorktree, LinkedWorktree, NewWorktreeRequest};
 
 /// Phase 1 never destroys uncommitted work: a worktree holding changes has to be
 /// opened and dealt with explicitly. Agent runs may exist only as uncommitted
@@ -22,12 +22,22 @@ use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 /// change of this constant plus a confirmation step, not a change of shape.
 const ALLOW_DESTROYING_UNCOMMITTED_WORK: bool = false;
 
+/// A worktree that was created, plus the sentence the status bar shows.
+///
+/// The created worktree travels with the message so the app can record its base
+/// commit as metadata; the message alone would leave that unrecoverable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateOutcome {
+    pub created: CreatedWorktree,
+    pub message: String,
+}
+
 /// Create a worktree and report what was created.
 pub fn create(
     repo_path: &Path,
     request: &NewWorktreeRequest,
     git: &impl GitLinkedWorktreePort,
-) -> Result<String, String> {
+) -> Result<CreateOutcome, String> {
     let name = request.name.trim();
     let branch = request.branch.trim();
 
@@ -57,12 +67,14 @@ pub fn create(
         ));
     }
 
-    let path = git.add_worktree(repo_path, request)?;
+    let created = git.add_worktree(repo_path, request)?;
 
-    Ok(format!(
+    let message = format!(
         "Created worktree '{name}' on '{branch}' at {}",
-        path.display()
-    ))
+        created.path.display()
+    );
+
+    Ok(CreateOutcome { created, message })
 }
 
 /// Remove a linked worktree, refusing anything that would lose work.
@@ -162,11 +174,16 @@ mod tests {
             &self,
             _repo_path: &Path,
             request: &NewWorktreeRequest,
-        ) -> Result<PathBuf, String> {
+        ) -> Result<CreatedWorktree, String> {
             self.add_calls.borrow_mut().push(request.clone());
             match &self.add_error {
                 Some(error) => Err(error.clone()),
-                None => Ok(request.path.clone()),
+                None => Ok(CreatedWorktree {
+                    name: request.name.clone(),
+                    branch: request.branch.clone(),
+                    path: request.path.clone(),
+                    base_commit: "abc1234def".into(),
+                }),
             }
         }
 
@@ -196,13 +213,17 @@ mod tests {
     fn creating_reports_the_name_branch_and_path() {
         let git = FakeWorktreeGit::default();
 
-        let message = create(path(), &request("feature-auth", "feature/auth"), &git)
+        let outcome = create(path(), &request("feature-auth", "feature/auth"), &git)
             .expect("create worktree");
 
         assert_eq!(
-            message,
+            outcome.message,
             "Created worktree 'feature-auth' on 'feature/auth' at /virtual/worktrees/feature-auth"
         );
+        // The base commit has to survive out of the git layer, or the metadata
+        // that records it can never be filled in.
+        assert_eq!(outcome.created.base_commit, "abc1234def");
+        assert_eq!(outcome.created.name, "feature-auth");
         assert_eq!(git.add_calls.borrow().len(), 1);
     }
 

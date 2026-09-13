@@ -22,6 +22,7 @@ impl GitGuiApp {
             || state.dialogs.file_action.pending.is_some()
             || state.dialogs.worktree.show_new_worktree_dialog
             || state.dialogs.worktree.pending_remove.is_some()
+            || state.dialogs.worktree_metadata.editing.is_some()
     }
 
     pub(super) fn close_topmost_dialog(&mut self) -> bool {
@@ -54,6 +55,11 @@ impl GitGuiApp {
                     BusyAction::CreateWorktree | BusyAction::RemoveWorktree
                 )
             });
+
+            if state.dialogs.worktree_metadata.editing.is_some() {
+                helpers::reset_worktree_metadata_dialog_state(&mut state.dialogs.worktree_metadata);
+                return true;
+            }
 
             if state.dialogs.worktree.pending_remove.is_some() && !worktree_busy {
                 state.dialogs.worktree.pending_remove = None;
@@ -630,6 +636,36 @@ impl GitGuiApp {
 
         if !output.keep_open && busy.is_none() {
             state.dialogs.worktree.pending_remove = None;
+        }
+    }
+
+    pub(super) fn show_worktree_metadata_dialog(&mut self, ctx: &egui::Context) {
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
+        let state = &mut self.tabs[active_index].state;
+
+        let Some(name) = state.dialogs.worktree_metadata.editing.clone() else {
+            return;
+        };
+        let save_error = state.dialogs.worktree_metadata.save_error.clone();
+
+        let output = ui::dialogs::worktree_metadata::show(
+            ctx,
+            &name,
+            &mut state.dialogs.worktree_metadata,
+            save_error.as_deref(),
+        );
+
+        if output.save_requested {
+            state.ui.actions.push(UiAction::save_worktree_metadata());
+        }
+        if output.clear_requested {
+            state.ui.actions.push(UiAction::clear_worktree_metadata());
+        }
+
+        if !output.keep_open {
+            helpers::reset_worktree_metadata_dialog_state(&mut state.dialogs.worktree_metadata);
         }
     }
 

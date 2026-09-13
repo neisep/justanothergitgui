@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 
 use git2::{Repository, Status, StatusOptions, WorktreeAddOptions, WorktreeLockStatus};
 
-use crate::shared::worktrees::{LinkedWorktree, LinkedWorktreeStatus, NewWorktreeRequest};
+use crate::shared::worktrees::{
+    CreatedWorktree, LinkedWorktree, LinkedWorktreeStatus, NewWorktreeRequest,
+};
 
 /// Open the repository that owns the shared object store.
 ///
@@ -34,6 +36,25 @@ fn main_repository(repo: &Repository) -> Result<Repository, git2::Error> {
 /// has since disappeared still compares by value rather than failing.
 fn normalized(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// How a repository is identified across every tab that shows it.
+///
+/// Resolves to the shared object store, not the handle it was opened through:
+/// opening a linked worktree in its own tab gives a `Repository` whose workdir
+/// is that worktree, yet it lists the very same worktrees. Keying anything by
+/// the tab's own workdir would file one repository's data under two names.
+///
+/// Canonicalised on purpose, unlike the verbatim paths `session.json` stores:
+/// a session only has to reopen what was open, whereas this has to recognise
+/// the same repository reached through a symlink or a trailing slash.
+pub fn repository_key(repo: &Repository) -> Result<PathBuf, git2::Error> {
+    let main = main_repository(repo)?;
+    // A bare main repository has no workdir; its gitdir still identifies it.
+    Ok(match main.workdir() {
+        Some(workdir) => normalized(workdir),
+        None => normalized(main.path()),
+    })
 }
 
 /// Every checkout sharing this repository's object store: the main working tree
@@ -393,11 +414,12 @@ fn validate_destination(path: &Path) -> Result<Destination, String> {
 /// left to itself, libgit2 branches from HEAD and names the branch after the
 /// worktree.
 ///
-/// Returns the path of the new checkout.
+/// Reports what was created, including the commit the checkout starts from —
+/// resolved here because this is the only layer that still knows it.
 pub fn add_worktree(
     repo: &Repository,
     request: &NewWorktreeRequest,
-) -> Result<PathBuf, git2::Error> {
+) -> Result<CreatedWorktree, git2::Error> {
     let name = request.name.trim();
     let branch_name = request.branch.trim();
     if name.is_empty() {
@@ -434,19 +456,21 @@ pub fn add_worktree(
     // Create the branch only if it is missing, and remember that we did so: if
     // anything after this fails, the branch has to go back, the way
     // `core::tags::service` rolls a local tag back after a failed push.
-    let created_branch = match main.find_branch(branch_name, git2::BranchType::Local) {
-        Ok(_) => {
+    let (created_branch, base) = match main.find_branch(branch_name, git2::BranchType::Local) {
+        Ok(existing) => {
             if let Some(holder) = checked_out_in(&main, branch_name) {
                 return Err(git2::Error::from_str(&format!(
                     "Branch '{branch_name}' is already checked out in another worktree ('{holder}')."
                 )));
             }
-            false
+            // Reusing a branch: the checkout starts at that branch's tip.
+            (false, existing.into_reference().peel_to_commit()?.id())
         }
         Err(_) => {
             let base = base_commit(&main, request.base_branch.as_deref())?;
+            let base_id = base.id();
             main.branch(branch_name, &base, false)?;
-            true
+            (true, base_id)
         }
     };
 
@@ -459,7 +483,12 @@ pub fn add_worktree(
         let _ = branch.delete();
     }
 
-    result.map(|()| request.path.clone())
+    result.map(|()| CreatedWorktree {
+        name: name.to_string(),
+        branch: branch_name.to_string(),
+        path: request.path.clone(),
+        base_commit: base.to_string(),
+    })
 }
 
 /// Prepare the destination directory and hand it to `git_worktree_add`.
@@ -630,7 +659,9 @@ mod tests {
         )
         .expect("add worktree");
 
-        assert_eq!(created, destination);
+        assert_eq!(created.path, destination);
+        assert_eq!(created.name, "feature-auth");
+        assert_eq!(created.branch, "feature/auth");
         assert!(destination.join("README.md").is_file());
         assert!(
             repo.find_branch("feature/auth", git2::BranchType::Local)

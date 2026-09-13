@@ -1,4 +1,7 @@
+use super::ports::AppWorktreeMetadata;
 use super::{helpers, *};
+use crate::shared::worktree_metadata::{WorktreeMetadata, storage_key};
+use crate::shared::worktrees::{CreatedWorktree, LinkedWorktree};
 use crate::worker::{
     CloneRepoResult, CreateGithubRepoResult, CreatePullRequestResult, CreateTagResult,
     CreateWorktreeResult, DiscardAndResetResult, GithubAuthPromptResult, GithubAuthResult,
@@ -24,6 +27,34 @@ impl<'a> WelcomeWorkerContext<'a> {
 impl<'a> RepoWorkerContext<'a> {
     fn request_refresh(&mut self) {
         *self.refresh_requested = true;
+    }
+
+    /// Record the commit a freshly created worktree started from.
+    ///
+    /// Bookkeeping around an operation that already succeeded, so a failure is
+    /// logged rather than raised over the success — the rule session writes
+    /// follow. The metadata text itself is never logged.
+    fn record_base_commit(&mut self, created: &CreatedWorktree) {
+        let key = format!("wt:{}", created.name);
+        let metadata = WorktreeMetadata {
+            base_commit: created.base_commit.clone(),
+            ..WorktreeMetadata::default()
+        };
+        self.write_metadata(&key, Some(metadata), "Record worktree base commit");
+    }
+
+    /// Drop a removed worktree's metadata, so a later worktree reusing the name
+    /// does not inherit it.
+    fn forget_metadata(&mut self, worktree: &LinkedWorktree) {
+        let key = storage_key(worktree);
+        self.write_metadata(&key, None, "Forget worktree metadata");
+    }
+
+    fn write_metadata(&mut self, key: &str, entry: Option<WorktreeMetadata>, context: &str) {
+        match AppWorktreeMetadata::update(&self.tab.repo, key, entry) {
+            Ok(entries) => self.tab.state.repo.worktree_metadata = entries,
+            Err(detail) => self.tab.logger.log_error(context, &detail),
+        }
     }
 
     fn log_error(&mut self, context: &str, detail: &str) {
@@ -311,8 +342,11 @@ impl HandleRepoTaskResult for CreateWorktreeResult {
         ctx.tab.state.ui.busy = None;
 
         match self.0 {
-            Ok(msg) => {
-                ctx.tab.state.ui.status = StatusMessage::success(msg);
+            Ok(outcome) => {
+                ctx.tab.state.ui.status = StatusMessage::success(outcome.message);
+                // The commit the checkout started from is only knowable here;
+                // record it so the worktree's metadata can show where it began.
+                ctx.record_base_commit(&outcome.created);
                 // Only clear the form once the worktree really exists, so a
                 // rejected request comes back with everything still typed in.
                 helpers::reset_worktree_dialog_state(&mut ctx.tab.state.dialogs.worktree);
@@ -330,6 +364,7 @@ impl HandleRepoTaskResult for CreateWorktreeResult {
 impl HandleRepoTaskResult for RemoveWorktreeResult {
     fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
         ctx.tab.state.ui.busy = None;
+        let removed = self.0.is_ok();
 
         match self.0 {
             Ok(msg) => {
@@ -340,6 +375,13 @@ impl HandleRepoTaskResult for RemoveWorktreeResult {
                     helpers::status_message_for_error("Remove worktree", &msg);
                 ctx.log_error("Remove worktree", &msg);
             }
+        }
+
+        // Read the name before clearing the confirmation: the result carries
+        // only a sentence, and the worktree awaiting confirmation is the only
+        // record of which one this was.
+        if removed && let Some(worktree) = ctx.tab.state.dialogs.worktree.pending_remove.clone() {
+            ctx.forget_metadata(&worktree);
         }
 
         // The confirmation is closed either way: it was answered, and the

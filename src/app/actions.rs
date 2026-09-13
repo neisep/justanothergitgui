@@ -1,5 +1,7 @@
+use super::ports::AppWorktreeMetadata;
 use super::{helpers, *};
 use crate::shared::actions::{FileActionKind, PendingFileAction};
+use crate::shared::worktree_metadata::{WorktreeMetadata, storage_key};
 use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 use crate::state::{CenterView, InspectorState, SelectedFile};
 
@@ -45,6 +47,11 @@ impl UiAction {
             Self::CreateWorktree(request) => create_worktree(ctx, request),
             Self::OpenRemoveWorktreeDialog(worktree) => open_remove_worktree_dialog(ctx, *worktree),
             Self::ConfirmRemoveWorktree => confirm_remove_worktree(ctx),
+            Self::OpenWorktreeMetadataDialog(worktree) => {
+                open_worktree_metadata_dialog(ctx, *worktree)
+            }
+            Self::SaveWorktreeMetadata => save_worktree_metadata(ctx),
+            Self::ClearWorktreeMetadata => clear_worktree_metadata(ctx),
         }
     }
 }
@@ -596,6 +603,76 @@ fn confirm_remove_worktree(ctx: &mut TabActionContext<'_>) {
     } else {
         ctx.tab.state.dialogs.worktree.pending_remove = None;
         log_worker_dispatch_error(ctx, "Remove worktree");
+    }
+}
+
+fn open_worktree_metadata_dialog(ctx: &mut TabActionContext<'_>, worktree: LinkedWorktree) {
+    let key = storage_key(&worktree);
+    let existing = ctx
+        .tab
+        .state
+        .repo
+        .worktree_metadata
+        .get(&key)
+        .cloned()
+        .unwrap_or_default();
+
+    ctx.tab
+        .state
+        .dialogs
+        .worktree_metadata
+        .open(&worktree.name, &existing);
+    ctx.tab.state.dialogs.worktree_metadata.key = key;
+}
+
+/// Write the edited metadata. The in-memory copy is only updated once the file
+/// write succeeded, the way the settings dialog treats a failed save.
+fn save_worktree_metadata(ctx: &mut TabActionContext<'_>) {
+    let (key, metadata) = {
+        let dialog = &ctx.tab.state.dialogs.worktree_metadata;
+        if dialog.editing.is_none() {
+            return;
+        }
+        (dialog.key.clone(), dialog.metadata())
+    };
+
+    write_worktree_metadata(ctx, &key, Some(metadata));
+}
+
+fn clear_worktree_metadata(ctx: &mut TabActionContext<'_>) {
+    let key = {
+        let dialog = &ctx.tab.state.dialogs.worktree_metadata;
+        if dialog.editing.is_none() {
+            return;
+        }
+        dialog.key.clone()
+    };
+
+    write_worktree_metadata(ctx, &key, None);
+}
+
+fn write_worktree_metadata(
+    ctx: &mut TabActionContext<'_>,
+    key: &str,
+    entry: Option<WorktreeMetadata>,
+) {
+    match AppWorktreeMetadata::update(&ctx.tab.repo, key, entry) {
+        Ok(entries) => {
+            ctx.tab.state.repo.worktree_metadata = entries;
+            ctx.tab.state.ui.status = StatusMessage::success("Worktree metadata saved");
+            helpers::reset_worktree_metadata_dialog_state(
+                &mut ctx.tab.state.dialogs.worktree_metadata,
+            );
+        }
+        Err(detail) => {
+            // The form stays open with everything still typed in.
+            ctx.tab.state.dialogs.worktree_metadata.save_error = Some(
+                helpers::status_message_for_error("Worktree metadata", &detail)
+                    .text()
+                    .to_string(),
+            );
+            log_action_error(ctx, "Worktree metadata", detail);
+        }
     }
 }
 
