@@ -8,3 +8,4 @@ pub mod log_viewer;
 pub mod publish_repo;
 pub mod settings;
 pub mod tag;
+pub mod worktree;

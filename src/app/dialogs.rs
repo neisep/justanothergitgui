@@ -20,6 +20,8 @@ impl GitGuiApp {
             || state.dialogs.cleanup.show_cleanup_branches_dialog
             || state.dialogs.discard.show_discard_dialog
             || state.dialogs.file_action.pending.is_some()
+            || state.dialogs.worktree.show_new_worktree_dialog
+            || state.dialogs.worktree.pending_remove.is_some()
     }
 
     pub(super) fn close_topmost_dialog(&mut self) -> bool {
@@ -45,6 +47,23 @@ impl GitGuiApp {
                 .busy
                 .as_ref()
                 .is_some_and(|busy| busy.action == BusyAction::DiscardAndReset);
+
+            let worktree_busy = state.ui.busy.as_ref().is_some_and(|busy| {
+                matches!(
+                    busy.action,
+                    BusyAction::CreateWorktree | BusyAction::RemoveWorktree
+                )
+            });
+
+            if state.dialogs.worktree.pending_remove.is_some() && !worktree_busy {
+                state.dialogs.worktree.pending_remove = None;
+                return true;
+            }
+
+            if state.dialogs.worktree.show_new_worktree_dialog && !worktree_busy {
+                helpers::reset_worktree_dialog_state(&mut state.dialogs.worktree);
+                return true;
+            }
 
             if state.dialogs.file_action.pending.is_some() {
                 state.dialogs.file_action.pending = None;
@@ -490,6 +509,127 @@ impl GitGuiApp {
         if !state.dialogs.discard.show_discard_dialog {
             state.dialogs.discard.discard_preview = None;
             state.dialogs.discard.discard_clean_untracked = false;
+        }
+    }
+
+    pub(super) fn show_new_worktree_dialog(&mut self, ctx: &egui::Context) {
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
+        if !self.tabs[active_index]
+            .state
+            .dialogs
+            .worktree
+            .show_new_worktree_dialog
+        {
+            return;
+        }
+
+        // Validated against the repository every frame, like the branch dialog:
+        // the user finds out about a taken name or an occupied folder while
+        // typing, not after committing to it.
+        let request = self.tabs[active_index].state.dialogs.worktree.request();
+        let validation_error =
+            AppRepoRead::validate_new_worktree(&self.tabs[active_index].repo, &request);
+        let reuses_existing_branch = validation_error.is_none()
+            && !request.branch.is_empty()
+            && self.tabs[active_index]
+                .state
+                .repo
+                .branches
+                .iter()
+                .any(|branch| branch == &request.branch);
+
+        let state = &mut self.tabs[active_index].state;
+        let busy = state
+            .ui
+            .busy
+            .as_ref()
+            .filter(|busy| busy.action == BusyAction::CreateWorktree)
+            .map(|busy| busy.label.clone());
+        let branches = state.repo.branches.clone();
+
+        let output = ui::dialogs::worktree::show_new_dialog(
+            ctx,
+            &mut state.dialogs.worktree,
+            ui::dialogs::worktree::NewWorktreeDialogView {
+                branches: &branches,
+                validation_error,
+                reuses_existing_branch,
+                busy: busy.is_some(),
+                busy_label: busy.as_deref(),
+            },
+        );
+
+        if output.browse_requested
+            && let Some(folder) = rfd::FileDialog::new().pick_folder()
+        {
+            // A picked folder is the *parent*: the worktree still gets its own
+            // directory inside it, named by the name field. Keep following the
+            // name afterwards, so renaming still moves the destination with it.
+            let name = state.dialogs.worktree.name.trim().to_string();
+            state.dialogs.worktree.path_parent = folder.display().to_string();
+            state.dialogs.worktree.path = if name.is_empty() {
+                folder.display().to_string()
+            } else {
+                folder.join(&name).display().to_string()
+            };
+            state.dialogs.worktree.path_follows_name = true;
+        }
+
+        if output.create_requested {
+            let request = state.dialogs.worktree.request();
+            state.ui.actions.push(UiAction::create_worktree(request));
+        }
+
+        // Held open while the worker runs, so its spinner and any error land
+        // back on the form the user filled in.
+        let keep_open = if busy.is_some() {
+            true
+        } else {
+            output.keep_open
+        };
+        if !keep_open {
+            helpers::reset_worktree_dialog_state(&mut state.dialogs.worktree);
+        } else {
+            state.dialogs.worktree.show_new_worktree_dialog = true;
+        }
+    }
+
+    pub(super) fn show_remove_worktree_dialog(&mut self, ctx: &egui::Context) {
+        let Some(active_index) = self.normalize_active_tab() else {
+            return;
+        };
+        let state = &mut self.tabs[active_index].state;
+
+        let Some(worktree) = state.dialogs.worktree.pending_remove.clone() else {
+            return;
+        };
+
+        // The same rule the service enforces, asked here so the button can say
+        // no before the user presses it.
+        let blocker = crate::core::worktrees::service::removal_blocker(&worktree);
+        let busy = state
+            .ui
+            .busy
+            .as_ref()
+            .filter(|busy| busy.action == BusyAction::RemoveWorktree)
+            .map(|busy| busy.label.clone());
+
+        let output = ui::dialogs::worktree::show_remove_dialog(
+            ctx,
+            &worktree,
+            blocker.as_deref(),
+            busy.is_some(),
+            busy.as_deref(),
+        );
+
+        if output.confirm_requested {
+            state.ui.actions.push(UiAction::confirm_remove_worktree());
+        }
+
+        if !output.keep_open && busy.is_none() {
+            state.dialogs.worktree.pending_remove = None;
         }
     }
 

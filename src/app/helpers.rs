@@ -4,7 +4,7 @@ use crate::shared::diff::{DiffLineKind, parse_diff_rows, to_side_by_side};
 use crate::state::{
     BranchDialogState, CenterView, CleanupBranchesDialogState, CommitState, DialogState,
     DiscardDialogState, FileActionDialogState, InspectorState, RepoState, SelectedCommit,
-    SelectedFile, TagDialogState, UiState, WorktreeState,
+    SelectedFile, TagDialogState, UiState, WorktreeDialogState, WorktreeState,
 };
 
 pub(super) fn refresh_status(
@@ -72,6 +72,13 @@ pub(super) fn refresh_status(
             repo_state.commit_history = Vec::new();
         }
     }
+    match AppRepoRead::linked_worktrees(repo) {
+        Ok(worktrees) => repo_state.linked_worktrees = worktrees,
+        Err(error) => {
+            errors.push(format!("worktrees: {error}"));
+            repo_state.linked_worktrees = Vec::new();
+        }
+    }
     sync_pull_request_prompt(repo_state);
     sync_selected_file(worktree_state, inspector_state, repo);
     sync_selected_commit(repo_state, inspector_state);
@@ -93,6 +100,7 @@ pub(super) fn reset_repo_state(repo_state: &mut RepoState) {
     repo_state.branches.clear();
     repo_state.commit_history.clear();
     repo_state.pull_request_prompt = None;
+    repo_state.linked_worktrees.clear();
 }
 
 pub(super) fn reset_worktree_state(worktree_state: &mut WorktreeState) {
@@ -124,6 +132,7 @@ pub(super) fn reset_dialog_state(dialog_state: &mut DialogState) {
     reset_cleanup_dialog_state(&mut dialog_state.cleanup);
     reset_discard_dialog_state(&mut dialog_state.discard);
     reset_file_action_dialog_state(&mut dialog_state.file_action);
+    reset_worktree_dialog_state(&mut dialog_state.worktree);
 }
 
 pub(super) fn reset_ui_state(ui_state: &mut UiState) {
@@ -159,6 +168,19 @@ fn reset_discard_dialog_state(dialog_state: &mut DiscardDialogState) {
 
 fn reset_file_action_dialog_state(dialog_state: &mut FileActionDialogState) {
     dialog_state.pending = None;
+}
+
+pub(super) fn reset_worktree_dialog_state(dialog_state: &mut WorktreeDialogState) {
+    dialog_state.show_new_worktree_dialog = false;
+    dialog_state.name.clear();
+    dialog_state.branch.clear();
+    dialog_state.base_branch = None;
+    dialog_state.path.clear();
+    dialog_state.path_parent.clear();
+    dialog_state.focus_name_requested = false;
+    dialog_state.branch_follows_name = true;
+    dialog_state.path_follows_name = true;
+    dialog_state.pending_remove = None;
 }
 
 pub(super) fn load_selected_file(

@@ -3,3 +3,4 @@ pub mod conflicts;
 pub mod diff;
 pub mod git;
 pub mod github;
+pub mod worktrees;

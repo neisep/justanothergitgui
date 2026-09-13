@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::shared::github::{GithubAuthSession, GithubRepoVisibility, PullRequestPrompt};
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
 pub enum GitRemoteAuth<'a> {
     GitHub(&'a GithubAuthSession),
@@ -63,6 +64,22 @@ pub trait GitWorktreeCommitPort {
 pub trait GitUndoCommitPort {
     fn outgoing_commit_count(&self, repo_path: &Path) -> Result<usize, String>;
     fn undo_last_commit(&self, repo_path: &Path) -> Result<String, String>;
+}
+
+/// Git's *linked* worktrees — the `git worktree` set — as opposed to
+/// [`GitWorktreeCommitPort`], which is about the index and working tree of a
+/// single checkout.
+pub trait GitLinkedWorktreePort {
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<LinkedWorktree>, String>;
+    fn add_worktree(
+        &self,
+        repo_path: &Path,
+        request: &NewWorktreeRequest,
+    ) -> Result<PathBuf, String>;
+    /// `force` decides only whether uncommitted changes may be destroyed. The
+    /// worktree service never passes `true`; the parameter is the seam an
+    /// explicit discard-and-remove flow would use.
+    fn remove_worktree(&self, repo_path: &Path, name: &str, force: bool) -> Result<(), String>;
 }
 
 #[allow(dead_code)]

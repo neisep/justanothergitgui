@@ -1,17 +1,19 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
 use crate::core::ports::{
-    GitBranchReadPort, GitHubRemoteInfoPort, GitHubRepoCreationPort, GitRemoteAuth,
-    GitRemoteInfoPort, GitRemoteSyncPort, GitRepoBootstrapPort, GitTagPort, GitUndoCommitPort,
-    GitWorktreeCommitPort,
+    GitBranchReadPort, GitHubRemoteInfoPort, GitHubRepoCreationPort, GitLinkedWorktreePort,
+    GitRemoteAuth, GitRemoteInfoPort, GitRemoteSyncPort, GitRepoBootstrapPort, GitTagPort,
+    GitUndoCommitPort, GitWorktreeCommitPort,
 };
 use crate::infra::git::{
-    remotes as git_remotes, repository as git_repository, worktree as git_worktree,
+    linked_worktrees as git_linked_worktrees, remotes as git_remotes, repository as git_repository,
+    worktree as git_worktree,
 };
 use crate::infra::github::{pulls as github_pulls, repos as github_repos};
 use crate::shared::github::{GithubAuthSession, GithubRepoVisibility, PullRequestPrompt};
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InfraGitPort;
@@ -161,6 +163,33 @@ impl GitUndoCommitPort for InfraGitPort {
     }
 }
 
+impl GitLinkedWorktreePort for InfraGitPort {
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<LinkedWorktree>, String> {
+        let repo = open_repository(repo_path)?;
+        git_linked_worktrees::list_worktrees(&repo)
+            .map_err(|error| format!("List worktrees error: {}", error))
+    }
+
+    fn add_worktree(
+        &self,
+        repo_path: &Path,
+        request: &NewWorktreeRequest,
+    ) -> Result<PathBuf, String> {
+        let repo = open_repository(repo_path)?;
+        // The worktree adapter already produces finished user-facing sentences
+        // ("Destination '...' already exists and is not empty."), so they are
+        // passed through instead of being prefixed into "… error: …" twice.
+        git_linked_worktrees::add_worktree(&repo, request)
+            .map_err(|error| error.message().to_string())
+    }
+
+    fn remove_worktree(&self, repo_path: &Path, name: &str, force: bool) -> Result<(), String> {
+        let repo = open_repository(repo_path)?;
+        git_linked_worktrees::remove_worktree(&repo, name, force)
+            .map_err(|error| error.message().to_string())
+    }
+}
+
 impl GitHubRemoteInfoPort for InfraGitHubPort {
     fn is_github_https_origin(&self, repo_path: &Path) -> bool {
         let Ok(repo) = git_repository::open_repo(repo_path) else {
@@ -188,6 +217,12 @@ impl GitHubRepoCreationPort for InfraGitHubPort {
     ) -> Result<String, String> {
         github_repos::create_repository(auth, repo_name, visibility)
     }
+}
+
+/// Open a repository for a port call, keeping the one "Open repo error" wording
+/// the other adapters use.
+fn open_repository(repo_path: &Path) -> Result<Repository, String> {
+    Repository::open(repo_path).map_err(|error| format!("Open repo error: {}", error))
 }
 
 fn map_remote_auth(auth: GitRemoteAuth<'_>) -> git_remotes::RemoteAuth<'_> {

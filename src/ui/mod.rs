@@ -7,6 +7,7 @@ pub mod diff_view;
 pub mod file_panel;
 pub mod history_panel;
 pub mod tab_bar;
+pub mod worktree_panel;
 
 #[cfg(test)]
 mod ux_tests;

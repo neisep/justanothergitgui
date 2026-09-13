@@ -2,6 +2,7 @@
 use eframe::egui::{self, Event, Pos2, Rect, Shape};
 
 use crate::commit_rules::CommitMessageRuleSet;
+use crate::shared::worktrees::{LinkedWorktree, LinkedWorktreeStatus};
 use crate::shared::{
     actions::{FileActionKind, PendingFileAction, UiAction},
     git::{FileChangeKind, FileEntry},
@@ -160,10 +161,309 @@ fn draw_files(ui: &mut egui::Ui, state: &mut AppState) {
         ui,
         super::file_panel::FilePanelState {
             worktree: &state.worktree,
+            worktrees: &state.repo.linked_worktrees,
             inspector: &mut state.inspector,
             ui_state: &mut state.ui,
         },
     );
+}
+
+fn linked_worktree(name: &str, is_main: bool, status: LinkedWorktreeStatus) -> LinkedWorktree {
+    LinkedWorktree {
+        name: name.into(),
+        path: std::path::PathBuf::from("/tmp/worktrees").join(name),
+        branch: Some(format!("feature/{name}")),
+        head_short_oid: "abc1234".into(),
+        is_main,
+        is_current: is_main,
+        is_locked: false,
+        lock_reason: None,
+        status,
+    }
+}
+
+fn state_with_worktrees() -> AppState {
+    let mut state = AppState::default();
+    state
+        .repo
+        .linked_worktrees
+        .push(linked_worktree("myapp", true, LinkedWorktreeStatus::Clean));
+    state.repo.linked_worktrees.push(linked_worktree(
+        "feature-auth",
+        false,
+        LinkedWorktreeStatus::Dirty {
+            modified: 4,
+            staged: 0,
+            untracked: 0,
+        },
+    ));
+    state
+}
+
+#[test]
+fn the_sidebar_lists_every_worktree_with_its_status() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+
+    label(&painted, "Worktrees (2)");
+    label(&painted, "myapp");
+    label(&painted, "feature-auth");
+    label(&painted, "Clean");
+    label(&painted, "4 modified files");
+    // The branch belongs in the list, not only in the tooltip.
+    label(&painted, "feature/myapp");
+    label(&painted, "feature/feature-auth");
+    // The file sections keep their own headers: the strip must not push either
+    // of them out of the panel.
+    assert!(has_label(&painted, "Unstaged (0)"));
+    assert!(has_label(&painted, "Staged (0)"));
+
+    // The section sits at the top of the sidebar, above the filter row and both
+    // file lists.
+    let worktrees_header = label(&painted, "Worktrees (2)").rect.top();
+    assert!(
+        worktrees_header < label(&painted, "Filter files...").rect.top(),
+        "the Worktrees header must sit above the file filter"
+    );
+    assert!(
+        worktrees_header < label(&painted, "Unstaged (0)").rect.top(),
+        "the Worktrees header must sit above the Unstaged list"
+    );
+}
+
+#[test]
+fn the_new_worktree_button_only_opens_the_dialog() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let button = label(&painted, "New…");
+
+    harness.click(button.rect.center(), &mut |ui| draw_files(ui, &mut state));
+
+    assert!(
+        matches!(
+            state.ui.actions.as_slice(),
+            [UiAction::OpenNewWorktreeDialog]
+        ),
+        "expected exactly one dialog-opening action: {:?}",
+        state.ui.actions
+    );
+}
+
+#[test]
+fn right_click_on_a_worktree_only_opens_the_removal_confirmation() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let row = label(&painted, "feature-auth");
+
+    let painted = harness.right_click(row.rect.center(), &mut |ui| draw_files(ui, &mut state));
+    let item = label(&painted, "Remove worktree…");
+
+    harness.click(item.rect.center(), &mut |ui| draw_files(ui, &mut state));
+
+    assert!(
+        matches!(
+            state.ui.actions.as_slice(),
+            [UiAction::OpenRemoveWorktreeDialog(worktree)] if worktree.name == "feature-auth"
+        ),
+        "the menu item must only ask for confirmation: {:?}",
+        state.ui.actions
+    );
+}
+
+#[test]
+fn the_main_worktree_is_never_offered_for_removal() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let row = label(&painted, "myapp");
+
+    let painted = harness.right_click(row.rect.center(), &mut |ui| draw_files(ui, &mut state));
+
+    assert!(
+        !has_label(&painted, "Remove worktree…"),
+        "the main worktree has no removal item at all"
+    );
+    assert!(state.ui.actions.is_empty());
+}
+
+#[test]
+fn the_removal_confirmation_refuses_a_worktree_holding_uncommitted_work() {
+    let dirty = linked_worktree(
+        "feature-auth",
+        false,
+        LinkedWorktreeStatus::Dirty {
+            modified: 4,
+            staged: 0,
+            untracked: 2,
+        },
+    );
+    let blocker = crate::core::worktrees::service::removal_blocker(&dirty);
+    assert!(blocker.is_some(), "a dirty worktree must have a blocker");
+
+    let mut confirmed = false;
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| {
+        let ctx = ui.ctx().clone();
+        let output = super::dialogs::worktree::show_remove_dialog(
+            &ctx,
+            &dirty,
+            blocker.as_deref(),
+            false,
+            None,
+        );
+        confirmed |= output.confirm_requested;
+    });
+
+    label(&painted, "This cannot be undone.");
+    label(&painted, "This worktree has uncommitted work:");
+    label(&painted, "• 4 modified files");
+    label(&painted, "• 2 untracked files");
+    label(
+        &painted,
+        "Open the worktree in a tab to commit or discard the changes.",
+    );
+    // Phase 1 has no force path at all: there is no checkbox offering one.
+    assert!(!has_label(&painted, "Also discard uncommitted changes"));
+
+    let button = label(&painted, "Remove worktree");
+    harness.click(button.rect.center(), &mut |ui| {
+        let ctx = ui.ctx().clone();
+        let output = super::dialogs::worktree::show_remove_dialog(
+            &ctx,
+            &dirty,
+            blocker.as_deref(),
+            false,
+            None,
+        );
+        confirmed |= output.confirm_requested;
+    });
+
+    assert!(
+        !confirmed,
+        "the confirm button must stay disabled while work would be lost"
+    );
+}
+
+#[test]
+fn the_removal_confirmation_allows_a_clean_worktree() {
+    let clean = linked_worktree("cache-refactor", false, LinkedWorktreeStatus::Clean);
+    assert!(crate::core::worktrees::service::removal_blocker(&clean).is_none());
+
+    let mut confirmed = false;
+    let mut draw = |ui: &mut egui::Ui| {
+        let ctx = ui.ctx().clone();
+        let output = super::dialogs::worktree::show_remove_dialog(&ctx, &clean, None, false, None);
+        confirmed |= output.confirm_requested;
+    };
+
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut draw);
+    // Removing a worktree must not read as removing the branch too.
+    label(
+        &painted,
+        "Branch 'feature/cache-refactor' is kept — only the checkout is removed.",
+    );
+    let button = label(&painted, "Remove worktree");
+
+    harness.click(button.rect.center(), &mut draw);
+
+    assert!(confirmed, "a clean worktree can be confirmed for removal");
+}
+
+#[test]
+fn the_new_worktree_form_blocks_creation_while_the_input_is_invalid() {
+    let mut state = crate::state::WorktreeDialogState {
+        show_new_worktree_dialog: true,
+        name: "feature-auth".into(),
+        branch: "feature/auth".into(),
+        path: "/tmp/worktrees/feature-auth".into(),
+        ..Default::default()
+    };
+    let branches = vec!["main".to_string()];
+    let mut created = false;
+
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| {
+        let ctx = ui.ctx().clone();
+        let output = super::dialogs::worktree::show_new_dialog(
+            &ctx,
+            &mut state,
+            super::dialogs::worktree::NewWorktreeDialogView {
+                branches: &branches,
+                validation_error: Some("A worktree named 'feature-auth' already exists.".into()),
+                reuses_existing_branch: false,
+                busy: false,
+                busy_label: None,
+            },
+        );
+        created |= output.create_requested;
+    });
+
+    label(&painted, "A worktree named 'feature-auth' already exists.");
+    let button = label(&painted, "Create worktree");
+
+    harness.click(button.rect.center(), &mut |ui| {
+        let ctx = ui.ctx().clone();
+        let output = super::dialogs::worktree::show_new_dialog(
+            &ctx,
+            &mut state,
+            super::dialogs::worktree::NewWorktreeDialogView {
+                branches: &branches,
+                validation_error: Some("A worktree named 'feature-auth' already exists.".into()),
+                reuses_existing_branch: false,
+                busy: false,
+                busy_label: None,
+            },
+        );
+        created |= output.create_requested;
+    });
+
+    assert!(!created, "an invalid request must not reach the worker");
+}
+
+#[test]
+fn the_new_worktree_form_explains_when_it_will_reuse_a_branch() {
+    let mut state = crate::state::WorktreeDialogState {
+        show_new_worktree_dialog: true,
+        name: "auth".into(),
+        branch: "feature/auth".into(),
+        path: "/tmp/worktrees/auth".into(),
+        ..Default::default()
+    };
+    let branches = vec!["main".to_string(), "feature/auth".to_string()];
+    let mut created = false;
+
+    let mut draw = |ui: &mut egui::Ui| {
+        let ctx = ui.ctx().clone();
+        let output = super::dialogs::worktree::show_new_dialog(
+            &ctx,
+            &mut state,
+            super::dialogs::worktree::NewWorktreeDialogView {
+                branches: &branches,
+                validation_error: None,
+                reuses_existing_branch: true,
+                busy: false,
+                busy_label: None,
+            },
+        );
+        created |= output.create_requested;
+    };
+
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut draw);
+    label(
+        &painted,
+        "ⓘ Branch 'feature/auth' exists — it will be checked out instead of created.",
+    );
+    let button = label(&painted, "Create worktree");
+
+    harness.click(button.rect.center(), &mut draw);
+
+    assert!(created, "a valid request reaches the worker");
 }
 
 #[test]

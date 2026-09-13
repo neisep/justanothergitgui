@@ -1,9 +1,9 @@
 use super::{helpers, *};
 use crate::worker::{
     CloneRepoResult, CreateGithubRepoResult, CreatePullRequestResult, CreateTagResult,
-    DiscardAndResetResult, GithubAuthPromptResult, GithubAuthResult, HandleRepoTaskResult,
-    HandleWelcomeTaskResult, ListGithubReposResult, OpenPullRequestResult, PullResult, PushResult,
-    UndoLastCommitResult,
+    CreateWorktreeResult, DiscardAndResetResult, GithubAuthPromptResult, GithubAuthResult,
+    HandleRepoTaskResult, HandleWelcomeTaskResult, ListGithubReposResult, OpenPullRequestResult,
+    PullResult, PushResult, RemoveWorktreeResult, UndoLastCommitResult,
 };
 
 pub(crate) struct WelcomeWorkerContext<'a> {
@@ -302,6 +302,49 @@ impl HandleRepoTaskResult for UndoLastCommitResult {
             }
         }
 
+        ctx.request_refresh();
+    }
+}
+
+impl HandleRepoTaskResult for CreateWorktreeResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+        ctx.tab.state.ui.busy = None;
+
+        match self.0 {
+            Ok(msg) => {
+                ctx.tab.state.ui.status = StatusMessage::success(msg);
+                // Only clear the form once the worktree really exists, so a
+                // rejected request comes back with everything still typed in.
+                helpers::reset_worktree_dialog_state(&mut ctx.tab.state.dialogs.worktree);
+            }
+            Err(msg) => {
+                ctx.tab.state.ui.status = helpers::status_message_for_error("New worktree", &msg);
+                ctx.log_error("New worktree", &msg);
+            }
+        }
+
+        ctx.request_refresh();
+    }
+}
+
+impl HandleRepoTaskResult for RemoveWorktreeResult {
+    fn apply(self: Box<Self>, ctx: &mut RepoWorkerContext<'_>) {
+        ctx.tab.state.ui.busy = None;
+
+        match self.0 {
+            Ok(msg) => {
+                ctx.tab.state.ui.status = StatusMessage::success(msg);
+            }
+            Err(msg) => {
+                ctx.tab.state.ui.status =
+                    helpers::status_message_for_error("Remove worktree", &msg);
+                ctx.log_error("Remove worktree", &msg);
+            }
+        }
+
+        // The confirmation is closed either way: it was answered, and the
+        // refreshed list is what says whether the worktree survived.
+        ctx.tab.state.dialogs.worktree.pending_remove = None;
         ctx.request_refresh();
     }
 }

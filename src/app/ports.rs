@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
-use crate::core::{publish, sync, tags};
+use crate::core::{publish, sync, tags, worktrees};
 use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
 use crate::infra::git::error::ConflictError;
-use crate::infra::git::{clone, commits, repository, worktree};
+use crate::infra::git::{clone, commits, linked_worktrees, repository, worktree};
 use crate::infra::github::{auth, pulls, repos};
 use crate::infra::system::browser;
 use crate::shared::conflicts::ConflictData;
@@ -16,6 +16,7 @@ use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthCheck, GithubAuthPrompt,
     GithubAuthSession, GithubRepoSummary, PushSuccess,
 };
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
 pub(super) struct AppRepoRead;
 
@@ -105,6 +106,21 @@ impl AppRepoRead {
 
     pub(super) fn suggest_next_tag(repo: &Repository) -> String {
         repository::suggest_next_tag(repo)
+    }
+
+    pub(super) fn linked_worktrees(repo: &Repository) -> Result<Vec<LinkedWorktree>, git2::Error> {
+        linked_worktrees::list_worktrees(repo)
+    }
+
+    pub(super) fn validate_new_worktree(
+        repo: &Repository,
+        request: &NewWorktreeRequest,
+    ) -> Option<String> {
+        linked_worktrees::validate_new_worktree(repo, request)
+    }
+
+    pub(super) fn default_worktree_parent(repo: &Repository) -> PathBuf {
+        linked_worktrees::default_worktree_parent(repo)
     }
 }
 
@@ -275,6 +291,19 @@ impl AppRepoWorkerOps {
     pub(crate) fn undo_last_commit(repo_path: &Path) -> Result<String, String> {
         let git = InfraGitPort;
         sync::service::undo_last_commit(repo_path, &git)
+    }
+
+    pub(crate) fn create_worktree(
+        repo_path: &Path,
+        request: &NewWorktreeRequest,
+    ) -> Result<String, String> {
+        let git = InfraGitPort;
+        worktrees::service::create(repo_path, request, &git)
+    }
+
+    pub(crate) fn remove_worktree(repo_path: &Path, name: &str) -> Result<String, String> {
+        let git = InfraGitPort;
+        worktrees::service::remove(repo_path, name, &git)
     }
 }
 

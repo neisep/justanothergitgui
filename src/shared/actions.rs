@@ -17,6 +17,8 @@ pub struct PendingFileAction {
     pub kind: FileActionKind,
 }
 
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
+
 #[derive(Debug)]
 pub enum UiAction {
     StageFile(String),
@@ -48,6 +50,10 @@ pub enum UiAction {
     SaveConflictResolution,
     OpenFileActionDialog(PendingFileAction),
     ConfirmFileAction,
+    OpenNewWorktreeDialog,
+    CreateWorktree(NewWorktreeRequest),
+    OpenRemoveWorktreeDialog(Box<LinkedWorktree>),
+    ConfirmRemoveWorktree,
 }
 
 impl UiAction {
@@ -160,5 +166,21 @@ impl UiAction {
 
     pub fn confirm_file_action() -> Self {
         Self::ConfirmFileAction
+    }
+
+    pub fn open_new_worktree_dialog() -> Self {
+        Self::OpenNewWorktreeDialog
+    }
+
+    pub fn create_worktree(request: NewWorktreeRequest) -> Self {
+        Self::CreateWorktree(request)
+    }
+
+    pub fn open_remove_worktree_dialog(worktree: LinkedWorktree) -> Self {
+        Self::OpenRemoveWorktreeDialog(Box::new(worktree))
+    }
+
+    pub fn confirm_remove_worktree() -> Self {
+        Self::ConfirmRemoveWorktree
     }
 }

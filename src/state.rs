@@ -7,6 +7,7 @@ use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
 use crate::shared::github::PullRequestPrompt;
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
 #[derive(Clone, Debug)]
 pub struct SelectedFile {
@@ -156,6 +157,8 @@ pub enum BusyAction {
     CreatePullRequest,
     DiscardAndReset,
     UndoLastCommit,
+    CreateWorktree,
+    RemoveWorktree,
     GithubSignIn,
     PublishRepository,
     CloneRepository,
@@ -219,6 +222,12 @@ pub struct RepoState {
     pub branches: Vec<String>,
     pub commit_history: Vec<CommitEntry>,
     pub pull_request_prompt: Option<PullRequestPrompt>,
+    /// Every checkout sharing this repository's object store, main tree first.
+    ///
+    /// Lives on [`RepoState`] rather than beside the file lists because it
+    /// describes the repository, not this tab's working tree — and because the
+    /// panel has to keep showing the *other* worktrees while this one changes.
+    pub linked_worktrees: Vec<LinkedWorktree>,
 }
 
 #[derive(Default)]
@@ -319,6 +328,7 @@ pub struct DialogState {
     pub cleanup: CleanupBranchesDialogState,
     pub discard: DiscardDialogState,
     pub file_action: FileActionDialogState,
+    pub worktree: WorktreeDialogState,
 }
 
 #[derive(Default)]
@@ -349,6 +359,45 @@ pub struct DiscardDialogState {
     pub show_discard_dialog: bool,
     pub discard_preview: Option<DiscardPreview>,
     pub discard_clean_untracked: bool,
+}
+
+/// Draft state for the New Worktree form and the removal confirmation.
+///
+/// The two share a struct because they are one feature's dialogs and are reset
+/// together; they are never open at the same time in practice, but nothing
+/// depends on that.
+#[derive(Default)]
+pub struct WorktreeDialogState {
+    pub show_new_worktree_dialog: bool,
+    pub name: String,
+    pub branch: String,
+    /// `None` means "branch from the current HEAD".
+    pub base_branch: Option<String>,
+    pub path: String,
+    /// Folder new worktrees are proposed inside. Kept apart from [`Self::path`]
+    /// because deriving it back out of the path is lossy: an empty name leaves a
+    /// trailing separator, and `Path::parent` then strips the folder itself.
+    pub path_parent: String,
+    pub focus_name_requested: bool,
+    /// Whether [`Self::branch`] and [`Self::path`] still mirror the name, so
+    /// typing a name keeps them in step until the user edits them directly.
+    /// Filling one field is the common case; overwriting a typed value is never
+    /// right.
+    pub branch_follows_name: bool,
+    pub path_follows_name: bool,
+    /// Open exactly while this holds the worktree awaiting removal confirmation.
+    pub pending_remove: Option<LinkedWorktree>,
+}
+
+impl WorktreeDialogState {
+    pub fn request(&self) -> NewWorktreeRequest {
+        NewWorktreeRequest {
+            name: self.name.trim().to_string(),
+            branch: self.branch.trim().to_string(),
+            base_branch: self.base_branch.clone(),
+            path: PathBuf::from(self.path.trim()),
+        }
+    }
 }
 
 /// Open exactly while `pending` holds the file operation awaiting confirmation.

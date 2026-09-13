@@ -10,6 +10,7 @@ use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthPrompt, GithubAuthSession,
     GithubRepoSummary, PushSuccess,
 };
+use crate::shared::worktrees::NewWorktreeRequest;
 
 pub trait HandleWelcomeTaskResult: Send {
     fn apply(self: Box<Self>, ctx: &mut WelcomeWorkerContext<'_>);
@@ -32,6 +33,8 @@ pub(crate) struct OpenPullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct CreatePullRequestResult(pub(crate) Result<String, String>);
 pub(crate) struct DiscardAndResetResult(pub(crate) Result<String, String>);
 pub(crate) struct UndoLastCommitResult(pub(crate) Result<String, String>);
+pub(crate) struct CreateWorktreeResult(pub(crate) Result<String, String>);
+pub(crate) struct RemoveWorktreeResult(pub(crate) Result<String, String>);
 pub(crate) struct ListGithubReposResult(pub(crate) Result<Vec<GithubRepoSummary>, String>);
 pub(crate) struct CloneRepoResult(pub(crate) Result<PathBuf, String>);
 #[cfg(test)]
@@ -107,6 +110,14 @@ impl RepoTaskResult {
         Self::new(UndoLastCommitResult(result))
     }
 
+    fn create_worktree(result: Result<String, String>) -> Self {
+        Self::new(CreateWorktreeResult(result))
+    }
+
+    fn remove_worktree(result: Result<String, String>) -> Self {
+        Self::new(RemoveWorktreeResult(result))
+    }
+
     #[cfg(test)]
     fn noop() -> Self {
         Self::new(RepoNoopResult)
@@ -156,6 +167,14 @@ enum RepoWorkerTask {
         clean_untracked: bool,
     },
     UndoLastCommit(PathBuf),
+    CreateWorktree {
+        path: PathBuf,
+        request: NewWorktreeRequest,
+    },
+    RemoveWorktree {
+        path: PathBuf,
+        name: String,
+    },
     #[cfg(test)]
     Panic,
 }
@@ -169,6 +188,8 @@ enum RepoWorkerTaskKind {
     CreatePullRequest,
     DiscardAndReset,
     UndoLastCommit,
+    CreateWorktree,
+    RemoveWorktree,
     #[cfg(test)]
     Panic,
 }
@@ -207,6 +228,8 @@ impl WorkerTaskKind<RepoTaskResult> for RepoWorkerTaskKind {
             Self::CreatePullRequest => RepoTaskResult::create_pull_request(Err(message)),
             Self::DiscardAndReset => RepoTaskResult::discard_and_reset(Err(message)),
             Self::UndoLastCommit => RepoTaskResult::undo_last_commit(Err(message)),
+            Self::CreateWorktree => RepoTaskResult::create_worktree(Err(message)),
+            Self::RemoveWorktree => RepoTaskResult::remove_worktree(Err(message)),
             #[cfg(test)]
             Self::Panic => RepoTaskResult::noop(),
         }
@@ -280,6 +303,8 @@ impl WorkerTaskSpec<RepoTaskResult> for RepoWorkerTask {
             Self::CreatePullRequest(..) => RepoWorkerTaskKind::CreatePullRequest,
             Self::DiscardAndReset { .. } => RepoWorkerTaskKind::DiscardAndReset,
             Self::UndoLastCommit(..) => RepoWorkerTaskKind::UndoLastCommit,
+            Self::CreateWorktree { .. } => RepoWorkerTaskKind::CreateWorktree,
+            Self::RemoveWorktree { .. } => RepoWorkerTaskKind::RemoveWorktree,
             #[cfg(test)]
             Self::Panic => RepoWorkerTaskKind::Panic,
         }
@@ -313,6 +338,12 @@ impl WorkerTaskSpec<RepoTaskResult> for RepoWorkerTask {
             )),
             RepoWorkerTask::UndoLastCommit(path) => {
                 RepoTaskResult::undo_last_commit(AppRepoWorkerOps::undo_last_commit(&path))
+            }
+            RepoWorkerTask::CreateWorktree { path, request } => {
+                RepoTaskResult::create_worktree(AppRepoWorkerOps::create_worktree(&path, &request))
+            }
+            RepoWorkerTask::RemoveWorktree { path, name } => {
+                RepoTaskResult::remove_worktree(AppRepoWorkerOps::remove_worktree(&path, &name))
             }
             #[cfg(test)]
             RepoWorkerTask::Panic => panic!("panic task"),
@@ -506,6 +537,22 @@ impl RepoWorker {
     #[must_use]
     pub fn undo_last_commit(&self, repo_path: PathBuf) -> bool {
         self.0.dispatch(RepoWorkerTask::UndoLastCommit(repo_path))
+    }
+
+    #[must_use]
+    pub fn create_worktree(&self, repo_path: PathBuf, request: NewWorktreeRequest) -> bool {
+        self.0.dispatch(RepoWorkerTask::CreateWorktree {
+            path: repo_path,
+            request,
+        })
+    }
+
+    #[must_use]
+    pub fn remove_worktree(&self, repo_path: PathBuf, name: String) -> bool {
+        self.0.dispatch(RepoWorkerTask::RemoveWorktree {
+            path: repo_path,
+            name,
+        })
     }
 
     pub fn is_busy(&self) -> bool {

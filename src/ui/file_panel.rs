@@ -3,10 +3,12 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::shared::actions::{FileActionKind, PendingFileAction, UiAction};
 use crate::shared::git::{FileChangeKind, FileEntry};
+use crate::shared::worktrees::LinkedWorktree;
 use crate::state::{DragFile, InspectorState, UiState, WorktreeState};
 
 use super::HoveredRow;
 use super::diff_view;
+use super::worktree_panel::{self, WorktreePanelResponse, WorktreePanelState};
 
 const STATUS_COL_WIDTH: f32 = 24.0;
 const ACTION_COL_WIDTH: f32 = 100.0;
@@ -23,13 +25,25 @@ const CONFLICT_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 170, 80);
 
 pub struct FilePanelState<'a> {
     pub worktree: &'a WorktreeState,
+    /// The repository's checkouts, rendered by the Worktrees section at the
+    /// bottom of this panel.
+    pub worktrees: &'a [LinkedWorktree],
     pub inspector: &'a mut InspectorState,
     pub ui_state: &'a mut UiState,
 }
 
-pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
+/// What the sidebar needs the app root to do. Only the Worktrees section has
+/// anything to say here: opening a worktree creates a repository tab, which is
+/// the root's job, not the active tab's.
+#[derive(Default)]
+pub struct FilePanelResponse {
+    pub open_worktree: Option<std::path::PathBuf>,
+}
+
+pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) -> FilePanelResponse {
     let mut unstaged_rect = egui::Rect::NOTHING;
     let mut staged_rect = egui::Rect::NOTHING;
+    let mut worktree_response = WorktreePanelResponse::default();
 
     // Copied out so the filtered lists borrow the worktree rather than `state`,
     // which the tables below need to borrow mutably.
@@ -39,6 +53,16 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
         .default_size(PANEL_DEFAULT_WIDTH)
         .min_size(PANEL_MIN_WIDTH)
         .show_inside(ui, |ui| {
+            // Declared first so it claims the topmost strip, above the filter
+            // row, leaving the Unstaged/Staged split below it exactly as it was.
+            worktree_response = worktree_panel::show(
+                ui,
+                WorktreePanelState {
+                    worktrees: state.worktrees,
+                    ui_state: state.ui_state,
+                },
+            );
+
             show_filter_row(ui, state.inspector);
 
             let filter = state.inspector.file_filter.clone();
@@ -109,6 +133,10 @@ pub fn show(ui: &mut egui::Ui, mut state: FilePanelState<'_>) {
         });
 
     show_drag_ghost(ui.ctx(), &state);
+
+    FilePanelResponse {
+        open_worktree: worktree_response.open,
+    }
 }
 
 fn row_height(ui: &egui::Ui) -> f32 {

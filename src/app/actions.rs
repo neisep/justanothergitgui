@@ -1,5 +1,6 @@
 use super::{helpers, *};
 use crate::shared::actions::{FileActionKind, PendingFileAction};
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 use crate::state::{CenterView, InspectorState, SelectedFile};
 
 struct TabActionContext<'a> {
@@ -40,6 +41,10 @@ impl UiAction {
             Self::SaveConflictResolution => save_conflict_resolution(ctx),
             Self::OpenFileActionDialog(pending) => open_file_action_dialog(ctx, pending),
             Self::ConfirmFileAction => confirm_file_action(ctx),
+            Self::OpenNewWorktreeDialog => open_new_worktree_dialog(ctx),
+            Self::CreateWorktree(request) => create_worktree(ctx, request),
+            Self::OpenRemoveWorktreeDialog(worktree) => open_remove_worktree_dialog(ctx, *worktree),
+            Self::ConfirmRemoveWorktree => confirm_remove_worktree(ctx),
         }
     }
 }
@@ -497,6 +502,101 @@ fn confirm_file_action(ctx: &mut TabActionContext<'_>) {
         Err(error) => log_action_error(ctx, context, error.to_string()),
     }
     refresh_tab(ctx);
+}
+
+/// Open the New Worktree form, seeded from the repository: the current branch as
+/// the base, and a proposed sibling path that keeps following the name field
+/// until the user edits the path themselves.
+fn open_new_worktree_dialog(ctx: &mut TabActionContext<'_>) {
+    helpers::reset_worktree_dialog_state(&mut ctx.tab.state.dialogs.worktree);
+
+    let base_branch =
+        (!ctx.tab.state.repo.branch.is_empty()).then(|| ctx.tab.state.repo.branch.clone());
+    let parent = AppRepoRead::default_worktree_parent(&ctx.tab.repo);
+
+    let dialog = &mut ctx.tab.state.dialogs.worktree;
+    dialog.base_branch = base_branch;
+    dialog.path_parent = parent.display().to_string();
+    dialog.path = parent.display().to_string();
+    dialog.branch_follows_name = true;
+    dialog.path_follows_name = true;
+    dialog.focus_name_requested = true;
+    dialog.show_new_worktree_dialog = true;
+}
+
+/// Hand the request to the worker: creating a worktree checks out a whole tree,
+/// which is far too slow to do on the UI thread.
+fn create_worktree(ctx: &mut TabActionContext<'_>, request: NewWorktreeRequest) {
+    let Some(path) = ctx.tab.state.repo.path.clone() else {
+        return;
+    };
+
+    if ctx.tab.worker.is_busy() {
+        ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
+        return;
+    }
+
+    let busy = BusyState::new(
+        BusyAction::CreateWorktree,
+        format!("Creating worktree '{}'...", request.name),
+    );
+    if ctx.tab.worker.create_worktree(path, request) {
+        ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
+        ctx.tab.state.ui.busy = Some(busy);
+    } else {
+        log_worker_dispatch_error(ctx, "New worktree");
+    }
+}
+
+/// Open the removal confirmation, refusing outright the cases that can never be
+/// confirmed. The dialog repeats the check to decide whether its button is
+/// enabled, and the service repeats it again before anything is deleted.
+fn open_remove_worktree_dialog(ctx: &mut TabActionContext<'_>, worktree: LinkedWorktree) {
+    if worktree.is_current {
+        ctx.tab.state.ui.status = StatusMessage::info(format!(
+            "'{}' is the worktree this tab has open. Close its tab and remove it from another one.",
+            worktree.name
+        ));
+        return;
+    }
+
+    if let Some(problem) = crate::core::worktrees::service::removal_blocker(&worktree) {
+        // Still open the dialog for a dirty worktree: seeing what is at stake is
+        // the point. A main or locked worktree has nothing to weigh up.
+        if !worktree.has_uncommitted_changes() {
+            ctx.tab.state.ui.status = StatusMessage::info(problem);
+            return;
+        }
+    }
+
+    ctx.tab.state.dialogs.worktree.pending_remove = Some(worktree);
+}
+
+fn confirm_remove_worktree(ctx: &mut TabActionContext<'_>) {
+    let Some(worktree) = ctx.tab.state.dialogs.worktree.pending_remove.clone() else {
+        ctx.tab.state.ui.status = StatusMessage::info("No worktree removal pending");
+        return;
+    };
+    let Some(path) = ctx.tab.state.repo.path.clone() else {
+        return;
+    };
+
+    if ctx.tab.worker.is_busy() {
+        ctx.tab.state.ui.status = StatusMessage::info("Busy — please wait...");
+        return;
+    }
+
+    let busy = BusyState::new(
+        BusyAction::RemoveWorktree,
+        format!("Removing worktree '{}'...", worktree.name),
+    );
+    if ctx.tab.worker.remove_worktree(path, worktree.name.clone()) {
+        ctx.tab.state.ui.status = StatusMessage::info(busy.label.clone());
+        ctx.tab.state.ui.busy = Some(busy);
+    } else {
+        ctx.tab.state.dialogs.worktree.pending_remove = None;
+        log_worker_dispatch_error(ctx, "Remove worktree");
+    }
 }
 
 impl GitGuiApp {

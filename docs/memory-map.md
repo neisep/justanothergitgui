@@ -5,7 +5,7 @@ This document is the navigation index for the current architecture after the app
 ## What is already true
 
 - `src/app/ports.rs` is the app-facing entrypoint for repo reads, repo writes, welcome-worker flows, repo-worker flows, and GitHub auth persistence.
-- `src/core/ports.rs` is split into focused traits (`GitBranchReadPort`, `GitRemoteSyncPort`, `GitTagPort`, etc.); `GitPort` and `GitHubPort` remain only as compatibility composition traits.
+- `src/core/ports.rs` is split into focused traits (`GitBranchReadPort`, `GitRemoteSyncPort`, `GitTagPort`, etc.); `GitPort` and `GitHubPort` remain only as compatibility composition traits. `GitLinkedWorktreePort` is deliberately outside that composition — new code depends on the focused trait directly.
 - `src/infra/core_ports.rs` implements those focused traits with `InfraGitPort` and `InfraGitHubPort`.
 - `src/state.rs` groups `AppState` into focused substates: `RepoState`, `WorktreeState`, `InspectorState`, `CommitState`, `DialogState`, and `UiState`.
 - `src/app/shell.rs` is no longer one giant toolbar method; the repo chrome is split across `RepoToolbarModel`, `show_repo_tabs_panel`, `show_repo_menu`, `show_repo_tab_strip`, `show_repo_toolbar_actions`, and smaller helpers.
@@ -63,7 +63,10 @@ src/
 │   ├── sync/
 │   │   ├── mod.rs
 │   │   └── service.rs
-│   └── tags/
+│   ├── tags/
+│   │   ├── mod.rs
+│   │   └── service.rs
+│   └── worktrees/
 │       ├── mod.rs
 │       └── service.rs
 ├── infra/
@@ -72,6 +75,7 @@ src/
 │   ├── git/
 │   │   ├── clone.rs
 │   │   ├── commits.rs
+│   │   ├── linked_worktrees.rs
 │   │   ├── mod.rs
 │   │   ├── remotes.rs
 │   │   ├── repository.rs
@@ -91,7 +95,8 @@ src/
 │   ├── diff.rs
 │   ├── git.rs
 │   ├── github.rs
-│   └── mod.rs
+│   ├── mod.rs
+│   └── worktrees.rs
 ├── ui/
 │   ├── bottom_bar.rs
 │   ├── commit_panel.rs
@@ -101,6 +106,7 @@ src/
 │   ├── file_panel.rs
 │   ├── history_panel.rs
 │   ├── mod.rs
+│   ├── worktree_panel.rs
 │   └── dialogs/
 │       ├── branch.rs
 │       ├── cleanup_branches.rs
@@ -111,7 +117,8 @@ src/
 │       ├── mod.rs
 │       ├── publish_repo.rs
 │       ├── settings.rs
-│       └── tag.rs
+│       ├── tag.rs
+│       └── worktree.rs
 ├── commit_rules.rs
 ├── git_ops.rs
 ├── logging.rs
@@ -137,9 +144,10 @@ src/
 | `src/core/ports.rs` | Core-side dependency boundary | Focused traits define read/sync/tag/bootstrap/worktree/GitHub capabilities; compatibility composition remains | New code should prefer focused traits, not the composed compatibility traits |
 | `src/core/sync/service.rs` | Push/pull/reset orchestration | Auth policy for GitHub HTTPS remotes lives here and uses injected ports | Still a small cluster rather than a broader sync domain module |
 | `src/core/tags/service.rs` | Tag workflow orchestration | Validates branch/tag rules, pushes via injected ports, rolls back failed remote pushes | Branch eligibility and tag suggestion helpers still partly live below the core service boundary |
+| `src/core/worktrees/service.rs` | Linked-worktree workflow rules | Owns the create/remove policy (duplicate names, branch already checked out, never remove the main worktree, never destroy uncommitted work) behind `GitLinkedWorktreePort` | Listing bypasses it as a plain `AppRepoRead` call, like every other synchronous repository read |
 | `src/core/publish/service.rs` | Publish workflow orchestration | Bootstraps repo, stages/commits if needed, creates remote repo, then reuses sync push logic | Still uses shared GitHub DTOs directly instead of a larger dedicated publish boundary module |
 | `src/infra/core_ports.rs` | Concrete port adapters | `InfraGitPort` and `InfraGitHubPort` implement the focused core traits | Opens repositories per operation; acceptable for now, but still adapter glue rather than a richer gateway layer |
-| `src/infra/git/*` | Low-level git adapters | Repository/worktree/remotes/clone/commits behavior is split by IO concern; `commits.rs` is read-only history diffing (commit vs first parent) | Some functions still power both new ports and the legacy `git_ops` shim |
+| `src/infra/git/*` | Low-level git adapters | Repository/worktree/remotes/clone/commits behavior is split by IO concern; `commits.rs` is read-only history diffing (commit vs first parent); `linked_worktrees.rs` is the `git worktree` set, kept apart from the working-tree module `worktree.rs` | Some functions still power both new ports and the legacy `git_ops` shim |
 | `src/infra/github/auth.rs` / `repos.rs` / `pulls.rs` | GitHub HTTP + auth adapters | Auth persistence, repo APIs, and PR prompt detection are separated; PR lookup derives owner/repo from the repo's origin remote | Still tightly coupled to current GitHub API shapes; no separate request/response modules yet |
 | `src/infra/system/*` | Browser/keychain adapters | Keeps desktop side effects out of `app/` and `core/` | Likely stable as-is |
 | `src/ui/bottom_bar.rs`, `file_panel.rs`, `diff_panel.rs`, `history_panel.rs`, `commit_view.rs` | Narrowed render modules | Already consume focused view/state structs instead of the whole `AppState` | Good pattern to copy elsewhere |
