@@ -5,7 +5,7 @@ use git2::Repository;
 use crate::core::{publish, sync, tags, worktrees};
 use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
 use crate::infra::git::error::ConflictError;
-use crate::infra::git::{clone, commits, linked_worktrees, repository, worktree};
+use crate::infra::git::{clone, commits, linked_worktrees, repository, worktree, worktree_review};
 use crate::infra::github::{auth, pulls, repos};
 use crate::infra::system::{browser, worktree_metadata};
 use crate::shared::conflicts::ConflictData;
@@ -16,6 +16,7 @@ use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthCheck, GithubAuthPrompt,
     GithubAuthSession, GithubRepoSummary, PushSuccess,
 };
+use crate::shared::review::ReviewBase;
 use crate::shared::worktree_metadata::{WorktreeMetadata, WorktreeMetadataMap};
 use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
@@ -122,6 +123,28 @@ impl AppRepoRead {
 
     pub(super) fn default_worktree_parent(repo: &Repository) -> PathBuf {
         linked_worktrees::default_worktree_parent(repo)
+    }
+
+    pub(super) fn review_base(
+        worktree_repo: &Repository,
+        recorded: &str,
+    ) -> Result<ReviewBase, git2::Error> {
+        worktree_review::resolve_base(worktree_repo, Some(recorded))
+    }
+
+    pub(super) fn review_changed_files(
+        worktree_repo: &Repository,
+        base: &ReviewBase,
+    ) -> Result<Vec<CommitFileChange>, git2::Error> {
+        worktree_review::changed_files(worktree_repo, base)
+    }
+
+    pub(super) fn review_file_diff(
+        worktree_repo: &Repository,
+        base: &ReviewBase,
+        path: &str,
+    ) -> Result<String, git2::Error> {
+        worktree_review::file_diff(worktree_repo, base, path)
     }
 }
 

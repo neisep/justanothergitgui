@@ -442,6 +442,17 @@ fn show_row_context_menu(
         ui.close();
     }
 
+    if ui
+        .button("Review changes…")
+        .on_hover_text("See what this worktree has done since its base")
+        .clicked()
+    {
+        ui_state
+            .actions
+            .push(UiAction::review_worktree(worktree.clone()));
+        ui.close();
+    }
+
     if ui.button("Edit metadata…").clicked() {
         ui_state
             .actions

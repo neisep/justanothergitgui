@@ -1,6 +1,7 @@
-//! Read-only diffs of a single commit against its first parent.
+//! Read-only diffs of a single commit against its first parent, plus the two
+//! helpers that turn any `git2::Diff` into what the views want.
 //!
-//! Everything here is history inspection: nothing in this module writes to the
+//! Everything here is inspection: nothing in this module writes to the
 //! repository, the index, or the working tree.
 
 use git2::Repository;
@@ -19,6 +20,15 @@ pub fn commit_changed_files(
     let mut opts = git2::DiffOptions::new();
     let diff = diff_against_first_parent(repo, oid, &mut opts)?;
 
+    Ok(changed_files(&diff))
+}
+
+/// The paths a diff touched, in git's order, with the display vocabulary the
+/// file lists share.
+///
+/// Shared with the worktree review, which diffs a base commit against a
+/// worktree instead of a commit against its parent but wants the same list.
+pub(crate) fn changed_files(diff: &git2::Diff<'_>) -> Vec<CommitFileChange> {
     let mut changes = Vec::new();
     for delta in diff.deltas() {
         let path = delta
@@ -36,7 +46,7 @@ pub fn commit_changed_files(
         });
     }
 
-    Ok(changes)
+    changes
 }
 
 /// Unified patch text for one path inside a commit, compared with its first
@@ -49,6 +59,14 @@ pub fn commit_file_diff(repo: &Repository, oid: &str, path: &str) -> Result<Stri
     opts.disable_pathspec_match(true);
     let diff = diff_against_first_parent(repo, oid, &mut opts)?;
 
+    patch_text(&diff)
+}
+
+/// Render a diff as unified patch text.
+///
+/// Shared with the worktree review so there is one place that knows how git2
+/// hands back patch lines.
+pub(crate) fn patch_text(diff: &git2::Diff<'_>) -> Result<String, git2::Error> {
     let mut result = String::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
         let origin = line.origin();
@@ -81,7 +99,7 @@ fn diff_against_first_parent<'repo>(
     repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(opts))
 }
 
-fn display_status_for(status: git2::Delta) -> &'static str {
+pub(crate) fn display_status_for(status: git2::Delta) -> &'static str {
     match status {
         git2::Delta::Added | git2::Delta::Copied | git2::Delta::Untracked => "new",
         git2::Delta::Deleted => "deleted",

@@ -32,12 +32,50 @@ pub fn show(ui: &mut egui::Ui, mut state: DiffPanelState<'_>) {
         {
             state.ui_state.actions.push(UiAction::show_history());
         }
+        if ui
+            .selectable_label(state.inspector.center_view == CenterView::Review, "Review")
+            .clicked()
+        {
+            state.ui_state.actions.push(UiAction::show_review());
+        }
     });
     ui.separator();
 
     match state.inspector.center_view {
         CenterView::Diff => show_diff_or_conflict(ui, &mut state),
         CenterView::History => show_history(ui, &mut state),
+        CenterView::Review => show_review(ui, &mut state),
+    }
+}
+
+/// The Review tab shows one worktree's work since its base, or a hint about how
+/// to open one.
+fn show_review(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
+    let DiffPanelState {
+        inspector,
+        ui_state,
+        ..
+    } = state;
+
+    match inspector.selected_review.as_mut() {
+        Some(review) => {
+            super::review_view::show(ui, super::review_view::ReviewViewState { review, ui_state })
+        }
+        None => {
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() * 0.35);
+                ui.weak("No worktree under review");
+                ui.add_space(4.0);
+                let weak = ui.visuals().weak_text_color();
+                ui.label(
+                    egui::RichText::new(
+                        "Right-click a worktree on the left and choose Review changes.",
+                    )
+                    .small()
+                    .color(weak),
+                );
+            });
+        }
     }
 }
 

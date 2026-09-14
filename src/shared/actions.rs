@@ -54,6 +54,10 @@ pub enum UiAction {
     CreateWorktree(NewWorktreeRequest),
     OpenRemoveWorktreeDialog(Box<LinkedWorktree>),
     ConfirmRemoveWorktree,
+    ShowReview,
+    ReviewWorktree(Box<LinkedWorktree>),
+    SelectReviewFile(String),
+    CloseReview,
     OpenWorktreeMetadataDialog(Box<LinkedWorktree>),
     SaveWorktreeMetadata,
     ClearWorktreeMetadata,
@@ -185,6 +189,22 @@ impl UiAction {
 
     pub fn confirm_remove_worktree() -> Self {
         Self::ConfirmRemoveWorktree
+    }
+
+    pub fn show_review() -> Self {
+        Self::ShowReview
+    }
+
+    pub fn review_worktree(worktree: LinkedWorktree) -> Self {
+        Self::ReviewWorktree(Box::new(worktree))
+    }
+
+    pub fn select_review_file(path: impl Into<String>) -> Self {
+        Self::SelectReviewFile(path.into())
+    }
+
+    pub fn close_review() -> Self {
+        Self::CloseReview
     }
 
     pub fn open_worktree_metadata_dialog(worktree: LinkedWorktree) -> Self {

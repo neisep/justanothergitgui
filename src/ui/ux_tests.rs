@@ -2,11 +2,12 @@
 use eframe::egui::{self, Event, Pos2, Rect, Shape};
 
 use crate::commit_rules::CommitMessageRuleSet;
+use crate::shared::review::{ReviewBase, ReviewBaseSource};
 use crate::shared::worktree_metadata::{ReviewState, TestState, WorktreeMetadata};
 use crate::shared::worktrees::{LinkedWorktree, LinkedWorktreeStatus};
 use crate::shared::{
     actions::{FileActionKind, PendingFileAction, UiAction},
-    git::{FileChangeKind, FileEntry},
+    git::{CommitFileChange, FileChangeKind, FileEntry},
 };
 use crate::state::AppState;
 
@@ -613,6 +614,134 @@ fn the_metadata_form_explains_an_unrecorded_base_commit() {
     label(
         &painted,
         "— not recorded (worktree created outside the app)",
+    );
+}
+
+fn reviewed_state(base_source: ReviewBaseSource) -> AppState {
+    let mut state = state_with_worktrees();
+    state.inspector.center_view = crate::state::CenterView::Review;
+    state
+        .inspector
+        .set_review(Some(crate::state::SelectedReview {
+            worktree_name: "feature-auth".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/worktrees/feature-auth"),
+            branch: Some("feature/auth".into()),
+            base: ReviewBase {
+                oid: "a1b2c3d4".repeat(5),
+                short_oid: "a1b2c3d".into(),
+                source: base_source,
+            },
+            uncommitted: 2,
+            changes: crate::state::ChangeSet {
+                files: vec![
+                    CommitFileChange {
+                        path: "src/auth/oauth.rs".into(),
+                        display_status: "new".into(),
+                    },
+                    CommitFileChange {
+                        path: "docs/design.md".into(),
+                        display_status: "modified".into(),
+                    },
+                ],
+                ..crate::state::ChangeSet::default()
+            },
+        }));
+    state
+}
+
+fn draw_center(ui: &mut egui::Ui, state: &mut AppState) {
+    super::diff_panel::show(
+        ui,
+        super::diff_panel::DiffPanelState {
+            repo: &state.repo,
+            worktree: &state.worktree,
+            inspector: &mut state.inspector,
+            ui_state: &mut state.ui,
+        },
+    );
+}
+
+#[test]
+fn the_review_tab_shows_the_base_and_the_changed_files() {
+    let mut state = reviewed_state(ReviewBaseSource::ForkPoint);
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+
+    label(&painted, "feature-auth");
+    label(&painted, "a1b2c3d");
+    label(&painted, "base: fork point from the main worktree");
+    label(&painted, "2 uncommitted files");
+    label(&painted, "Files (2)");
+    label(&painted, "src/auth/oauth.rs");
+    label(&painted, "docs/design.md");
+}
+
+/// Which base is being measured from changes what the diff means, so the header
+/// must not be vague about it.
+#[test]
+fn the_review_header_distinguishes_a_recorded_base_from_a_derived_one() {
+    let mut recorded = reviewed_state(ReviewBaseSource::Recorded);
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut recorded));
+
+    label(&painted, "base: recorded when the worktree was created");
+    assert!(!has_label(
+        &painted,
+        "base: fork point from the main worktree"
+    ));
+}
+
+#[test]
+fn picking_a_reviewed_file_only_emits_the_selection() {
+    let mut state = reviewed_state(ReviewBaseSource::ForkPoint);
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+    let row = label(&painted, "src/auth/oauth.rs").rect.center();
+
+    harness.click(row, &mut |ui| draw_center(ui, &mut state));
+
+    assert!(
+        matches!(
+            state.ui.actions.as_slice(),
+            [UiAction::SelectReviewFile(path)] if path == "src/auth/oauth.rs"
+        ),
+        "the row must only queue a selection: {:?}",
+        state.ui.actions
+    );
+}
+
+#[test]
+fn the_review_tab_explains_itself_when_nothing_is_under_review() {
+    let mut state = state_with_worktrees();
+    state.inspector.center_view = crate::state::CenterView::Review;
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+
+    label(&painted, "No worktree under review");
+}
+
+#[test]
+fn review_changes_only_opens_the_review() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let row = label(&painted, "feature-auth").rect.center();
+
+    let painted = harness.right_click(row, &mut |ui| draw_files(ui, &mut state));
+    let item = label(&painted, "Review changes…").rect.center();
+
+    harness.click(item, &mut |ui| draw_files(ui, &mut state));
+
+    assert!(
+        matches!(
+            state.ui.actions.as_slice(),
+            [UiAction::ReviewWorktree(worktree)] if worktree.name == "feature-auth"
+        ),
+        "the menu item must only open the review: {:?}",
+        state.ui.actions
     );
 }
 

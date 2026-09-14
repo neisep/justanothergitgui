@@ -7,6 +7,7 @@ use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
 use crate::shared::github::PullRequestPrompt;
+use crate::shared::review::ReviewBase;
 use crate::shared::worktree_metadata::{
     ReviewState, TestState, WorktreeMetadata, WorktreeMetadataMap,
 };
@@ -51,20 +52,18 @@ impl ParsedDiff {
     }
 }
 
-/// The commit currently open in the History tab's read-only commit view.
+/// A set of changed files with one of them open, as the read-only inspectors
+/// render it.
 ///
-/// Holds everything that view renders, so it can be dropped in one move when the
-/// user goes back to the list or the history it came from changes.
+/// Shared by the commit view and the worktree review: both are "here are the
+/// files that differ, and here is the patch for the one you picked", and the
+/// only thing that differs is where the set came from. Keeping one struct keeps
+/// one renderer, so the two views cannot drift apart.
 ///
 /// Deliberately not `Clone`: it owns the whole parsed patch, and nothing needs a
-/// second copy — `set_commit` moves it in and out.
-#[derive(Debug)]
-pub struct SelectedCommit {
-    pub oid: String,
-    pub short_oid: String,
-    pub summary: String,
-    pub author: String,
-    pub time: String,
+/// second copy.
+#[derive(Debug, Default)]
+pub struct ChangeSet {
     pub files: Vec<CommitFileChange>,
     pub selected_path: Option<String>,
     pub diff_content: String,
@@ -79,12 +78,45 @@ pub struct SelectedCommit {
     /// Added/removed line counts for the header, tallied with the parse.
     pub added_lines: usize,
     pub removed_lines: usize,
-    /// Why the commit's file list could not be read, if it could not.
+    /// Why the file list could not be read, if it could not.
     ///
-    /// An empty `files` is also what a genuinely empty commit looks like, so the
-    /// failure has to be recorded separately or the view reports a git error as
-    /// "this commit changed no files".
+    /// An empty `files` is also what a genuinely empty change set looks like, so
+    /// the failure has to be recorded separately or the view reports a git error
+    /// as "nothing changed here".
     pub load_error: Option<String>,
+}
+
+/// The commit currently open in the History tab's read-only commit view.
+///
+/// Holds everything that view renders, so it can be dropped in one move when the
+/// user goes back to the list or the history it came from changes.
+#[derive(Debug)]
+pub struct SelectedCommit {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author: String,
+    pub time: String,
+    pub changes: ChangeSet,
+}
+
+/// The worktree currently open in the Review tab.
+///
+/// Identified by worktree name rather than a commit: the "to" side of a review
+/// is the worktree as it stands on disk, which has no oid.
+#[derive(Debug)]
+pub struct SelectedReview {
+    pub worktree_name: String,
+    /// The checkout's own directory. Held because each patch reopens it: a
+    /// worktree is a different repository from the tab's, and nothing else in
+    /// the inspector holds that handle.
+    pub worktree_path: PathBuf,
+    pub branch: Option<String>,
+    pub base: ReviewBase,
+    /// How many of the reviewed files are still uncommitted, taken from the
+    /// worktree's own status rather than a second diff.
+    pub uncommitted: usize,
+    pub changes: ChangeSet,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -92,6 +124,7 @@ pub enum CenterView {
     #[default]
     Diff,
     History,
+    Review,
 }
 
 #[derive(Clone, Debug)]
@@ -265,6 +298,9 @@ pub struct InspectorState {
     pub conflict_focus: usize,
     /// Commit opened from the History tab, or `None` while the list is showing.
     pub selected_commit: Option<SelectedCommit>,
+    /// Worktree opened in the Review tab, or `None` while nothing is under
+    /// review.
+    pub selected_review: Option<SelectedReview>,
     pub dragging: Option<DragFile>,
 }
 
@@ -317,6 +353,11 @@ impl InspectorState {
     /// with the commit, so nothing leaks between commits.
     pub fn set_commit(&mut self, commit: Option<SelectedCommit>) {
         self.selected_commit = commit;
+    }
+
+    /// Open (or close) the Review tab's view, on the same terms.
+    pub fn set_review(&mut self, review: Option<SelectedReview>) {
+        self.selected_review = review;
     }
 }
 

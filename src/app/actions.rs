@@ -47,6 +47,10 @@ impl UiAction {
             Self::CreateWorktree(request) => create_worktree(ctx, request),
             Self::OpenRemoveWorktreeDialog(worktree) => open_remove_worktree_dialog(ctx, *worktree),
             Self::ConfirmRemoveWorktree => confirm_remove_worktree(ctx),
+            Self::ShowReview => show_review(ctx),
+            Self::ReviewWorktree(worktree) => review_worktree(ctx, *worktree),
+            Self::SelectReviewFile(path) => select_review_file(ctx, path),
+            Self::CloseReview => ctx.tab.state.inspector.set_review(None),
             Self::OpenWorktreeMetadataDialog(worktree) => {
                 open_worktree_metadata_dialog(ctx, *worktree)
             }
@@ -604,6 +608,25 @@ fn confirm_remove_worktree(ctx: &mut TabActionContext<'_>) {
         ctx.tab.state.dialogs.worktree.pending_remove = None;
         log_worker_dispatch_error(ctx, "Remove worktree");
     }
+}
+
+fn show_review(ctx: &mut TabActionContext<'_>) {
+    ctx.tab.state.inspector.center_view = CenterView::Review;
+}
+
+/// Open a worktree in the Review tab, switching to it the way picking a commit
+/// switches to History.
+fn review_worktree(ctx: &mut TabActionContext<'_>, worktree: LinkedWorktree) {
+    ctx.tab.state.inspector.center_view = CenterView::Review;
+    if let Some(detail) =
+        helpers::load_selected_review(&ctx.tab.state.repo, &mut ctx.tab.state.inspector, &worktree)
+    {
+        log_action_error(ctx, "Review worktree", detail);
+    }
+}
+
+fn select_review_file(ctx: &mut TabActionContext<'_>, path: String) {
+    helpers::load_review_file_diff(&mut ctx.tab.state.inspector, path);
 }
 
 fn open_worktree_metadata_dialog(ctx: &mut TabActionContext<'_>, worktree: LinkedWorktree) {

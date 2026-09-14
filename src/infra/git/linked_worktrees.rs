@@ -24,7 +24,7 @@ use crate::shared::worktrees::{
 ///
 /// For a linked worktree, `commondir()` is the main repository's gitdir, which
 /// `Repository::open` resolves back to the main checkout.
-fn main_repository(repo: &Repository) -> Result<Repository, git2::Error> {
+pub(crate) fn main_repository(repo: &Repository) -> Result<Repository, git2::Error> {
     if repo.is_worktree() {
         Repository::open(repo.commondir())
     } else {

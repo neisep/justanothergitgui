@@ -5,17 +5,13 @@
 //! no way to edit, stage, or write anything.
 
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
 
 use crate::shared::actions::UiAction;
 use crate::state::{SelectedCommit, UiState};
 
-use super::HoveredRow;
-use super::diff_view::{self, SideBySideView};
+use super::change_set_view::{self, ChangeListView};
 
 const FILE_LIST_WIDTH: f32 = 240.0;
-const STATUS_COL_WIDTH: f32 = 88.0;
-const LOAD_ERROR: egui::Color32 = egui::Color32::from_rgb(240, 140, 120);
 
 pub struct CommitViewState<'a> {
     pub commit: &'a mut SelectedCommit,
@@ -32,10 +28,24 @@ pub fn show(ui: &mut egui::Ui, state: CommitViewState<'_>) {
         .default_size(FILE_LIST_WIDTH)
         .min_size(160.0)
         .show_inside(ui, |ui| {
-            render_file_list(ui, commit, ui_state);
+            change_set_view::render_file_list(
+                ui,
+                &commit.changes,
+                ChangeListView {
+                    id_salt: "commit_files_table",
+                    empty_text: "This commit changed no files.",
+                    error_text: "Could not read this commit's files.",
+                    on_select: UiAction::select_commit_file,
+                },
+                ui_state,
+            );
         });
 
-    render_diff(ui, commit);
+    change_set_view::render_diff(
+        ui,
+        &mut commit.changes,
+        "Click any file on the left to see what this commit changed.",
+    );
 }
 
 fn render_header(ui: &mut egui::Ui, commit: &SelectedCommit, ui_state: &mut UiState) {
@@ -56,123 +66,4 @@ fn render_header(ui: &mut egui::Ui, commit: &SelectedCommit, ui_state: &mut UiSt
         ui.add(egui::Label::new(egui::RichText::new(&commit.summary).strong()).truncate());
     });
     ui.separator();
-}
-
-fn render_file_list(ui: &mut egui::Ui, commit: &SelectedCommit, ui_state: &mut UiState) {
-    ui.horizontal(|ui| {
-        ui.strong(format!("Files ({})", commit.files.len()));
-    });
-    ui.separator();
-
-    // A read failure and an empty commit both leave `files` empty, so the error
-    // has to win — otherwise a git error reads as "nothing changed here".
-    if let Some(error) = &commit.load_error {
-        ui.colored_label(LOAD_ERROR, "Could not read this commit's files.");
-        ui.label(
-            egui::RichText::new(error)
-                .small()
-                .color(ui.visuals().weak_text_color()),
-        );
-        return;
-    }
-
-    if commit.files.is_empty() {
-        ui.weak("This commit changed no files.");
-        return;
-    }
-
-    let row_height = ui.spacing().interact_size.y.max(22.0);
-
-    ui.push_id("commit_file_rows", |ui| {
-        super::prepare_clickable_rows(ui);
-        let mut hover = HoveredRow::load(ui, "hover");
-
-        TableBuilder::new(ui)
-            .id_salt("commit_files_table")
-            .striped(true)
-            .sense(egui::Sense::click())
-            .column(Column::remainder().clip(true))
-            .column(Column::exact(STATUS_COL_WIDTH))
-            .body(|body| {
-                body.rows(row_height, commit.files.len(), |mut row| {
-                    let index = row.index();
-                    let file = &commit.files[index];
-                    let is_selected = commit
-                        .selected_path
-                        .as_ref()
-                        .is_some_and(|selected| selected == &file.path);
-                    row.set_selected(is_selected);
-                    row.set_hovered(hover.is_hovered(index));
-
-                    row.col(|ui| {
-                        let label = if is_selected {
-                            egui::RichText::new(&file.path).strong()
-                        } else {
-                            egui::RichText::new(&file.path)
-                        };
-                        ui.add(egui::Label::new(label).truncate());
-                    });
-
-                    row.col(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            diff_view::render_status_badge(ui, &file.display_status, false);
-                        });
-                    });
-
-                    let response = row.response();
-                    hover.observe(index, &response);
-                    response
-                        .clone()
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    if response.clicked() {
-                        ui_state
-                            .actions
-                            .push(UiAction::select_commit_file(file.path.clone()));
-                    }
-                });
-            });
-
-        hover.store(ui);
-    });
-}
-
-fn render_diff(ui: &mut egui::Ui, commit: &mut SelectedCommit) {
-    let Some(path) = commit.selected_path.clone() else {
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.35);
-            ui.weak("Pick a file to inspect");
-            ui.add_space(4.0);
-            let weak = ui.visuals().weak_text_color();
-            ui.label(
-                egui::RichText::new("Click any file on the left to see what this commit changed.")
-                    .small()
-                    .color(weak),
-            );
-        });
-        return;
-    };
-
-    ui.horizontal(|ui| {
-        ui.add(egui::Label::new(egui::RichText::new(&path).strong()).truncate());
-        ui.separator();
-        ui.weak(format!(
-            "+{} / -{}",
-            commit.added_lines, commit.removed_lines
-        ));
-    });
-    ui.separator();
-
-    if commit.diff_content.is_empty() {
-        ui.weak("No textual diff available (the file may be binary or empty)");
-        return;
-    }
-
-    // Already parsed and paired when the file was selected — this only paints.
-    commit.scroll = diff_view::show_side_by_side(
-        ui,
-        SideBySideView {
-            entries: &commit.diff_entries,
-            scroll: commit.scroll,
-        },
-    );
 }

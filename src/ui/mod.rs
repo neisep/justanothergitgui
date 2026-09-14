@@ -1,4 +1,5 @@
 pub mod bottom_bar;
+pub mod change_set_view;
 pub mod commit_panel;
 pub mod commit_view;
 pub mod dialogs;
@@ -6,6 +7,7 @@ pub mod diff_panel;
 pub mod diff_view;
 pub mod file_panel;
 pub mod history_panel;
+pub mod review_view;
 pub mod tab_bar;
 pub mod worktree_panel;
 
