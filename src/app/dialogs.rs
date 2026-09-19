@@ -166,6 +166,27 @@ impl GitGuiApp {
             }
         }
 
+        if output.save_git_identity {
+            let name = self.settings_dialog.git_user_name.trim().to_string();
+            let email = self.settings_dialog.git_user_email.trim().to_string();
+            match git2::Config::open_default().and_then(|mut cfg| {
+                cfg.set_str("user.name", &name)?;
+                cfg.set_str("user.email", &email)?;
+                Ok(())
+            }) {
+                Ok(()) => {
+                    self.settings_dialog.git_user_name = name;
+                    self.settings_dialog.git_user_email = email;
+                    self.settings_dialog.status = "Git identity saved.".into();
+                }
+                Err(error) => {
+                    self.logger.log_error("Git identity", &error.to_string());
+                    self.settings_dialog.status =
+                        format!("Could not save git identity: {error}");
+                }
+            }
+        }
+
         if !output.keep_open {
             self.settings_dialog.focus_custom_scopes_requested = false;
         }

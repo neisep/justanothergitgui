@@ -662,6 +662,17 @@ impl GitGuiApp {
                         for branch in &state.repo.branches {
                             ui.selectable_value(&mut state.repo.branch, branch.clone(), branch);
                         }
+                        if !state.repo.remote_branches.is_empty() {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Remote").weak());
+                            for branch in &state.repo.remote_branches {
+                                ui.selectable_value(
+                                    &mut state.repo.branch,
+                                    branch.clone(),
+                                    branch,
+                                );
+                            }
+                        }
                     });
 
                 if state.repo.branch != prev_branch {

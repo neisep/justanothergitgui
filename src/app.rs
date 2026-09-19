@@ -103,6 +103,9 @@ pub(crate) struct SettingsDialogState {
     pub(crate) status: String,
     pub(crate) custom_scopes_input: String,
     pub(crate) focus_custom_scopes_requested: bool,
+    pub(crate) git_user_name: String,
+    pub(crate) git_user_email: String,
+    pub(crate) git_identity_loaded: bool,
 }
 
 pub struct GitGuiApp {
@@ -223,6 +226,9 @@ impl GitGuiApp {
                 status: String::new(),
                 custom_scopes_input: settings_custom_scopes_input,
                 focus_custom_scopes_requested: false,
+                git_user_name: String::new(),
+                git_user_email: String::new(),
+                git_identity_loaded: false,
             },
             github_auth_session,
             github_auth_prompt: None,
