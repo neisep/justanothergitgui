@@ -75,3 +75,54 @@ pub struct CreateBranchPreview {
     pub untracked_files: usize,
     pub staged_files: usize,
 }
+
+/// How long ago an instant was, in the vocabulary the history list already uses.
+///
+/// Both arguments are Unix seconds. Lives here rather than beside its first
+/// caller because a commit's age and a worktree's age must read the same way,
+/// and the two are computed in different layers.
+///
+/// Deliberately coarse: the app bundles no timezone database, so a wall-clock
+/// time of day is not reachable, and "3h ago" is what the reader wanted anyway.
+pub fn relative_time(now_secs: i64, then_secs: i64) -> String {
+    let diff = now_secs - then_secs;
+    if diff < 0 {
+        return "in the future".into();
+    }
+    if diff < 60 {
+        return "just now".into();
+    }
+    if diff < 3600 {
+        return format!("{}m ago", diff / 60);
+    }
+    if diff < 86400 {
+        return format!("{}h ago", diff / 3600);
+    }
+    if diff < 2592000 {
+        return format!("{}d ago", diff / 86400);
+    }
+    format!("{}mo ago", diff / 2592000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relative_time;
+
+    /// The thresholds are display copy the history list has always shown; a
+    /// worktree's "started" line now shares them.
+    #[test]
+    fn relative_time_names_the_largest_unit_that_fits() {
+        assert_eq!(relative_time(1_000, 1_000), "just now");
+        assert_eq!(relative_time(1_059, 1_000), "just now");
+        assert_eq!(relative_time(1_060, 1_000), "1m ago");
+        assert_eq!(relative_time(1_000 + 3_600, 1_000), "1h ago");
+        assert_eq!(relative_time(1_000 + 86_400, 1_000), "1d ago");
+        assert_eq!(relative_time(1_000 + 2_592_000, 1_000), "1mo ago");
+    }
+
+    /// A clock that went backwards must not underflow into a huge age.
+    #[test]
+    fn an_instant_in_the_future_says_so() {
+        assert_eq!(relative_time(1_000, 2_000), "in the future");
+    }
+}

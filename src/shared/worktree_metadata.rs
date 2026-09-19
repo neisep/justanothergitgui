@@ -22,6 +22,11 @@ use crate::shared::worktrees::LinkedWorktree;
 pub const MAX_TASK_LEN: usize = 512;
 /// Longest agent name kept.
 pub const MAX_AGENT_LEN: usize = 128;
+/// Longest free-form note kept.
+///
+/// Four times the task's cap: notes are prose, and they reach a resizable
+/// right-hand panel that scrolls, not a 300px sidebar row.
+pub const MAX_NOTES_LEN: usize = 2048;
 
 /// Metadata for every worktree of one repository, keyed by worktree name —
 /// git's own stable handle, the same key [`crate::shared::worktrees::LinkedWorktree::name`]
@@ -61,6 +66,21 @@ pub struct WorktreeMetadata {
     /// the base of.
     #[serde(default)]
     pub base_commit: String,
+    /// Whatever else the user wants to remember about this worktree, in prose.
+    ///
+    /// The states above answer "how far has this got"; this answers everything
+    /// they cannot. Kept out of [`Self::task`] so the one-line summary the
+    /// sidebar shows stays a summary.
+    #[serde(default)]
+    pub notes: String,
+    /// Unix seconds the app created this worktree, or `0` when it did not.
+    ///
+    /// Stored as an instant rather than a formatted string so it can be shown
+    /// relative to now ("3h ago") however long the worktree lives. `0` rather
+    /// than `Option` because that is what an absent field defaults to, and the
+    /// distinction "created before this field existed" is not worth a variant.
+    #[serde(default)]
+    pub started: i64,
     #[serde(default)]
     pub review: ReviewState,
     #[serde(default)]
@@ -100,6 +120,7 @@ impl WorktreeMetadata {
     pub fn clamped(mut self) -> Self {
         self.task = clamp_text(self.task, MAX_TASK_LEN);
         self.agent = clamp_text(self.agent, MAX_AGENT_LEN);
+        self.notes = clamp_text(self.notes, MAX_NOTES_LEN);
         self
     }
 }
@@ -277,12 +298,15 @@ mod tests {
         let metadata = WorktreeMetadata {
             task: "å".repeat(MAX_TASK_LEN),
             agent: "b".repeat(MAX_AGENT_LEN * 2),
+            notes: "ö".repeat(MAX_NOTES_LEN),
             ..WorktreeMetadata::default()
         }
         .clamped();
 
         assert!(metadata.task.len() <= MAX_TASK_LEN);
         assert!(metadata.agent.len() <= MAX_AGENT_LEN);
+        assert!(metadata.notes.len() <= MAX_NOTES_LEN);
+        assert!(metadata.notes.chars().all(|c| c == 'ö'));
         // Trimming mid-codepoint would have panicked or produced invalid UTF-8.
         assert!(metadata.task.chars().all(|c| c == 'å'));
     }
@@ -311,6 +335,14 @@ mod tests {
 
         metadata = WorktreeMetadata::default();
         metadata.test = TestState::Failing;
+        assert!(!metadata.is_empty());
+
+        metadata = WorktreeMetadata::default();
+        metadata.notes = "worth remembering".into();
+        assert!(!metadata.is_empty());
+
+        metadata = WorktreeMetadata::default();
+        metadata.started = 1_700_000_000;
         assert!(!metadata.is_empty());
     }
 
@@ -349,6 +381,25 @@ mod tests {
         assert!(metadata.agent.is_empty());
         assert_eq!(metadata.review, ReviewState::Unreviewed);
         assert_eq!(metadata.test, TestState::Unknown);
+        // Written before these two fields existed, and still readable.
+        assert!(metadata.notes.is_empty());
+        assert_eq!(metadata.started, 0);
+    }
+
+    /// Both new fields have to come back exactly as they went in: `started` is
+    /// the only record of when a worktree began, and notes are the user's prose.
+    #[test]
+    fn notes_and_started_round_trip_through_the_file_format() {
+        let original = WorktreeMetadata {
+            notes: "Waiting on review.\n\nSecond paragraph.".into(),
+            started: 1_700_000_000,
+            ..WorktreeMetadata::default()
+        };
+
+        let encoded = serde_json::to_string(&original).expect("serialize");
+        let decoded: WorktreeMetadata = serde_json::from_str(&encoded).expect("deserialize");
+
+        assert_eq!(decoded, original);
     }
 
     #[test]

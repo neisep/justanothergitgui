@@ -16,7 +16,7 @@ use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthCheck, GithubAuthPrompt,
     GithubAuthSession, GithubRepoSummary, PushSuccess,
 };
-use crate::shared::review::ReviewBase;
+use crate::shared::review::{ReviewBase, ReviewSummary};
 use crate::shared::worktree_metadata::{WorktreeMetadata, WorktreeMetadataMap};
 use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
@@ -137,6 +137,13 @@ impl AppRepoRead {
         base: &ReviewBase,
     ) -> Result<Vec<CommitFileChange>, git2::Error> {
         worktree_review::changed_files(worktree_repo, base)
+    }
+
+    pub(super) fn review_summary(
+        worktree_repo: &Repository,
+        base: &ReviewBase,
+    ) -> Result<ReviewSummary, git2::Error> {
+        worktree_review::summary(worktree_repo, base)
     }
 
     pub(super) fn review_file_diff(

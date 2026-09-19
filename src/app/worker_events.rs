@@ -38,6 +38,9 @@ impl<'a> RepoWorkerContext<'a> {
         let key = format!("wt:{}", created.name);
         let metadata = WorktreeMetadata {
             base_commit: created.base_commit.clone(),
+            // Recorded here for the same reason as the base commit: this is the
+            // only moment the app knows the worktree is new.
+            started: helpers::now_secs(),
             ..WorktreeMetadata::default()
         };
         self.write_metadata(&key, Some(metadata), "Record worktree base commit");

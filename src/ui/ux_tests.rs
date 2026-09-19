@@ -171,6 +171,51 @@ fn draw_files(ui: &mut egui::Ui, state: &mut AppState) {
     );
 }
 
+/// Whatever holds the right-hand slot in the current centre view.
+fn draw_right(ui: &mut egui::Ui, state: &mut AppState) {
+    super::right_panel::show(ui, state, CommitMessageRuleSet::Off, &[], None);
+}
+
+/// The Agents tab, with one worktree picked and its totals already worked out.
+fn agents_state() -> AppState {
+    let mut state = state_with_worktrees();
+    state.inspector.center_view = crate::state::CenterView::Agents;
+    state.repo.worktree_metadata.insert(
+        "wt:feature-auth".into(),
+        WorktreeMetadata {
+            task: "Add OAuth login".into(),
+            agent: "claude".into(),
+            notes: "Waiting on a second opinion.".into(),
+            base_commit: "a1b2c3d4e5".into(),
+            started: 1_700_000_000,
+            review: ReviewState::Approved,
+            test: TestState::Passing,
+        },
+    );
+    state
+}
+
+fn pick_feature_auth(state: &mut AppState) {
+    state
+        .inspector
+        .set_selected_worktree(Some(crate::state::SelectedWorktree {
+            storage_key: "wt:feature-auth".into(),
+            worktree_name: "feature-auth".into(),
+            path: std::path::PathBuf::from("/tmp/worktrees/feature-auth"),
+            base: Some(ReviewBase {
+                oid: "a1b2c3d4".repeat(5),
+                short_oid: "a1b2c3d".into(),
+                source: ReviewBaseSource::Recorded,
+            }),
+            summary: Some(crate::shared::review::ReviewSummary {
+                files_changed: 7,
+                insertions: 123,
+                deletions: 45,
+            }),
+            load_error: None,
+        }));
+}
+
 fn linked_worktree(name: &str, is_main: bool, status: LinkedWorktreeStatus) -> LinkedWorktree {
     LinkedWorktree {
         name: name.into(),
@@ -204,7 +249,7 @@ fn state_with_worktrees() -> AppState {
 }
 
 #[test]
-fn the_sidebar_lists_every_worktree_with_its_status() {
+fn the_sidebar_lists_every_worktree_with_the_branch_it_has_checked_out() {
     let mut state = state_with_worktrees();
     let mut harness = Harness::new(1280.0);
 
@@ -213,11 +258,17 @@ fn the_sidebar_lists_every_worktree_with_its_status() {
     label(&painted, "Worktrees (2)");
     label(&painted, "myapp");
     label(&painted, "feature-auth");
-    label(&painted, "Clean");
-    label(&painted, "4 modified files");
-    // The branch belongs in the list, not only in the tooltip.
+
+    // A worktree is a directory and a branch is a name pointing at a commit;
+    // the two are free to differ, so each row says both.
     label(&painted, "feature/myapp");
     label(&painted, "feature/feature-auth");
+
+    // The dirty counts lost their column: four truncated fields were fighting
+    // over 300px. The marker carries the status as colour, and the tooltip and
+    // the Agents table carry the counts.
+    assert!(!has_label(&painted, "Clean"));
+    assert!(!has_label(&painted, "4 modified files"));
     // The file sections keep their own headers: the strip must not push either
     // of them out of the panel.
     assert!(has_label(&painted, "Unstaged (0)"));
@@ -480,6 +531,7 @@ fn a_worktree_with_metadata_shows_its_states_as_chips() {
             base_commit: "a1b2c3d4e5".into(),
             review: ReviewState::NeedsReview,
             test: TestState::Failing,
+            ..WorktreeMetadata::default()
         },
     );
     let mut harness = Harness::new(1280.0);
@@ -564,6 +616,7 @@ fn the_metadata_form_saves_and_clears_through_actions_only() {
             base_commit: "a1b2c3d4e5".into(),
             review: ReviewState::NeedsReview,
             test: TestState::Passing,
+            ..WorktreeMetadata::default()
         },
     );
     let mut saved = false;
@@ -573,8 +626,13 @@ fn the_metadata_form_saves_and_clears_through_actions_only() {
     {
         let mut draw = |ui: &mut egui::Ui| {
             let ctx = ui.ctx().clone();
-            let output =
-                super::dialogs::worktree_metadata::show(&ctx, "feature-auth", &mut dialog, None);
+            let output = super::dialogs::worktree_metadata::show(
+                &ctx,
+                "feature-auth",
+                &mut dialog,
+                None,
+                None,
+            );
             saved |= output.save_requested;
             cleared |= output.clear_requested;
         };
@@ -608,7 +666,7 @@ fn the_metadata_form_explains_an_unrecorded_base_commit() {
 
     let painted = harness.settled(&mut |ui| {
         let ctx = ui.ctx().clone();
-        super::dialogs::worktree_metadata::show(&ctx, "external", &mut dialog, None);
+        super::dialogs::worktree_metadata::show(&ctx, "external", &mut dialog, None, None);
     });
 
     label(
@@ -624,6 +682,7 @@ fn reviewed_state(base_source: ReviewBaseSource) -> AppState {
         .inspector
         .set_review(Some(crate::state::SelectedReview {
             worktree_name: "feature-auth".into(),
+            storage_key: "wt:feature-auth".into(),
             worktree_path: std::path::PathBuf::from("/tmp/worktrees/feature-auth"),
             branch: Some("feature/auth".into()),
             base: ReviewBase {
@@ -1107,4 +1166,253 @@ fn the_worktrees_section_holds_its_height_across_frames_and_under_hover() {
             "hovering {name} must not move the section"
         );
     }
+}
+
+/// The row looked like a switcher and behaved like a preview: it highlighted,
+/// and the file lists below it went on showing another checkout's files. One
+/// click now switches, which is what it always appeared to offer.
+#[test]
+fn a_single_click_on_a_worktree_row_switches_to_it() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    let row = label(&painted, "feature-auth").rect.center();
+
+    // Switching is the app root's job, so it travels back as a response rather
+    // than as a `UiAction`.
+    let mut opened = None;
+    harness.click(row, &mut |ui| {
+        let response = super::file_panel::show(
+            ui,
+            super::file_panel::FilePanelState {
+                worktree: &state.worktree,
+                worktrees: &state.repo.linked_worktrees,
+                worktree_metadata: &state.repo.worktree_metadata,
+                inspector: &mut state.inspector,
+                ui_state: &mut state.ui,
+            },
+        );
+        if response.open_worktree.is_some() {
+            opened = response.open_worktree.clone();
+        }
+    });
+
+    assert_eq!(
+        opened,
+        Some(std::path::PathBuf::from("/tmp/worktrees/feature-auth")),
+        "one click must switch to that worktree"
+    );
+}
+
+/// Clicking the checkout you are already in must not ask to open it again.
+#[test]
+fn clicking_the_current_worktree_does_nothing() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_files(ui, &mut state));
+    // `myapp` is the main worktree and the one this tab has open.
+    let row = label(&painted, "myapp").rect.center();
+
+    let mut opened = None;
+    harness.click(row, &mut |ui| {
+        let response = super::file_panel::show(
+            ui,
+            super::file_panel::FilePanelState {
+                worktree: &state.worktree,
+                worktrees: &state.repo.linked_worktrees,
+                worktree_metadata: &state.repo.worktree_metadata,
+                inspector: &mut state.inspector,
+                ui_state: &mut state.ui,
+            },
+        );
+        if response.open_worktree.is_some() {
+            opened = response.open_worktree.clone();
+        }
+    });
+
+    assert!(opened.is_none(), "already there: {opened:?}");
+    assert!(state.ui.actions.is_empty(), "{:?}", state.ui.actions);
+}
+
+#[test]
+fn the_agents_tab_is_reachable_from_the_centre_tab_strip() {
+    let mut state = state_with_worktrees();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+    let tab = label(&painted, "Agents").rect.center();
+
+    harness.click(tab, &mut |ui| draw_center(ui, &mut state));
+
+    assert!(
+        matches!(state.ui.actions.as_slice(), [UiAction::ShowAgents]),
+        "the tab must only ask to switch: {:?}",
+        state.ui.actions
+    );
+}
+
+#[test]
+fn the_agents_tab_lists_every_worktree_with_its_agent_and_states() {
+    let mut state = agents_state();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+
+    // The header, so seven columns are readable at all.
+    label(&painted, "Worktree");
+    label(&painted, "Agent");
+    label(&painted, "Branch");
+    label(&painted, "Changes");
+    // Every worktree, not only the ones with an agent recorded.
+    label(&painted, "myapp");
+    label(&painted, "feature-auth");
+    label(&painted, "claude");
+    label(&painted, "feature/feature-auth");
+    label(&painted, "4 modified files");
+    // The full state labels: the centre has room where the sidebar abbreviates.
+    label(&painted, "Approved");
+    label(&painted, "Passing");
+    label(&painted, "2 worktrees");
+}
+
+#[test]
+fn clicking_an_agents_row_selects_it_without_opening_a_diff() {
+    let mut state = agents_state();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+    let row = label(&painted, "feature-auth").rect.center();
+
+    harness.click(row, &mut |ui| draw_center(ui, &mut state));
+
+    assert!(
+        matches!(
+            state.ui.actions.as_slice(),
+            [UiAction::SelectWorktree(worktree)] if worktree.name == "feature-auth"
+        ),
+        "picking a row must not also open its diff: {:?}",
+        state.ui.actions
+    );
+}
+
+#[test]
+fn the_view_diff_button_opens_that_worktrees_review() {
+    let mut state = agents_state();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+    // Two rows, so two Diff buttons; the lower one belongs to feature-auth.
+    let row_top = label(&painted, "feature-auth").rect.top();
+    let diff = painted
+        .iter()
+        .filter(|painted| painted.text == "Diff")
+        .find(|painted| (painted.rect.top() - row_top).abs() < 6.0)
+        .expect("a Diff button on the feature-auth row");
+
+    harness.click(diff.rect.center(), &mut |ui| draw_center(ui, &mut state));
+
+    // The button swallows the row's own click: it is a diff, not a pick.
+    assert!(
+        matches!(
+            state.ui.actions.as_slice(),
+            [UiAction::ReviewWorktree(worktree)] if worktree.name == "feature-auth"
+        ),
+        "the button must only ask for the review: {:?}",
+        state.ui.actions
+    );
+}
+
+#[test]
+fn the_task_details_panel_shows_the_selected_worktrees_task_notes_and_totals() {
+    let mut state = agents_state();
+    pick_feature_auth(&mut state);
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_right(ui, &mut state));
+
+    label(&painted, "Task Details");
+    label(&painted, "feature-auth");
+    label(&painted, "Add OAuth login");
+    label(&painted, "Waiting on a second opinion.");
+    label(&painted, "a1b2c3d");
+    // ASCII signs: a true minus would paint a box the scrape would accept.
+    label(&painted, "7 files, +123 -45");
+    label(&painted, "Approved");
+}
+
+#[test]
+fn the_task_details_panel_explains_itself_when_nothing_is_selected() {
+    let mut state = agents_state();
+    let mut harness = Harness::new(1280.0);
+
+    let painted = harness.settled(&mut |ui| draw_right(ui, &mut state));
+
+    label(&painted, "No worktree selected");
+    assert!(!has_label(&painted, "Add OAuth login"));
+}
+
+#[test]
+fn the_task_details_panel_replaces_the_commit_box_on_the_agents_tab() {
+    let mut state = agents_state();
+    pick_feature_auth(&mut state);
+    let mut harness = Harness::new(1280.0);
+
+    let on_agents = harness.settled(&mut |ui| draw_right(ui, &mut state));
+    assert!(has_label(&on_agents, "Task Details"));
+    assert!(
+        !has_label(&on_agents, "Summary:"),
+        "the commit box must not be on screen on the Agents tab"
+    );
+
+    // Every other view keeps the commit panel exactly as it was.
+    state.inspector.center_view = crate::state::CenterView::Diff;
+    let on_changes = harness.settled(&mut |ui| draw_right(ui, &mut state));
+    assert!(has_label(&on_changes, "Summary:"));
+    assert!(!has_label(&on_changes, "Task Details"));
+}
+
+/// Painting a label is not the same as showing it: a table column pushed past
+/// the panel edge still paints, just outside its clip rect. The Agents table
+/// shipped with 850px of columns inside a 650px panel and looked fine in a test
+/// that drew the centre at full window width.
+fn assert_visible(painted: &[PaintedText], text: &str) {
+    let found = label(painted, text);
+    assert!(
+        found.clip.expand(1.0).contains_rect(found.rect),
+        "{text:?} is painted at {:?} but clipped to {:?}",
+        found.rect,
+        found.clip
+    );
+}
+
+#[test]
+fn every_agents_column_is_visible_at_the_real_centre_width() {
+    let mut state = agents_state();
+    // The widest pill of all, so the Review column is measured at its worst.
+    state.repo.worktree_metadata.insert(
+        "main:".into(),
+        WorktreeMetadata {
+            review: ReviewState::ChangesRequested,
+            ..WorktreeMetadata::default()
+        },
+    );
+    // What the centre actually gets once the sidebar and the details panel have
+    // claimed their slots, rather than the whole window.
+    let mut harness = Harness::new(650.0);
+
+    let painted = harness.settled(&mut |ui| draw_center(ui, &mut state));
+
+    for header in [
+        "Worktree", "Agent", "Branch", "Changes", "Tests", "Review", "Actions",
+    ] {
+        assert_visible(&painted, header);
+    }
+    // The rightmost cell contents, not just the header above them — and *both*
+    // action buttons: the second one was clipped while the first looked fine.
+    assert_visible(&painted, "Approved");
+    assert_visible(&painted, "Changes requested");
+    assert_visible(&painted, "Diff");
+    assert_visible(&painted, "Edit\u{2026}");
 }

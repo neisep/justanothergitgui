@@ -7,9 +7,9 @@ use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
 };
 use crate::shared::github::PullRequestPrompt;
-use crate::shared::review::ReviewBase;
+use crate::shared::review::{ReviewBase, ReviewSummary};
 use crate::shared::worktree_metadata::{
-    ReviewState, TestState, WorktreeMetadata, WorktreeMetadataMap,
+    ReviewState, TestState, WorktreeMetadata, WorktreeMetadataMap, storage_key,
 };
 use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
@@ -107,6 +107,10 @@ pub struct SelectedCommit {
 #[derive(Debug)]
 pub struct SelectedReview {
     pub worktree_name: String,
+    /// Its [`crate::shared::worktree_metadata::storage_key`]. The reconciliation
+    /// key, because a linked worktree may legally be called the same thing as
+    /// the main one and the name alone cannot tell them apart.
+    pub storage_key: String,
     /// The checkout's own directory. Held because each patch reopens it: a
     /// worktree is a different repository from the tab's, and nothing else in
     /// the inspector holds that handle.
@@ -119,12 +123,58 @@ pub struct SelectedReview {
     pub changes: ChangeSet,
 }
 
+/// The worktree the user picked in the Agents view, or in the sidebar.
+///
+/// Holds identity plus only those facts that need a `Repository` to work out —
+/// the base commit and the totals since it. Branch, status and metadata are
+/// deliberately **not** cached here: `refresh_status` re-reads all three every
+/// refresh, so a copy taken at click time would make the details panel
+/// contradict the row beside it, and would make an edit to the metadata look
+/// like it had not been saved. Both readers look the live row up with
+/// [`RepoState::worktree_by_key`].
+#[derive(Debug)]
+pub struct SelectedWorktree {
+    /// Its [`crate::shared::worktree_metadata::storage_key`]: the metadata key
+    /// and the reconciliation key in one.
+    pub storage_key: String,
+    /// Git's own name for it, for messages.
+    pub worktree_name: String,
+    /// The checkout's own directory, reopened on every refresh to re-total it.
+    pub path: PathBuf,
+    /// `None` when the base could not be resolved — an unborn HEAD, or a
+    /// checkout that is no longer on disk. [`Self::load_error`] says which.
+    pub base: Option<ReviewBase>,
+    pub summary: Option<ReviewSummary>,
+    /// Why the base or the totals could not be read.
+    ///
+    /// Kept apart from an absent summary for the reason [`ChangeSet::load_error`]
+    /// is: a worktree whose directory was deleted must read as "could not be
+    /// read", not as "nothing changed here".
+    pub load_error: Option<String>,
+}
+
+impl SelectedWorktree {
+    /// Record why this worktree could not be read, and hand the detail back for
+    /// the caller to log. The selection itself is kept: a checkout that cannot
+    /// be opened is a row the view has to explain, not one to silently drop.
+    ///
+    /// The two strings are deliberately different. `display` goes in the panel
+    /// and has to fit a 300px column in a sentence a person can act on;
+    /// `detail` carries the raw git message, which is worth keeping in the log
+    /// and is five lines of path and error codes on screen.
+    pub fn record_failure(&mut self, display: impl Into<String>, detail: String) -> String {
+        self.load_error = Some(display.into());
+        detail
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CenterView {
     #[default]
     Diff,
     History,
     Review,
+    Agents,
 }
 
 #[derive(Clone, Debug)]
@@ -259,8 +309,9 @@ pub struct RepoState {
     pub commit_history: Vec<CommitEntry>,
     pub pull_request_prompt: Option<PullRequestPrompt>,
     /// What the user recorded about this repository's worktrees, keyed by
-    /// worktree name. Loaded once when the tab opens and written back on edit —
-    /// it is app state, not something a refresh re-reads from git.
+    /// [`storage_key`]. Re-read from disk on every refresh, not cached across
+    /// them: several tabs can be showing one repository, and the file is the
+    /// only thing they share. Written back one entry at a time on edit.
     pub worktree_metadata: WorktreeMetadataMap,
     /// Every checkout sharing this repository's object store, main tree first.
     ///
@@ -268,6 +319,19 @@ pub struct RepoState {
     /// describes the repository, not this tab's working tree — and because the
     /// panel has to keep showing the *other* worktrees while this one changes.
     pub linked_worktrees: Vec<LinkedWorktree>,
+}
+
+impl RepoState {
+    /// The listed worktree with this [`storage_key`], as the last refresh read
+    /// it.
+    ///
+    /// The way every view resolves a remembered selection back to live data,
+    /// rather than holding a copy that quietly goes stale.
+    pub fn worktree_by_key(&self, key: &str) -> Option<&LinkedWorktree> {
+        self.linked_worktrees
+            .iter()
+            .find(|worktree| storage_key(worktree) == key)
+    }
 }
 
 #[derive(Default)]
@@ -301,6 +365,13 @@ pub struct InspectorState {
     /// Worktree opened in the Review tab, or `None` while nothing is under
     /// review.
     pub selected_review: Option<SelectedReview>,
+    /// Worktree the user picked in the Agents view or the sidebar, or `None`
+    /// while nothing is picked.
+    ///
+    /// Independent of [`Self::selected_review`]: picking a worktree to read
+    /// about is not the same act as opening its diff, and the two views can
+    /// legitimately be pointed at different worktrees.
+    pub selected_worktree: Option<SelectedWorktree>,
     pub dragging: Option<DragFile>,
 }
 
@@ -358,6 +429,19 @@ impl InspectorState {
     /// Open (or close) the Review tab's view, on the same terms.
     pub fn set_review(&mut self, review: Option<SelectedReview>) {
         self.selected_review = review;
+    }
+
+    /// Pick (or unpick) the worktree the Agents view and the sidebar follow.
+    pub fn set_selected_worktree(&mut self, selected: Option<SelectedWorktree>) {
+        self.selected_worktree = selected;
+    }
+
+    /// The picked worktree's storage key, for the panels that only need to know
+    /// which row is highlighted.
+    pub fn selected_worktree_key(&self) -> Option<&str> {
+        self.selected_worktree
+            .as_ref()
+            .map(|selected| selected.storage_key.as_str())
     }
 }
 
@@ -465,9 +549,14 @@ pub struct WorktreeMetadataDialogState {
     pub save_error: Option<String>,
     pub task: String,
     pub agent: String,
+    pub notes: String,
     /// Shown read-only: the app records this when it creates a worktree and
     /// there is nothing sensible for the user to type here.
     pub base_commit: String,
+    /// Shown read-only, for the same reason as [`Self::base_commit`], and
+    /// carried through [`WorktreeMetadataDialogState::metadata`] so saving the
+    /// form cannot silently forget when the worktree began.
+    pub started: i64,
     pub review: ReviewState,
     pub test: TestState,
     pub focus_task_requested: bool,
@@ -480,7 +569,9 @@ impl WorktreeMetadataDialogState {
         self.save_error = None;
         self.task = metadata.task.clone();
         self.agent = metadata.agent.clone();
+        self.notes = metadata.notes.clone();
         self.base_commit = metadata.base_commit.clone();
+        self.started = metadata.started;
         self.review = metadata.review;
         self.test = metadata.test;
         self.focus_task_requested = true;
@@ -491,7 +582,11 @@ impl WorktreeMetadataDialogState {
         WorktreeMetadata {
             task: self.task.trim().to_string(),
             agent: self.agent.trim().to_string(),
+            // Only the trailing whitespace goes: notes are prose, and the
+            // paragraph breaks inside them are the user's.
+            notes: self.notes.trim_end().to_string(),
             base_commit: self.base_commit.clone(),
+            started: self.started,
             review: self.review,
             test: self.test,
         }
@@ -517,6 +612,52 @@ impl Default for UiState {
             actions: Vec::new(),
             busy: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod worktree_metadata_form_tests {
+    use super::*;
+
+    /// The form shows `base_commit` and `started` but cannot edit either, so
+    /// [`WorktreeMetadataDialogState::metadata`] has to carry them through.
+    /// Rebuilding the struct without them would silently forget where and when
+    /// the worktree began, on every save.
+    #[test]
+    fn a_save_carries_the_fields_the_form_cannot_edit() {
+        let stored = WorktreeMetadata {
+            task: "Add OAuth login".into(),
+            agent: "claude".into(),
+            notes: "Waiting on review.".into(),
+            base_commit: "a1b2c3d4e5".into(),
+            started: 1_700_000_000,
+            review: ReviewState::NeedsReview,
+            test: TestState::Passing,
+        };
+
+        let mut dialog = WorktreeMetadataDialogState::default();
+        dialog.open("feature-auth", &stored);
+        // The user edits only what the form exposes.
+        dialog.review = ReviewState::Approved;
+
+        let saved = dialog.metadata();
+
+        assert_eq!(saved.base_commit, stored.base_commit);
+        assert_eq!(saved.started, stored.started);
+        assert_eq!(saved.notes, stored.notes);
+        assert_eq!(saved.review, ReviewState::Approved);
+    }
+
+    /// Notes are prose: the paragraph breaks inside them belong to the user, and
+    /// only the trailing whitespace a text box collects is dropped.
+    #[test]
+    fn saving_notes_keeps_their_internal_line_breaks() {
+        let dialog = WorktreeMetadataDialogState {
+            notes: "First line.\n\nSecond line.\n\n".into(),
+            ..WorktreeMetadataDialogState::default()
+        };
+
+        assert_eq!(dialog.metadata().notes, "First line.\n\nSecond line.");
     }
 }
 

@@ -37,6 +37,44 @@ pub enum ReviewBaseSource {
     ForkPoint,
 }
 
+/// How much a worktree has changed since its base, in one line.
+///
+/// Distinct from [`crate::shared::worktrees::LinkedWorktreeStatus`], which
+/// counts *uncommitted* files in a checkout. This counts everything since the
+/// base commit — committed, staged and unstaged together — which is the number
+/// a reviewer wants and the other is not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReviewSummary {
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+impl ReviewSummary {
+    /// `"8 files, +120 -45"`, or a plain sentence when nothing differs.
+    ///
+    /// Plus and minus are ASCII on purpose: the bundled fonts have no `\u{2212}`
+    /// (the true minus sign), and a missing glyph paints a box that the headless
+    /// tests — which scrape painted *text* — would happily accept.
+    pub fn label(&self) -> String {
+        if self.is_empty() {
+            return "No changes since its base".into();
+        }
+
+        format!(
+            "{} file{}, +{} -{}",
+            self.files_changed,
+            if self.files_changed == 1 { "" } else { "s" },
+            self.insertions,
+            self.deletions
+        )
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files_changed == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,5 +93,38 @@ mod tests {
 
         assert_ne!(recorded.description(), derived.description());
         assert!(derived.description().contains("fork point"));
+    }
+
+    #[test]
+    fn the_summary_reads_as_one_line() {
+        let many = ReviewSummary {
+            files_changed: 8,
+            insertions: 120,
+            deletions: 45,
+        };
+        assert_eq!(many.label(), "8 files, +120 -45");
+
+        let one = ReviewSummary {
+            files_changed: 1,
+            insertions: 3,
+            deletions: 0,
+        };
+        assert_eq!(one.label(), "1 file, +3 -0");
+
+        let none = ReviewSummary::default();
+        assert!(none.is_empty());
+        assert_eq!(none.label(), "No changes since its base");
+    }
+
+    /// A missing glyph renders as a box the painted-text tests would accept, so
+    /// the signs have to stay inside ASCII.
+    #[test]
+    fn the_summary_uses_no_characters_the_bundled_fonts_lack() {
+        let summary = ReviewSummary {
+            files_changed: 2,
+            insertions: 1,
+            deletions: 1,
+        };
+        assert!(summary.label().is_ascii());
     }
 }

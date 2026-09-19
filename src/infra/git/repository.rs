@@ -419,7 +419,7 @@ fn build_commit_entry(
         short_oid,
         message: commit.summary().unwrap_or_default().to_string(),
         author: commit.author().name().unwrap_or_default().to_string(),
-        time: format_relative_time(now, commit.time().seconds()),
+        time: crate::shared::git::relative_time(now, commit.time().seconds()),
         is_merge: commit.parent_count() > 1,
         branch_labels,
     })
@@ -505,26 +505,6 @@ pub(crate) fn repo_root_path(repo: &Repository) -> PathBuf {
     repo.workdir()
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| repo.path().parent().unwrap_or(repo.path()).to_path_buf())
-}
-
-fn format_relative_time(now: i64, then: i64) -> String {
-    let diff = now - then;
-    if diff < 0 {
-        return "in the future".into();
-    }
-    if diff < 60 {
-        return "just now".into();
-    }
-    if diff < 3600 {
-        return format!("{}m ago", diff / 60);
-    }
-    if diff < 86400 {
-        return format!("{}h ago", diff / 3600);
-    }
-    if diff < 2592000 {
-        return format!("{}d ago", diff / 86400);
-    }
-    format!("{}mo ago", diff / 2592000)
 }
 
 #[cfg(test)]

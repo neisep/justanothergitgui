@@ -1,3 +1,4 @@
+pub mod agents_panel;
 pub mod bottom_bar;
 pub mod change_set_view;
 pub mod commit_panel;
@@ -8,7 +9,10 @@ pub mod diff_view;
 pub mod file_panel;
 pub mod history_panel;
 pub mod review_view;
+pub mod right_panel;
 pub mod tab_bar;
+pub mod task_details_panel;
+pub mod worktree_chips;
 pub mod worktree_panel;
 
 #[cfg(test)]

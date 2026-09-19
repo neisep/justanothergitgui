@@ -16,7 +16,7 @@
 use git2::Repository;
 
 use crate::shared::git::CommitFileChange;
-use crate::shared::review::{ReviewBase, ReviewBaseSource};
+use crate::shared::review::{ReviewBase, ReviewBaseSource, ReviewSummary};
 
 use super::commits;
 use super::linked_worktrees;
@@ -103,6 +103,29 @@ pub fn changed_files(
     let diff = diff_base_to_worktree(worktree_repo, base, &mut opts)?;
 
     Ok(commits::changed_files(&diff))
+}
+
+/// How many files and lines differ between the base commit and the worktree.
+///
+/// Counts the same set [`changed_files`] lists, so the two can never disagree
+/// about what "changed" means. `show_untracked_content` is set for the reason
+/// [`file_diff`] sets it: without it an untracked file is reported as a delta
+/// carrying no lines, and a brand-new file — the very thing an agent leaves
+/// behind — would count zero insertions.
+pub fn summary(
+    worktree_repo: &Repository,
+    base: &ReviewBase,
+) -> Result<ReviewSummary, git2::Error> {
+    let mut opts = diff_options();
+    opts.show_untracked_content(true);
+    let diff = diff_base_to_worktree(worktree_repo, base, &mut opts)?;
+    let stats = diff.stats()?;
+
+    Ok(ReviewSummary {
+        files_changed: stats.files_changed(),
+        insertions: stats.insertions(),
+        deletions: stats.deletions(),
+    })
 }
 
 /// Unified patch text for one path. Empty when the path is unchanged or binary.
@@ -257,6 +280,73 @@ mod tests {
 
         assert_eq!(paths(&files), vec!["src/created.rs"]);
         assert_eq!(files[0].display_status, "new");
+    }
+
+    /// The highest-value test here: without `show_untracked_content(true)` a new
+    /// file is still reported as a delta, but with no lines, so the totals would
+    /// read "1 file, +0 -0" for work an agent just wrote.
+    #[test]
+    fn a_brand_new_file_counts_its_lines_in_the_summary() {
+        let (repo_dir, worktrees) = repo_with_commit();
+        let repo = repo_dir.open();
+        let (destination, worktree) = worktree_at(&repo, worktrees.path(), "wt");
+        write(&destination, "src/created.rs", "one\ntwo\nthree\n");
+
+        let base = resolve_base(&worktree, None).expect("base");
+        let totals = summary(&worktree, &base).expect("summary");
+
+        assert_eq!(totals.files_changed, 1);
+        assert_eq!(
+            totals.insertions, 3,
+            "a new file's lines are all insertions"
+        );
+        assert_eq!(totals.deletions, 0);
+    }
+
+    #[test]
+    fn the_summary_counts_files_and_lines_since_the_base() {
+        let (repo_dir, worktrees) = repo_with_commit();
+        let repo = repo_dir.open();
+        let (destination, worktree) = worktree_at(&repo, worktrees.path(), "wt");
+
+        // Committed.
+        write(&destination, "committed.txt", "a\nb\n");
+        commit_all(&worktree, "committed work");
+
+        // Staged.
+        write(&destination, "staged.txt", "c\n");
+        {
+            let mut index = worktree.index().expect("index");
+            index.add_path(Path::new("staged.txt")).expect("stage");
+            index.write().expect("write index");
+        }
+
+        // Unstaged: replaces the one line the base committed.
+        write(&destination, "README.md", "changed\n");
+
+        // Untracked.
+        write(&destination, "untracked.txt", "d\ne\n");
+
+        let base = resolve_base(&worktree, None).expect("base");
+        let totals = summary(&worktree, &base).expect("summary");
+
+        assert_eq!(totals.files_changed, 4, "all four states count");
+        assert_eq!(totals.insertions, 2 + 1 + 1 + 2);
+        assert_eq!(totals.deletions, 1, "README.md's original line");
+        assert_eq!(totals.label(), "4 files, +6 -1");
+    }
+
+    #[test]
+    fn a_worktree_that_has_done_nothing_summarises_as_zero() {
+        let (repo_dir, worktrees) = repo_with_commit();
+        let repo = repo_dir.open();
+        let (_, worktree) = worktree_at(&repo, worktrees.path(), "wt");
+
+        let base = resolve_base(&worktree, None).expect("base");
+        let totals = summary(&worktree, &base).expect("summary");
+
+        assert!(totals.is_empty());
+        assert_eq!(totals, crate::shared::review::ReviewSummary::default());
     }
 
     #[test]

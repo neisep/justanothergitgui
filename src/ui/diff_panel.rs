@@ -38,6 +38,12 @@ pub fn show(ui: &mut egui::Ui, mut state: DiffPanelState<'_>) {
         {
             state.ui_state.actions.push(UiAction::show_review());
         }
+        if ui
+            .selectable_label(state.inspector.center_view == CenterView::Agents, "Agents")
+            .clicked()
+        {
+            state.ui_state.actions.push(UiAction::show_agents());
+        }
     });
     ui.separator();
 
@@ -45,11 +51,31 @@ pub fn show(ui: &mut egui::Ui, mut state: DiffPanelState<'_>) {
         CenterView::Diff => show_diff_or_conflict(ui, &mut state),
         CenterView::History => show_history(ui, &mut state),
         CenterView::Review => show_review(ui, &mut state),
+        CenterView::Agents => show_agents(ui, &mut state),
     }
 }
 
 /// The Review tab shows one worktree's work since its base, or a hint about how
 /// to open one.
+fn show_agents(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
+    let DiffPanelState {
+        repo,
+        inspector,
+        ui_state,
+        ..
+    } = state;
+
+    super::agents_panel::show(
+        ui,
+        super::agents_panel::AgentsPanelState {
+            worktrees: &repo.linked_worktrees,
+            metadata: &repo.worktree_metadata,
+            selected_key: inspector.selected_worktree_key(),
+            ui_state,
+        },
+    );
+}
+
 fn show_review(ui: &mut egui::Ui, state: &mut DiffPanelState<'_>) {
     let DiffPanelState {
         inspector,

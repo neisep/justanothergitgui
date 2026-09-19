@@ -1,4 +1,5 @@
 use super::{helpers, *};
+use crate::state::CenterView;
 
 #[derive(Default)]
 struct RepoTabsUiOutput {
@@ -226,10 +227,15 @@ impl GitGuiApp {
         };
 
         if ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_FOCUS_COMMIT)) {
-            self.tabs[active_index]
-                .state
-                .commit
-                .focus_commit_summary_requested = true;
+            let tab = &mut self.tabs[active_index];
+            if commit_shortcuts_apply(tab.state.inspector.center_view) {
+                tab.state.commit.focus_commit_summary_requested = true;
+            } else {
+                // The flag is only cleared by the commit panel's own render
+                // code, so setting it while that panel is hidden would leave it
+                // armed to steal focus whenever the user came back.
+                tab.state.inspector.center_view = CenterView::Diff;
+            }
         }
 
         if ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_STAGE_SELECTED_FILE)) {
@@ -258,23 +264,30 @@ impl GitGuiApp {
 
         if ctx.input_mut(|input| input.consume_shortcut(&SHORTCUT_COMMIT)) {
             let tab = &mut self.tabs[active_index];
-            let message = commit_rules::build_message(
-                &tab.state.commit.commit_summary,
-                &tab.state.commit.commit_body,
-            );
-            let validation_error =
-                commit_rules::validation_error(self.settings.commit_message_ruleset, &message);
-
-            if tab.state.worktree.staged.is_empty() {
-                tab.state.ui.status = StatusMessage::info("Stage files first");
-            } else if tab.state.commit.commit_summary.trim().is_empty() {
-                tab.state.ui.status = StatusMessage::info("Enter a commit summary");
-                tab.state.commit.focus_commit_summary_requested = true;
-            } else if let Some(error) = validation_error {
-                tab.state.ui.status = StatusMessage::error(error);
-                tab.state.commit.focus_commit_summary_requested = true;
+            if !commit_shortcuts_apply(tab.state.inspector.center_view) {
+                // Bring the commit box back into view rather than committing
+                // with nothing on screen; a second press then commits, with the
+                // message and the staged count visible.
+                tab.state.inspector.center_view = CenterView::Diff;
             } else {
-                tab.state.ui.actions.push(UiAction::commit());
+                let message = commit_rules::build_message(
+                    &tab.state.commit.commit_summary,
+                    &tab.state.commit.commit_body,
+                );
+                let validation_error =
+                    commit_rules::validation_error(self.settings.commit_message_ruleset, &message);
+
+                if tab.state.worktree.staged.is_empty() {
+                    tab.state.ui.status = StatusMessage::info("Stage files first");
+                } else if tab.state.commit.commit_summary.trim().is_empty() {
+                    tab.state.ui.status = StatusMessage::info("Enter a commit summary");
+                    tab.state.commit.focus_commit_summary_requested = true;
+                } else if let Some(error) = validation_error {
+                    tab.state.ui.status = StatusMessage::error(error);
+                    tab.state.commit.focus_commit_summary_requested = true;
+                } else {
+                    tab.state.ui.actions.push(UiAction::commit());
+                }
             }
         }
 
@@ -749,5 +762,38 @@ impl GitGuiApp {
                 }
             });
         });
+    }
+}
+
+/// Whether the commit shortcuts mean anything in this centre view.
+///
+/// They are global, but the panel they act on is not: the Agents tab replaces
+/// the Commit panel with Task Details. Ctrl+Enter would then commit staged
+/// files with no commit box in sight, and Ctrl+L would arm a focus request that
+/// only the commit panel's own render code ever clears. Both instead bring the
+/// Commit panel back, and do their real work on the next press.
+///
+/// A free function so it can be tested without standing up a whole app with
+/// tabs, a worker and a logger.
+fn commit_shortcuts_apply(center_view: CenterView) -> bool {
+    match center_view {
+        CenterView::Diff | CenterView::History | CenterView::Review => true,
+        CenterView::Agents => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::commit_shortcuts_apply;
+    use crate::state::CenterView;
+
+    #[test]
+    fn the_commit_shortcuts_only_fire_where_the_commit_panel_is() {
+        // The commit panel is on screen in all three of these.
+        assert!(commit_shortcuts_apply(CenterView::Diff));
+        assert!(commit_shortcuts_apply(CenterView::History));
+        assert!(commit_shortcuts_apply(CenterView::Review));
+        // Task Details has its slot here.
+        assert!(!commit_shortcuts_apply(CenterView::Agents));
     }
 }

@@ -649,12 +649,14 @@ impl GitGuiApp {
             return;
         };
         let save_error = state.dialogs.worktree_metadata.save_error.clone();
+        let started = helpers::started_label(state.dialogs.worktree_metadata.started);
 
         let output = ui::dialogs::worktree_metadata::show(
             ctx,
             &name,
             &mut state.dialogs.worktree_metadata,
             save_error.as_deref(),
+            started.as_deref(),
         );
 
         if output.save_requested {

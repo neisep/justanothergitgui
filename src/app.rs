@@ -331,11 +331,27 @@ impl eframe::App for GitGuiApp {
                     ui_state: &mut tab.state.ui,
                 },
             );
-            ui::commit_panel::show(
+            // The selected worktree's age, formatted here because `ui/` has no
+            // business reading the system clock.
+            let started_label = tab
+                .state
+                .inspector
+                .selected_worktree
+                .as_ref()
+                .and_then(|selected| {
+                    tab.state
+                        .repo
+                        .worktree_metadata
+                        .get(&selected.storage_key)
+                        .map(|metadata| metadata.started)
+                })
+                .and_then(helpers::started_label);
+            ui::right_panel::show(
                 ui,
                 &mut tab.state,
                 commit_message_ruleset,
                 commit_message_custom_scopes,
+                started_label.as_deref(),
             );
 
             egui::CentralPanel::default().show_inside(ui, |ui| {

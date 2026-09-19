@@ -48,6 +48,8 @@ impl UiAction {
             Self::OpenRemoveWorktreeDialog(worktree) => open_remove_worktree_dialog(ctx, *worktree),
             Self::ConfirmRemoveWorktree => confirm_remove_worktree(ctx),
             Self::ShowReview => show_review(ctx),
+            Self::ShowAgents => show_agents(ctx),
+            Self::SelectWorktree(worktree) => select_worktree(ctx, *worktree),
             Self::ReviewWorktree(worktree) => review_worktree(ctx, *worktree),
             Self::SelectReviewFile(path) => select_review_file(ctx, path),
             Self::CloseReview => ctx.tab.state.inspector.set_review(None),
@@ -612,6 +614,28 @@ fn confirm_remove_worktree(ctx: &mut TabActionContext<'_>) {
 
 fn show_review(ctx: &mut TabActionContext<'_>) {
     ctx.tab.state.inspector.center_view = CenterView::Review;
+}
+
+fn show_agents(ctx: &mut TabActionContext<'_>) {
+    ctx.tab.state.inspector.center_view = CenterView::Agents;
+}
+
+/// Pick a worktree, without moving the user anywhere.
+///
+/// Deliberately leaves `center_view` alone: the sidebar is on screen in every
+/// view, and a single click there that swapped the centre out from under the
+/// user would be hostile. The Agents table reflects the pick when they get to
+/// it. Note that egui fires `clicked()` before `double_clicked()`, so a
+/// double-click on a sidebar row both selects it and opens it as a tab — which
+/// is the coherent outcome.
+fn select_worktree(ctx: &mut TabActionContext<'_>, worktree: LinkedWorktree) {
+    if let Some(detail) = helpers::load_selected_worktree(
+        &ctx.tab.state.repo,
+        &mut ctx.tab.state.inspector,
+        &worktree,
+    ) {
+        log_action_error(ctx, "Worktree details", detail);
+    }
 }
 
 /// Open a worktree in the Review tab, switching to it the way picking a commit

@@ -24,6 +24,9 @@ pub fn show(
     worktree_name: &str,
     state: &mut WorktreeMetadataDialogState,
     save_error: Option<&str>,
+    // `started_label` arrives already formatted: reading a clock is the app
+    // layer's job, not a render function's.
+    started_label: Option<&str>,
 ) -> WorktreeMetadataDialogOutput {
     let mut keep_open = true;
     let mut close_requested = false;
@@ -53,6 +56,17 @@ pub fn show(
                 ui.add(
                     egui::TextEdit::singleline(&mut state.agent)
                         .hint_text("claude, codex, a person's name…")
+                        .desired_width(FIELD_WIDTH),
+                )
+            });
+
+            // Prose, so it gets height and its label sits at the top of the
+            // field rather than floating halfway down it.
+            labelled_row_top(ui, "Notes", |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut state.notes)
+                        .hint_text("Anything worth remembering about this worktree")
+                        .desired_rows(4)
                         .desired_width(FIELD_WIDTH),
                 )
             });
@@ -101,6 +115,20 @@ pub fn show(
                 }
             });
 
+            // Read-only for the same reason as the base commit: the app knows
+            // when it made the worktree, and a date typed by hand would be
+            // worse than nothing.
+            labelled_row(ui, "Started", |ui| {
+                let weak = ui.visuals().weak_text_color();
+                let text = match started_label {
+                    Some(label) => egui::RichText::new(label).small(),
+                    None => egui::RichText::new("\u{2014} not recorded")
+                        .small()
+                        .color(weak),
+                };
+                ui.add(egui::Label::new(text).truncate())
+            });
+
             if let Some(error) = save_error {
                 ui.add_space(4.0);
                 ui.colored_label(egui::Color32::from_rgb(220, 120, 120), error);
@@ -138,19 +166,40 @@ pub fn show(
     }
 }
 
+/// A form row whose field is taller than one line, so the label sits at its top.
+fn labelled_row_top<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    field: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let mut result = None;
+    ui.horizontal_top(|ui| {
+        row_label(ui, label);
+        result = Some(field(ui));
+    });
+    result.expect("the row body always runs")
+}
+
+/// The label column of a form row: a fixed width, left-aligned inside it.
+///
+/// Deliberately not a bare `add_sized`, which *centres* its content — that
+/// leaves every label starting at a different x depending on its length, so
+/// "Task" and "Base commit" do not line up and the column reads as ragged.
+fn row_label(ui: &mut egui::Ui, label: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(FIELD_LABEL_WIDTH, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.add(egui::Label::new(label).truncate());
+        },
+    );
+}
+
 /// One form row: a fixed-width label, then the field.
 fn labelled_row<R>(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let mut result = None;
     ui.horizontal(|ui| {
-        ui.add_sized(
-            [FIELD_LABEL_WIDTH, ui.spacing().interact_size.y],
-            |ui: &mut egui::Ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(label)
-                })
-                .inner
-            },
-        );
+        row_label(ui, label);
         result = Some(field(ui));
     });
     ui.add_space(4.0);

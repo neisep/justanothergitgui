@@ -55,6 +55,8 @@ pub enum UiAction {
     OpenRemoveWorktreeDialog(Box<LinkedWorktree>),
     ConfirmRemoveWorktree,
     ShowReview,
+    ShowAgents,
+    SelectWorktree(Box<LinkedWorktree>),
     ReviewWorktree(Box<LinkedWorktree>),
     SelectReviewFile(String),
     CloseReview,
@@ -193,6 +195,14 @@ impl UiAction {
 
     pub fn show_review() -> Self {
         Self::ShowReview
+    }
+
+    pub fn show_agents() -> Self {
+        Self::ShowAgents
+    }
+
+    pub fn select_worktree(worktree: LinkedWorktree) -> Self {
+        Self::SelectWorktree(Box::new(worktree))
     }
 
     pub fn review_worktree(worktree: LinkedWorktree) -> Self {

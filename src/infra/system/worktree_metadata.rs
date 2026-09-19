@@ -216,7 +216,9 @@ mod tests {
         WorktreeMetadata {
             task: task.into(),
             agent: "claude".into(),
+            notes: "waiting on review".into(),
             base_commit: "a1b2c3d4".into(),
+            started: 1_700_000_000,
             review: ReviewState::NeedsReview,
             test: TestState::Passing,
         }

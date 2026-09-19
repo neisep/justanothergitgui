@@ -18,6 +18,7 @@ use crate::shared::worktrees::{LinkedWorktree, LinkedWorktreeStatus};
 use crate::state::UiState;
 
 use super::HoveredRow;
+use super::worktree_chips::{render_marker, review_color, test_color};
 
 /// Height of the section header plus its separator. Same construct, and so the
 /// same measured height, as a file-list section header.
@@ -26,18 +27,6 @@ const SECTION_CHROME: f32 = 52.0;
 const MAX_PANEL_FRACTION: f32 = 0.45;
 /// Rows the section sizes itself for before the user has to scroll or drag.
 const PREFERRED_VISIBLE_ROWS: usize = 4;
-/// Width of the painted state marker in front of each name.
-const MARKER_DIAMETER: f32 = 10.0;
-
-const CURRENT_MARK: egui::Color32 = egui::Color32::from_rgb(120, 190, 255);
-const CLEAN_MARK: egui::Color32 = egui::Color32::from_rgb(120, 190, 130);
-const DIRTY_MARK: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
-const BROKEN_MARK: egui::Color32 = egui::Color32::from_rgb(220, 120, 120);
-const REVIEW_PENDING: egui::Color32 = egui::Color32::from_rgb(96, 84, 156);
-const REVIEW_CHANGES: egui::Color32 = egui::Color32::from_rgb(160, 92, 32);
-const REVIEW_APPROVED: egui::Color32 = egui::Color32::from_rgb(48, 112, 80);
-const TEST_PASSING: egui::Color32 = egui::Color32::from_rgb(48, 112, 80);
-const TEST_FAILING: egui::Color32 = egui::Color32::from_rgb(152, 64, 64);
 /// Width of the chip column. Two short pills, or nothing at all.
 const CHIP_COL_WIDTH: f32 = 74.0;
 /// Height of the detail strip under the table.
@@ -66,11 +55,21 @@ pub struct WorktreePanelResponse {
 
 /// Render the section as a resizable strip at the top of the sidebar.
 ///
+/// A row is a name and its state chips, nothing else. Branch and dirty counts
+/// used to have columns of their own, which left four truncated fields fighting
+/// over 300px and read as a cramped table rather than a list of places to go.
+/// Neither is lost: the marker already carries the status as colour, the Agents
+/// table shows both in full, and the tooltip spells them out.
+///
 /// Declared before the file sections so it claims the topmost strip — above the
 /// file filter — and leaves the Unstaged/Staged split below it untouched.
 pub fn show(ui: &mut egui::Ui, mut state: WorktreePanelState<'_>) -> WorktreePanelResponse {
     let mut response = WorktreePanelResponse::default();
-    let row_height = ui.spacing().interact_size.y.max(28.0);
+    // Two lines per row: the worktree's name over the branch it has checked out.
+    // Derived from the text styles rather than hardcoded, so it still fits when
+    // the user changes the font size.
+    let row_height =
+        (ui.spacing().interact_size.y + ui.text_style_height(&egui::TextStyle::Small)).max(40.0);
     // Rows cost their height plus the gap the table puts between them; sizing on
     // the height alone leaves the last row clipped by whatever follows.
     let row_stride = row_height + ui.spacing().item_spacing.y;
@@ -125,6 +124,10 @@ fn preferred_height(count: usize, row_stride: f32, available_height: f32) -> f32
 
 fn show_header(ui: &mut egui::Ui, count: usize, ui_state: &mut UiState) {
     ui.horizontal(|ui| {
+        // Git's own word, deliberately. A friendlier synonym would not appear in
+        // `git worktree list` or in anything the user reads about the feature,
+        // and the gap between the two is what makes a worktree easy to mistake
+        // for a branch in the first place.
         ui.strong(format!("Worktrees ({count})"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -162,8 +165,6 @@ fn show_table(
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::remainder().at_least(80.0).clip(true))
-            .column(Column::remainder().at_least(60.0).clip(true))
-            .column(Column::remainder().at_least(60.0).clip(true))
             .column(Column::exact(CHIP_COL_WIDTH))
             .min_scrolled_height(0.0)
             .max_scroll_height(max_height.max(row_height * 2.0))
@@ -175,15 +176,17 @@ fn show_table(
                     row.set_hovered(hover.is_hovered(index));
 
                     let metadata = state.metadata.get(&storage_key(worktree));
-                    row.col(|ui| render_name(ui, worktree));
-                    row.col(|ui| render_branch(ui, worktree));
-                    row.col(|ui| render_status(ui, worktree));
+                    row.col(|ui| render_name(ui, worktree, row_height));
                     row.col(|ui| render_state_chips(ui, metadata));
 
                     let row_response = row.response();
                     hover.observe(index, &row_response);
 
-                    if row_response.double_clicked() && !worktree.is_current {
+                    // One click, not two: the row looked like a switcher and
+                    // behaved like a preview, so the file lists below it went on
+                    // showing another checkout's files. Switching is what it
+                    // always appeared to offer.
+                    if row_response.clicked() && can_open(worktree) {
                         open = Some(worktree.path.clone());
                     }
 
@@ -205,84 +208,52 @@ fn show_table(
 }
 
 /// The marker plus the worktree's name.
-fn render_name(ui: &mut egui::Ui, worktree: &LinkedWorktree) {
+/// The marker, the worktree's name, and under it the branch it has checked out.
+///
+/// The two are different things and the row has to say so: a worktree is a
+/// directory of files, a branch is a name pointing at a commit, and a worktree's
+/// directory name is free to differ from the branch inside it entirely. Showing
+/// only the name invited reading the list as a list of branches.
+fn render_name(ui: &mut egui::Ui, worktree: &LinkedWorktree, row_height: f32) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        render_marker(ui, worktree);
+        ui.spacing_mut().item_spacing.x = 5.0;
+        render_marker(ui, worktree, row_height);
 
-        let mut name = egui::RichText::new(&worktree.name);
-        if worktree.is_current {
-            name = name.strong();
-        }
-        ui.add(egui::Label::new(name).truncate());
+        ui.vertical(|ui| {
+            // The two lines belong together; the table already spaces the rows.
+            ui.spacing_mut().item_spacing.y = 0.0;
 
-        if worktree.is_locked {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let mut name = egui::RichText::new(&worktree.name);
+                if worktree.is_current {
+                    name = name.strong();
+                }
+                ui.add(egui::Label::new(name).truncate());
+
+                if worktree.is_locked {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("locked")
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .truncate(),
+                    );
+                }
+            });
+
+            let weak = ui.visuals().weak_text_color();
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new("locked")
+                    egui::RichText::new(worktree.branch_label())
                         .small()
-                        .color(ui.visuals().weak_text_color()),
+                        .color(weak),
                 )
                 .truncate(),
             );
-        }
+        });
     });
-}
-
-/// Paint the state marker rather than writing a bullet character: the app ships
-/// no font with `●`, so a text bullet renders as a missing-glyph box.
-///
-/// The main worktree gets a ring instead of a solid dot, because a text badge
-/// reading "main" is indistinguishable from a branch that happens to be called
-/// `main` — which is the common case.
-fn render_marker(ui: &mut egui::Ui, worktree: &LinkedWorktree) {
-    let diameter = MARKER_DIAMETER;
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(diameter, ui.available_height()),
-        egui::Sense::hover(),
-    );
-    let center = rect.center();
-    let radius = diameter / 2.0;
-    let color = mark_color(worktree);
-
-    if worktree.is_main {
-        ui.painter()
-            .circle_stroke(center, radius - 1.0, egui::Stroke::new(2.0, color));
-    } else {
-        ui.painter().circle_filled(center, radius - 1.5, color);
-    }
-}
-
-fn render_branch(ui: &mut egui::Ui, worktree: &LinkedWorktree) {
-    let text = egui::RichText::new(worktree.branch_label()).small();
-    let text = if worktree.branch.is_some() {
-        text
-    } else {
-        // A detached head is a fact about the checkout, not a normal branch.
-        text.color(ui.visuals().weak_text_color())
-    };
-    ui.add(egui::Label::new(text).truncate());
-}
-
-fn render_status(ui: &mut egui::Ui, worktree: &LinkedWorktree) {
-    let text = egui::RichText::new(worktree.status.summary()).small();
-    let text = match &worktree.status {
-        LinkedWorktreeStatus::Clean => text.color(ui.visuals().weak_text_color()),
-        LinkedWorktreeStatus::Dirty { .. } => text.color(DIRTY_MARK),
-        LinkedWorktreeStatus::Missing | LinkedWorktreeStatus::Unavailable(_) => {
-            text.color(BROKEN_MARK)
-        }
-    };
-    ui.add(egui::Label::new(text).truncate());
-}
-
-fn mark_color(worktree: &LinkedWorktree) -> egui::Color32 {
-    match &worktree.status {
-        _ if worktree.is_current => CURRENT_MARK,
-        LinkedWorktreeStatus::Clean => CLEAN_MARK,
-        LinkedWorktreeStatus::Dirty { .. } => DIRTY_MARK,
-        LinkedWorktreeStatus::Missing | LinkedWorktreeStatus::Unavailable(_) => BROKEN_MARK,
-    }
 }
 
 /// The two states as pills, shown only when they say something.
@@ -318,14 +289,6 @@ fn review_chip_text(review: ReviewState) -> &'static str {
     }
 }
 
-fn review_color(review: ReviewState) -> egui::Color32 {
-    match review {
-        ReviewState::Unreviewed | ReviewState::NeedsReview => REVIEW_PENDING,
-        ReviewState::ChangesRequested => REVIEW_CHANGES,
-        ReviewState::Approved => REVIEW_APPROVED,
-    }
-}
-
 fn test_chip_text(test: TestState) -> &'static str {
     match test {
         TestState::Unknown => "",
@@ -334,17 +297,21 @@ fn test_chip_text(test: TestState) -> &'static str {
     }
 }
 
-fn test_color(test: TestState) -> egui::Color32 {
-    match test {
-        TestState::Unknown | TestState::Passing => TEST_PASSING,
-        TestState::Failing => TEST_FAILING,
-    }
+/// Whether this worktree can be switched to.
+///
+/// Shared by the row click and the context menu so the two can never disagree.
+/// The `Missing` guard is load-bearing rather than cosmetic: opening a
+/// repository goes through `Repository::discover`, which walks *upward*, so a
+/// checkout whose directory has been deleted would silently resolve to an
+/// ancestor repository and open the wrong thing instead of failing.
+fn can_open(worktree: &LinkedWorktree) -> bool {
+    !worktree.is_current && !matches!(worktree.status, LinkedWorktreeStatus::Missing)
 }
 
 /// The task of the checkout this tab has open, under the table.
 ///
 /// The rows are three narrow columns in a 300px sidebar, with no room for prose;
-/// this is where the current worktree's task gets to be readable.
+/// this is where the task gets to be readable.
 fn show_detail_strip(ui: &mut egui::Ui, state: &WorktreePanelState<'_>) {
     let current = state.worktrees.iter().find(|worktree| worktree.is_current);
 
@@ -432,10 +399,8 @@ fn show_row_context_menu(
     ui.set_min_width(180.0);
     let mut open = false;
 
-    let openable =
-        !worktree.is_current && !matches!(worktree.status, LinkedWorktreeStatus::Missing);
     if ui
-        .add_enabled(openable, egui::Button::new("Open in new tab"))
+        .add_enabled(can_open(worktree), egui::Button::new("Open in new tab"))
         .clicked()
     {
         open = true;
@@ -481,6 +446,7 @@ fn show_row_context_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::worktree_chips::{BROKEN_MARK, CURRENT_MARK, DIRTY_MARK, mark_color};
 
     fn worktree(name: &str, is_current: bool, status: LinkedWorktreeStatus) -> LinkedWorktree {
         LinkedWorktree {
@@ -534,6 +500,27 @@ mod tests {
         assert_eq!(
             mark_color(&worktree("gone", false, LinkedWorktreeStatus::Missing)),
             BROKEN_MARK
+        );
+    }
+
+    /// A click switches worktree, so the rule that decides whether it may has
+    /// to hold for the row and the menu item alike.
+    #[test]
+    fn a_worktree_can_be_switched_to_unless_it_is_current_or_gone() {
+        assert!(can_open(&worktree(
+            "elsewhere",
+            false,
+            LinkedWorktreeStatus::Clean
+        )));
+
+        assert!(
+            !can_open(&worktree("here", true, LinkedWorktreeStatus::Clean)),
+            "the checkout this tab already has open is not somewhere to go"
+        );
+        assert!(
+            !can_open(&worktree("gone", false, LinkedWorktreeStatus::Missing)),
+            "discover() walks upward, so opening a deleted worktree would \
+             silently land on an ancestor repository"
         );
     }
 
