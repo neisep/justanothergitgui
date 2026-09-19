@@ -39,6 +39,20 @@ pub fn get_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
     Ok(names)
 }
 
+pub fn get_remote_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
+    let mut names = Vec::new();
+    for branch in repo.branches(Some(git2::BranchType::Remote))? {
+        let (branch, _) = branch?;
+        if let Some(name) = branch.name()? {
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            names.push(name.to_string());
+        }
+    }
+    Ok(names)
+}
+
 pub fn get_outgoing_commit_count(repo: &Repository) -> Result<usize, git2::Error> {
     let head = match repo.head() {
         Ok(head) if head.is_branch() => head,
@@ -201,6 +215,14 @@ pub fn preview_create_branch(repo: &Repository, branch_name: &str) -> CreateBran
 }
 
 pub fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::Error> {
+    if repo.find_branch(branch_name, git2::BranchType::Local).is_err()
+        && repo
+            .find_branch(branch_name, git2::BranchType::Remote)
+            .is_ok()
+    {
+        return checkout_remote_tracking_branch(repo, branch_name);
+    }
+
     let refname = format!("refs/heads/{}", branch_name);
     let obj = repo.revparse_single(&refname)?;
 
@@ -208,6 +230,28 @@ pub fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::E
     repo.set_head(&refname)?;
 
     Ok(())
+}
+
+fn checkout_remote_tracking_branch(
+    repo: &Repository,
+    remote_branch_name: &str,
+) -> Result<(), git2::Error> {
+    let (_remote, local_name) = remote_branch_name.split_once('/').ok_or_else(|| {
+        git2::Error::from_str("Remote branch name must contain a remote prefix")
+    })?;
+    if local_name.is_empty() {
+        return Err(git2::Error::from_str("Remote branch name is empty"));
+    }
+
+    let remote_branch = repo.find_branch(remote_branch_name, git2::BranchType::Remote)?;
+    let commit = remote_branch.get().peel_to_commit()?;
+
+    if repo.find_branch(local_name, git2::BranchType::Local).is_err() {
+        let mut local_branch = repo.branch(local_name, &commit, false)?;
+        let _ = local_branch.set_upstream(Some(remote_branch_name));
+    }
+
+    switch_branch(repo, local_name)
 }
 
 pub fn validate_new_branch_name(repo: &Repository, name: &str) -> Option<String> {

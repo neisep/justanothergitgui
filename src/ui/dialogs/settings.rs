@@ -8,6 +8,7 @@ pub struct SettingsDialogOutput {
     pub selected_ruleset: CommitMessageRuleSet,
     pub custom_scope_error: Option<String>,
     pub auto_refresh_on_focus: bool,
+    pub save_git_identity: bool,
 }
 
 pub fn show(
@@ -21,6 +22,7 @@ pub fn show(
     let mut custom_scope_error = None;
     let mut close_requested = false;
     let mut auto_refresh_on_focus = current_auto_refresh;
+    let mut save_git_identity = false;
 
     egui::Window::new("Settings")
         .id(egui::Id::new("settings_dialog"))
@@ -85,6 +87,37 @@ pub fn show(
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(6.0);
+            ui.label("Git identity");
+            ui.weak("Used to sign your commits. Saved to your global git config.");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.add(
+                    egui::TextEdit::singleline(&mut dialog.git_user_name)
+                        .desired_width(260.0)
+                        .hint_text("Your Name"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Email");
+                ui.add(
+                    egui::TextEdit::singleline(&mut dialog.git_user_email)
+                        .desired_width(260.0)
+                        .hint_text("you@example.com"),
+                );
+            });
+            let identity_valid = !dialog.git_user_name.trim().is_empty()
+                && !dialog.git_user_email.trim().is_empty();
+            if ui
+                .add_enabled(identity_valid, egui::Button::new("Save identity"))
+                .clicked()
+            {
+                save_git_identity = true;
+            }
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(6.0);
             ui.label("Repository status");
             ui.checkbox(
                 &mut auto_refresh_on_focus,
@@ -118,5 +151,6 @@ pub fn show(
         selected_ruleset,
         custom_scope_error,
         auto_refresh_on_focus,
+        save_git_identity,
     }
 }

@@ -217,6 +217,7 @@ pub struct RepoState {
     pub branch: String,
     pub outgoing_commit_count: usize,
     pub branches: Vec<String>,
+    pub remote_branches: Vec<String>,
     pub commit_history: Vec<CommitEntry>,
     pub pull_request_prompt: Option<PullRequestPrompt>,
 }

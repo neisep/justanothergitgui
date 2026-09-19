@@ -54,6 +54,10 @@ impl AppRepoRead {
         repository::get_branches(repo)
     }
 
+    pub(super) fn remote_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
+        repository::get_remote_branches(repo)
+    }
+
     pub(super) fn commit_history(
         repo: &Repository,
         max_count: usize,

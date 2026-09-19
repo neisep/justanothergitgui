@@ -65,6 +65,13 @@ pub(super) fn refresh_status(
             repo_state.branches = Vec::new();
         }
     }
+    match AppRepoRead::remote_branches(repo) {
+        Ok(branches) => repo_state.remote_branches = branches,
+        Err(error) => {
+            errors.push(format!("remote branches: {error}"));
+            repo_state.remote_branches = Vec::new();
+        }
+    }
     match AppRepoRead::commit_history(repo, 200) {
         Ok(history) => repo_state.commit_history = history,
         Err(error) => {
