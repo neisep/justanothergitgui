@@ -103,10 +103,10 @@ pub fn can_create_tag_on_branch(branch_name: &str) -> bool {
 
 pub fn suggest_next_tag(repo: &Repository) -> String {
     let Ok(tag_names) = repo.tag_names(None) else {
-        return "v1.0.0.0".to_string();
+        return "v1.0.0".to_string();
     };
 
-    let mut best: Option<([u32; 4], bool)> = None;
+    let mut best: Option<([u32; 3], bool)> = None;
     for name in tag_names.iter().flatten() {
         if let Some((version, has_v_prefix)) = parse_semver_tag(name) {
             match best {
@@ -117,18 +117,11 @@ pub fn suggest_next_tag(repo: &Repository) -> String {
     }
 
     match best {
-        Some(([major, minor, patch, build], has_v_prefix)) => {
+        Some(([major, minor, patch], has_v_prefix)) => {
             let prefix = if has_v_prefix { "v" } else { "" };
-            format!(
-                "{}{}.{}.{}.{}",
-                prefix,
-                major,
-                minor,
-                patch,
-                build.saturating_add(1)
-            )
+            format!("{}{}.{}.{}", prefix, major, minor, patch.saturating_add(1))
         }
-        None => "v1.0.0.0".to_string(),
+        None => "v1.0.0".to_string(),
     }
 }
 
@@ -529,7 +522,7 @@ fn symbolic_head_branch_name(repo: &Repository) -> Option<String> {
     target.strip_prefix("refs/heads/").map(ToOwned::to_owned)
 }
 
-pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 4], bool)> {
+pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
     let (rest, has_v_prefix) = match name.strip_prefix('v') {
         Some(rest) => (rest, true),
         None => (name, false),
@@ -538,11 +531,10 @@ pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 4], bool)> {
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;
     let patch = parts.next()?.parse::<u32>().ok()?;
-    let build = parts.next()?.parse::<u32>().ok()?;
     if parts.next().is_some() {
         return None;
     }
-    Some(([major, minor, patch, build], has_v_prefix))
+    Some(([major, minor, patch], has_v_prefix))
 }
 
 pub(crate) fn repo_root_path(repo: &Repository) -> PathBuf {

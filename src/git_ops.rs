@@ -98,7 +98,7 @@ fn parse_link_header_next(header: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-fn parse_semver_tag(name: &str) -> Option<([u32; 4], bool)> {
+fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
     crate::infra::git::repository::parse_semver_tag(name)
 }
 
@@ -173,17 +173,16 @@ mod tests {
 
     #[test]
     fn parse_semver_tag_accepts_plain_and_v_prefixed() {
-        assert_eq!(parse_semver_tag("v1.2.3.4"), Some(([1, 2, 3, 4], true)));
-        assert_eq!(parse_semver_tag("0.10.4.7"), Some(([0, 10, 4, 7], false)));
+        assert_eq!(parse_semver_tag("v1.2.3"), Some(([1, 2, 3], true)));
+        assert_eq!(parse_semver_tag("0.10.4"), Some(([0, 10, 4], false)));
     }
 
     #[test]
     fn parse_semver_tag_rejects_non_semver() {
         assert!(parse_semver_tag("v1.2").is_none());
-        assert!(parse_semver_tag("v1.2.3").is_none());
-        assert!(parse_semver_tag("v1.2.3.4.5").is_none());
+        assert!(parse_semver_tag("v1.2.3.4").is_none());
         assert!(parse_semver_tag("release-5").is_none());
-        assert!(parse_semver_tag("v1.2.3.4-rc1").is_none());
+        assert!(parse_semver_tag("v1.2.3-rc1").is_none());
     }
 
     #[test]
@@ -203,24 +202,26 @@ mod tests {
         let commit = repo.find_commit(commit_id).expect("find commit");
 
         for tag in [
-            "v0.9.0.0",
-            "v1.2.3.5",
-            "v1.2.0.0",
+            "v0.9.0",
+            "v1.2.9",
+            "v1.2.10",
+            "v1.2.0",
+            "v9.9.9.9",
             "nightly-2024",
-            "v2.0.0.0-rc1",
+            "v2.0.0-rc1",
         ] {
             repo.tag_lightweight(tag, commit.as_object(), false)
                 .expect("tag");
         }
 
-        assert_eq!(suggest_next_tag(&repo), "v1.2.3.6");
+        assert_eq!(suggest_next_tag(&repo), "v1.2.11");
     }
 
     #[test]
     fn suggest_next_tag_defaults_when_no_tags_exist() {
         let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
         let repo = Repository::open(repo_dir.path()).expect("open repo");
-        assert_eq!(suggest_next_tag(&repo), "v1.0.0.0");
+        assert_eq!(suggest_next_tag(&repo), "v1.0.0");
     }
 
     #[test]
@@ -239,12 +240,12 @@ mod tests {
             .expect("commit");
         let commit = repo.find_commit(commit_id).expect("find commit");
 
-        for tag in ["v0.1.0.0", "3.4.5.2"] {
+        for tag in ["v0.1.0", "3.4.5"] {
             repo.tag_lightweight(tag, commit.as_object(), false)
                 .expect("tag");
         }
 
-        assert_eq!(suggest_next_tag(&repo), "3.4.5.3");
+        assert_eq!(suggest_next_tag(&repo), "3.4.6");
     }
 
     #[test]
