@@ -102,3 +102,9 @@ jobs:
             --generate-notes \
             release/justanothergitgui-linux-x86_64 \
             release/justanothergitgui-windows-x86_64.exe
+
+      - name: Trigger site rebuild
+        env:
+          # Fine-grained PAT with Actions: Read and write on neisep.github.io only.
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: gh api -X POST repos/neisep/neisep.github.io/actions/workflows/deploy.yml/dispatches -f ref=master
