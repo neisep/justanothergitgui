@@ -21,6 +21,7 @@ mod worker;
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
+            .with_title(concat!("Just Another Git GUI v", env!("CARGO_PKG_VERSION")))
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([640.0, 480.0]),
         centered: cfg!(target_os = "windows"),

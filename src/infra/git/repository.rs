@@ -39,6 +39,20 @@ pub fn get_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
     Ok(names)
 }
 
+pub fn get_remote_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
+    let mut names = Vec::new();
+    for branch in repo.branches(Some(git2::BranchType::Remote))? {
+        let (branch, _) = branch?;
+        if let Some(name) = branch.name()? {
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            names.push(name.to_string());
+        }
+    }
+    Ok(names)
+}
+
 pub fn get_outgoing_commit_count(repo: &Repository) -> Result<usize, git2::Error> {
     let head = match repo.head() {
         Ok(head) if head.is_branch() => head,
@@ -89,10 +103,10 @@ pub fn can_create_tag_on_branch(branch_name: &str) -> bool {
 
 pub fn suggest_next_tag(repo: &Repository) -> String {
     let Ok(tag_names) = repo.tag_names(None) else {
-        return "v1.0.0.0".to_string();
+        return "v1.0.0".to_string();
     };
 
-    let mut best: Option<([u32; 4], bool)> = None;
+    let mut best: Option<([u32; 3], bool)> = None;
     for name in tag_names.iter().flatten() {
         if let Some((version, has_v_prefix)) = parse_semver_tag(name) {
             match best {
@@ -103,18 +117,11 @@ pub fn suggest_next_tag(repo: &Repository) -> String {
     }
 
     match best {
-        Some(([major, minor, patch, build], has_v_prefix)) => {
+        Some(([major, minor, patch], has_v_prefix)) => {
             let prefix = if has_v_prefix { "v" } else { "" };
-            format!(
-                "{}{}.{}.{}.{}",
-                prefix,
-                major,
-                minor,
-                patch,
-                build.saturating_add(1)
-            )
+            format!("{}{}.{}.{}", prefix, major, minor, patch.saturating_add(1))
         }
-        None => "v1.0.0.0".to_string(),
+        None => "v1.0.0".to_string(),
     }
 }
 
@@ -201,6 +208,14 @@ pub fn preview_create_branch(repo: &Repository, branch_name: &str) -> CreateBran
 }
 
 pub fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::Error> {
+    if repo.find_branch(branch_name, git2::BranchType::Local).is_err()
+        && repo
+            .find_branch(branch_name, git2::BranchType::Remote)
+            .is_ok()
+    {
+        return checkout_remote_tracking_branch(repo, branch_name);
+    }
+
     let refname = format!("refs/heads/{}", branch_name);
     let obj = repo.revparse_single(&refname)?;
 
@@ -208,6 +223,28 @@ pub fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::E
     repo.set_head(&refname)?;
 
     Ok(())
+}
+
+fn checkout_remote_tracking_branch(
+    repo: &Repository,
+    remote_branch_name: &str,
+) -> Result<(), git2::Error> {
+    let (_remote, local_name) = remote_branch_name.split_once('/').ok_or_else(|| {
+        git2::Error::from_str("Remote branch name must contain a remote prefix")
+    })?;
+    if local_name.is_empty() {
+        return Err(git2::Error::from_str("Remote branch name is empty"));
+    }
+
+    let remote_branch = repo.find_branch(remote_branch_name, git2::BranchType::Remote)?;
+    let commit = remote_branch.get().peel_to_commit()?;
+
+    if repo.find_branch(local_name, git2::BranchType::Local).is_err() {
+        let mut local_branch = repo.branch(local_name, &commit, false)?;
+        let _ = local_branch.set_upstream(Some(remote_branch_name));
+    }
+
+    switch_branch(repo, local_name)
 }
 
 pub fn validate_new_branch_name(repo: &Repository, name: &str) -> Option<String> {
@@ -419,7 +456,7 @@ fn build_commit_entry(
         short_oid,
         message: commit.summary().unwrap_or_default().to_string(),
         author: commit.author().name().unwrap_or_default().to_string(),
-        time: format_relative_time(now, commit.time().seconds()),
+        time: crate::shared::git::relative_time(now, commit.time().seconds()),
         is_merge: commit.parent_count() > 1,
         branch_labels,
     })
@@ -485,7 +522,7 @@ fn symbolic_head_branch_name(repo: &Repository) -> Option<String> {
     target.strip_prefix("refs/heads/").map(ToOwned::to_owned)
 }
 
-pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 4], bool)> {
+pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
     let (rest, has_v_prefix) = match name.strip_prefix('v') {
         Some(rest) => (rest, true),
         None => (name, false),
@@ -494,37 +531,16 @@ pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 4], bool)> {
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;
     let patch = parts.next()?.parse::<u32>().ok()?;
-    let build = parts.next()?.parse::<u32>().ok()?;
     if parts.next().is_some() {
         return None;
     }
-    Some(([major, minor, patch, build], has_v_prefix))
+    Some(([major, minor, patch], has_v_prefix))
 }
 
 pub(crate) fn repo_root_path(repo: &Repository) -> PathBuf {
     repo.workdir()
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| repo.path().parent().unwrap_or(repo.path()).to_path_buf())
-}
-
-fn format_relative_time(now: i64, then: i64) -> String {
-    let diff = now - then;
-    if diff < 0 {
-        return "in the future".into();
-    }
-    if diff < 60 {
-        return "just now".into();
-    }
-    if diff < 3600 {
-        return format!("{}m ago", diff / 60);
-    }
-    if diff < 86400 {
-        return format!("{}h ago", diff / 3600);
-    }
-    if diff < 2592000 {
-        return format!("{}d ago", diff / 86400);
-    }
-    format!("{}mo ago", diff / 2592000)
 }
 
 #[cfg(test)]

@@ -103,6 +103,9 @@ pub(crate) struct SettingsDialogState {
     pub(crate) status: String,
     pub(crate) custom_scopes_input: String,
     pub(crate) focus_custom_scopes_requested: bool,
+    pub(crate) git_user_name: String,
+    pub(crate) git_user_email: String,
+    pub(crate) git_identity_loaded: bool,
 }
 
 pub struct GitGuiApp {
@@ -223,6 +226,9 @@ impl GitGuiApp {
                 status: String::new(),
                 custom_scopes_input: settings_custom_scopes_input,
                 focus_custom_scopes_requested: false,
+                git_user_name: String::new(),
+                git_user_email: String::new(),
+                git_identity_loaded: false,
             },
             github_auth_session,
             github_auth_prompt: None,
@@ -298,6 +304,9 @@ impl eframe::App for GitGuiApp {
             self.show_discard_dialog(&ctx);
             self.show_file_action_dialog(&ctx);
             self.show_cleanup_branches_dialog(&ctx);
+            self.show_new_worktree_dialog(&ctx);
+            self.show_remove_worktree_dialog(&ctx);
+            self.show_worktree_metadata_dialog(&ctx);
             self.show_github_auth_dialog(&ctx);
             self.show_log_viewer_dialog(&ctx);
             self.process_actions();
@@ -307,7 +316,7 @@ impl eframe::App for GitGuiApp {
         let commit_message_ruleset = self.settings.commit_message_ruleset;
         let commit_message_custom_scopes = &self.settings.commit_message_custom_scopes;
 
-        let open_logs_clicked = {
+        let (open_logs_clicked, open_worktree) = {
             let tab = &mut self.tabs[active_index];
 
             let open_logs = ui::bottom_bar::show(
@@ -318,19 +327,37 @@ impl eframe::App for GitGuiApp {
                 },
                 has_logs,
             );
-            ui::file_panel::show(
+            let file_panel = ui::file_panel::show(
                 ui,
                 ui::file_panel::FilePanelState {
                     worktree: &tab.state.worktree,
+                    worktrees: &tab.state.repo.linked_worktrees,
+                    worktree_metadata: &tab.state.repo.worktree_metadata,
                     inspector: &mut tab.state.inspector,
                     ui_state: &mut tab.state.ui,
                 },
             );
-            ui::commit_panel::show(
+            // The selected worktree's age, formatted here because `ui/` has no
+            // business reading the system clock.
+            let started_label = tab
+                .state
+                .inspector
+                .selected_worktree
+                .as_ref()
+                .and_then(|selected| {
+                    tab.state
+                        .repo
+                        .worktree_metadata
+                        .get(&selected.storage_key)
+                        .map(|metadata| metadata.started)
+                })
+                .and_then(helpers::started_label);
+            ui::right_panel::show(
                 ui,
                 &mut tab.state,
                 commit_message_ruleset,
                 commit_message_custom_scopes,
+                started_label.as_deref(),
             );
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -344,11 +371,18 @@ impl eframe::App for GitGuiApp {
                     },
                 );
             });
-            open_logs
+            (open_logs, file_panel.open_worktree)
         };
 
         if open_logs_clicked {
             self.show_log_viewer = true;
+        }
+
+        // Opening a worktree is just opening a repository: `open_repo` dedups
+        // against the tabs already open, gives it its own worker and logger, and
+        // persists it in the session.
+        if let Some(path) = open_worktree {
+            self.open_repo(path);
         }
 
         self.show_publish_repo_dialog(&ctx);
@@ -360,6 +394,9 @@ impl eframe::App for GitGuiApp {
         self.show_discard_dialog(&ctx);
         self.show_file_action_dialog(&ctx);
         self.show_cleanup_branches_dialog(&ctx);
+        self.show_new_worktree_dialog(&ctx);
+        self.show_remove_worktree_dialog(&ctx);
+        self.show_worktree_metadata_dialog(&ctx);
         self.show_github_auth_dialog(&ctx);
         self.show_log_viewer_dialog(&ctx);
 

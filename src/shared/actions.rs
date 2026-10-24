@@ -17,6 +17,8 @@ pub struct PendingFileAction {
     pub kind: FileActionKind,
 }
 
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
+
 #[derive(Debug)]
 pub enum UiAction {
     StageFile(String),
@@ -48,6 +50,19 @@ pub enum UiAction {
     SaveConflictResolution,
     OpenFileActionDialog(PendingFileAction),
     ConfirmFileAction,
+    OpenNewWorktreeDialog,
+    CreateWorktree(NewWorktreeRequest),
+    OpenRemoveWorktreeDialog(Box<LinkedWorktree>),
+    ConfirmRemoveWorktree,
+    ShowReview,
+    ShowAgents,
+    SelectWorktree(Box<LinkedWorktree>),
+    ReviewWorktree(Box<LinkedWorktree>),
+    SelectReviewFile(String),
+    CloseReview,
+    OpenWorktreeMetadataDialog(Box<LinkedWorktree>),
+    SaveWorktreeMetadata,
+    ClearWorktreeMetadata,
 }
 
 impl UiAction {
@@ -160,5 +175,57 @@ impl UiAction {
 
     pub fn confirm_file_action() -> Self {
         Self::ConfirmFileAction
+    }
+
+    pub fn open_new_worktree_dialog() -> Self {
+        Self::OpenNewWorktreeDialog
+    }
+
+    pub fn create_worktree(request: NewWorktreeRequest) -> Self {
+        Self::CreateWorktree(request)
+    }
+
+    pub fn open_remove_worktree_dialog(worktree: LinkedWorktree) -> Self {
+        Self::OpenRemoveWorktreeDialog(Box::new(worktree))
+    }
+
+    pub fn confirm_remove_worktree() -> Self {
+        Self::ConfirmRemoveWorktree
+    }
+
+    pub fn show_review() -> Self {
+        Self::ShowReview
+    }
+
+    pub fn show_agents() -> Self {
+        Self::ShowAgents
+    }
+
+    pub fn select_worktree(worktree: LinkedWorktree) -> Self {
+        Self::SelectWorktree(Box::new(worktree))
+    }
+
+    pub fn review_worktree(worktree: LinkedWorktree) -> Self {
+        Self::ReviewWorktree(Box::new(worktree))
+    }
+
+    pub fn select_review_file(path: impl Into<String>) -> Self {
+        Self::SelectReviewFile(path.into())
+    }
+
+    pub fn close_review() -> Self {
+        Self::CloseReview
+    }
+
+    pub fn open_worktree_metadata_dialog(worktree: LinkedWorktree) -> Self {
+        Self::OpenWorktreeMetadataDialog(Box::new(worktree))
+    }
+
+    pub fn save_worktree_metadata() -> Self {
+        Self::SaveWorktreeMetadata
+    }
+
+    pub fn clear_worktree_metadata() -> Self {
+        Self::ClearWorktreeMetadata
     }
 }

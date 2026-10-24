@@ -172,7 +172,17 @@ pub fn create_commit(repo: &Repository, message: &str) -> Result<git2::Oid, git2
     let mut index = repo.index()?;
     let tree_oid = index.write_tree()?;
     let tree = repo.find_tree(tree_oid)?;
-    let signature = repo.signature()?;
+    let signature = repo.signature().map_err(|error| {
+        if error.code() == git2::ErrorCode::NotFound {
+            git2::Error::from_str(
+                "Git identity not configured. Open Settings and set your name and email, \
+                 or run:\n  git config --global user.name \"Your Name\"\n  \
+                 git config --global user.email \"you@example.com\"",
+            )
+        } else {
+            error
+        }
+    })?;
     let mut parents = Vec::new();
 
     if let Ok(head) = repo.head() {

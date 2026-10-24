@@ -2,12 +2,12 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
-use crate::core::{publish, sync, tags};
+use crate::core::{publish, sync, tags, worktrees};
 use crate::infra::core_ports::{InfraGitHubPort, InfraGitPort};
 use crate::infra::git::error::ConflictError;
-use crate::infra::git::{clone, commits, repository, worktree};
+use crate::infra::git::{clone, commits, linked_worktrees, repository, worktree, worktree_review};
 use crate::infra::github::{auth, pulls, repos};
-use crate::infra::system::browser;
+use crate::infra::system::{browser, worktree_metadata};
 use crate::shared::conflicts::ConflictData;
 use crate::shared::git::{
     CommitEntry, CommitFileChange, CreateBranchPreview, DiscardPreview, FileEntry, StaleBranch,
@@ -16,6 +16,9 @@ use crate::shared::github::{
     CreateGithubRepoRequest, CreateGithubRepoSuccess, GithubAuthCheck, GithubAuthPrompt,
     GithubAuthSession, GithubRepoSummary, PushSuccess,
 };
+use crate::shared::review::{ReviewBase, ReviewSummary};
+use crate::shared::worktree_metadata::{WorktreeMetadata, WorktreeMetadataMap};
+use crate::shared::worktrees::{LinkedWorktree, NewWorktreeRequest};
 
 pub(super) struct AppRepoRead;
 
@@ -52,6 +55,10 @@ impl AppRepoRead {
 
     pub(super) fn branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
         repository::get_branches(repo)
+    }
+
+    pub(super) fn remote_branches(repo: &Repository) -> Result<Vec<String>, git2::Error> {
+        repository::get_remote_branches(repo)
     }
 
     pub(super) fn commit_history(
@@ -105,6 +112,50 @@ impl AppRepoRead {
 
     pub(super) fn suggest_next_tag(repo: &Repository) -> String {
         repository::suggest_next_tag(repo)
+    }
+
+    pub(super) fn linked_worktrees(repo: &Repository) -> Result<Vec<LinkedWorktree>, git2::Error> {
+        linked_worktrees::list_worktrees(repo)
+    }
+
+    pub(super) fn validate_new_worktree(
+        repo: &Repository,
+        request: &NewWorktreeRequest,
+    ) -> Option<String> {
+        linked_worktrees::validate_new_worktree(repo, request)
+    }
+
+    pub(super) fn default_worktree_parent(repo: &Repository) -> PathBuf {
+        linked_worktrees::default_worktree_parent(repo)
+    }
+
+    pub(super) fn review_base(
+        worktree_repo: &Repository,
+        recorded: &str,
+    ) -> Result<ReviewBase, git2::Error> {
+        worktree_review::resolve_base(worktree_repo, Some(recorded))
+    }
+
+    pub(super) fn review_changed_files(
+        worktree_repo: &Repository,
+        base: &ReviewBase,
+    ) -> Result<Vec<CommitFileChange>, git2::Error> {
+        worktree_review::changed_files(worktree_repo, base)
+    }
+
+    pub(super) fn review_summary(
+        worktree_repo: &Repository,
+        base: &ReviewBase,
+    ) -> Result<ReviewSummary, git2::Error> {
+        worktree_review::summary(worktree_repo, base)
+    }
+
+    pub(super) fn review_file_diff(
+        worktree_repo: &Repository,
+        base: &ReviewBase,
+        path: &str,
+    ) -> Result<String, git2::Error> {
+        worktree_review::file_diff(worktree_repo, base, path)
     }
 }
 
@@ -275,6 +326,45 @@ impl AppRepoWorkerOps {
     pub(crate) fn undo_last_commit(repo_path: &Path) -> Result<String, String> {
         let git = InfraGitPort;
         sync::service::undo_last_commit(repo_path, &git)
+    }
+
+    pub(crate) fn create_worktree(
+        repo_path: &Path,
+        request: &NewWorktreeRequest,
+    ) -> Result<worktrees::service::CreateOutcome, String> {
+        let git = InfraGitPort;
+        worktrees::service::create(repo_path, request, &git)
+    }
+
+    pub(crate) fn remove_worktree(repo_path: &Path, name: &str) -> Result<String, String> {
+        let git = InfraGitPort;
+        worktrees::service::remove(repo_path, name, &git)
+    }
+}
+
+/// Per-worktree metadata persistence, the app's seam onto the metadata store.
+pub(super) struct AppWorktreeMetadata;
+
+impl AppWorktreeMetadata {
+    pub(super) fn load(repo: &Repository) -> Result<WorktreeMetadataMap, String> {
+        worktree_metadata::load_for_repo(&Self::repository_key(repo)?)
+    }
+
+    /// Set or clear one worktree's entry, returning the repository's metadata as
+    /// it now stands on disk.
+    pub(super) fn update(
+        repo: &Repository,
+        worktree_key: &str,
+        entry: Option<WorktreeMetadata>,
+    ) -> Result<WorktreeMetadataMap, String> {
+        worktree_metadata::update_entry(&Self::repository_key(repo)?, worktree_key, entry)
+    }
+
+    /// The shared object store, so a tab opened on a linked worktree files its
+    /// metadata under the same repository as the main tab.
+    fn repository_key(repo: &Repository) -> Result<PathBuf, String> {
+        linked_worktrees::repository_key(repo)
+            .map_err(|error| format!("Could not identify repository: {}", error))
     }
 }
 

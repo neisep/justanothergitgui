@@ -213,6 +213,18 @@ impl GitGuiApp {
         self.settings_dialog.focus_custom_scopes_requested = true;
         self.settings_dialog.custom_scopes_input =
             self.settings.commit_message_custom_scopes.join(", ");
+
+        let (name, email) = git2::Config::open_default()
+            .map(|cfg| {
+                (
+                    cfg.get_string("user.name").unwrap_or_default(),
+                    cfg.get_string("user.email").unwrap_or_default(),
+                )
+            })
+            .unwrap_or_default();
+        self.settings_dialog.git_user_name = name;
+        self.settings_dialog.git_user_email = email;
+        self.settings_dialog.git_identity_loaded = true;
     }
 
     pub(super) fn refresh_github_auth_status(&mut self) {

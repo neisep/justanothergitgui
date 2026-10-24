@@ -20,113 +20,28 @@ It focuses on the everyday local workflow first—review changes, stage files, c
 
 ---
 
-
 ## 📸 Screenshots
-
-### Review changes and commit
-
-Filter changed files, review a selected file's diff with line numbers, and stage the files you want to commit. The commit panel holds your summary and optional description.
 
 ![Main window showing staged and unstaged files, a selected file's diff, and a commit draft](software.png)
 
-### Merge conflict editor
-
-Select a conflicted file to compare **Current (ours)** and **Incoming (theirs)** alongside a live **Result** preview. Keep individual lines from either side, take a whole side, combine both, or write a custom resolution with **Edit**. Once every conflict in the file is resolved, **Save Merge** writes the result and stages the file; you can then commit the merge.
-
 ![Merge conflict editor combining selected lines from current and incoming changes in the result preview](merge-manager.png)
-
-Both screenshots show the application running with local demo repositories.
-
----
-
-## About
-
-This project aims to be a simple, fast, user-friendly Git desktop app without depending on the GitHub CLI.
-
-The application combines:
-
-- a native Rust desktop UI with `eframe` / `egui`
-- local Git operations through `git2`
-- direct GitHub API integration for repository publishing and pull request actions
-- secure GitHub session persistence through the operating system keychain / credential store
 
 ---
 
 ## Features
 
-### Repository and file handling
-
-- **Open an existing repository** from disk
-- **View unstaged and staged changes** in a compact table-based left panel
-- **Stage / unstage individual files** or use **Stage All** / **Unstage All**
-- **Drag and drop files between staged and unstaged lists**
-- **Stage or unstage matching files** directly from a filtered list, leaving hidden files untouched
-- **Review diffs** in a built-in changes view with line numbers and optional wrapping
-- **Resolve merge conflicts** with current / incoming panes, individual line selection, custom edits, and a live result preview
-- **See loading / busy indicators** while long-running Git and GitHub operations are in flight
-
-### Commits
-
-- **Write commits** from the right-hand commit panel with a **Summary** field and optional **Body**
-- **Optionally enforce Conventional Commits** from a settings dialog
-- **Autocomplete Conventional Commit prefixes** with inferred scopes from changed paths
-- **Browse commit history** with a visual graph lane
-
-### Branches, tags, and sync
-
-- **Switch branches** from the toolbar
-- **Create a new branch** from inside the app, with **branch name validation** before it's created
-- **Carry uncommitted work onto a new branch** instead of leaving it behind on `main` / `master`
-- **Pull and push** directly from the main toolbar
-- **Prune deleted remote branches** automatically on fetch / pull
-- **See unpushed local commits** directly on the **Push(n)** button
-- **Automatically set upstream** on first push for a new branch
-- **Create and push tags** from `main` / `master`, with an **auto-suggested next semver tag** based on existing tags (e.g. `v1.2.3` → `v1.2.4`, prefix style preserved)
-
-### GitHub integration
-
-- **Publish a local folder to GitHub** as a new repository
-- **Sign in to GitHub with OAuth Device Flow**
-- **Persist GitHub sign-in securely** in the system keychain
-- **Detect existing pull requests after push** and open or create one in the browser
-- **Transport-aware auth** that picks the right credential path for HTTPS vs SSH remotes
-
-### Quality-of-life
-
-- **Keyboard-friendly dialogs and shortcuts** for common actions
-- **View sanitized application logs** from inside the UI when an operation fails, with a **Clear** action to reset them
-
----
-
-## GitHub Workflow
-
-Just Another Git GUI includes a built-in GitHub publishing and pull request flow:
-
-1. **Publish Folder to GitHub** initializes a repository if needed, creates the first commit, creates the GitHub repository, adds `origin`, and pushes `main`
-2. **Sign in to GitHub** uses OAuth Device Flow and stores the session in the OS credential store
-3. **GitHub pushes and pulls inside the app** use that saved device-flow session consistently
-4. **GitHub tag pushes inside the app** use that same saved device-flow session
-5. After you **push a branch**, the app checks whether a pull request already exists
-6. If a PR exists, you get a shortcut to **open it**
-7. If not, you get a shortcut to **create one**
-
-This is implemented directly in Rust without relying on `gh`.
-
-For repositories that do **not** use GitHub, the app still uses `git2` for local commit/branch work and for remote push/pull through the configured non-GitHub transport credentials.
+- Stage, unstage and review diffs, then commit with optional Conventional Commits checks
+- Resolve merge conflicts line by line with a live result preview
+- Switch, create, pull and push branches; browse history with a commit graph
+- Clone repositories and create SemVer tags from `main` / `master`
+- Publish a folder to GitHub, sign in with device flow, and open or create pull requests
+- GitHub sign-in is stored in the OS keychain; no GitHub CLI needed
 
 ---
 
 ## Getting Started
 
-### Prerequisites
-
-- **Rust** 1.85 or later
-- **Git** installed and available on your system
-- On Linux, a working **Secret Service / keychain environment** is recommended for GitHub session persistence
-
-### Build from Source
-
-#### Linux (Debian / Ubuntu / Mint)
+Download the latest build for Linux or Windows from [Releases](https://github.com/neisep/justanothergitgui/releases), or build it yourself with Rust 1.85+:
 
 ```bash
 git clone https://github.com/neisep/justanothergitgui.git
@@ -134,159 +49,21 @@ cd justanothergitgui
 cargo build --release
 ```
 
-Binary:
+The binary ends up in `target/release/`.
 
-```bash
-target/release/justanothergitgui
-```
-
-#### Windows
-
-```powershell
-git clone https://github.com/neisep/justanothergitgui.git
-cd justanothergitgui
-cargo build --release
-```
-
-Binary:
-
-```powershell
-target\release\justanothergitgui.exe
-```
-
----
-
-## Usage
-
-1. **Launch the app**
-2. **Open a repository** or choose **Publish Folder to GitHub...**
-3. Review changes in the **unstaged** and **staged** panels
-4. **Stage files**, inspect diffs, and enter a commit summary with an optional body
-5. **Commit** from the right-side panel
-6. **Switch branches** or create a new one from the toolbar
-7. Use **Pull** / **Push** and PR shortcuts from the top-right area
-8. When the current branch has local commits that are not on the remote yet, the app shows them as **Push(n)**
-9. Use **More > Clone Repository...** to clone a GitHub or other Git remote: paste its HTTPS or SSH clone URL, choose a parent folder, and click **Clone**. The repository opens in a new tab when cloning finishes. Cloning is also available on the welcome screen.
-10. On `main` or `master`, use **More > Create Tag...** to tag the current HEAD commit
-11. If you are working with GitHub, **sign in once** and let the app handle publishing, tag pushes, and PR shortcuts
+For GitHub repositories, use an HTTPS `origin` URL so the app can reuse your GitHub sign-in.
 
 ### Keyboard Shortcuts
 
-- **Ctrl/Cmd+S** stages the selected file, or unstages it when the selected file is already staged
-- **Ctrl/Cmd+Enter** commits staged changes
-- **Ctrl/Cmd+R** or **F5** refreshes repository status
-- **Ctrl/Cmd+L** focuses the commit summary field
-- dialogs focus the first editable field when they open, and **Escape** closes the active dialog
-
-### Commit Message Rules
-
-Use **More > Settings...** to leave commit message validation off or enable **Conventional Commits**.
-
-When Conventional Commits is enabled:
-
-- the first line of the commit message must match the Conventional Commits format
-- invalid commit messages are blocked before commit or repository publish
-- typing a prefix like `fix` shows scope-aware suggestions such as `fix(ui): ` or `fix(ui,settings): `
-- inferred scopes come from changed file paths and the repository / crate name when needed
-- custom scopes from **Settings...** stay available in the suggestion list
-- a plain no-scope option like `fix: ` is always available
-
-### GitHub Sign-In
-
-The app uses **GitHub OAuth Device Flow**:
-
-- the app shows a device code
-- your browser opens GitHub’s approval page
-- after approval, the session is stored in the OS credential store
-
-On restart, the saved GitHub session is loaded automatically if the system keychain allows access.
-
-For GitHub repositories, the in-app push, pull, and tag flow expects `origin` to use an HTTPS GitHub URL so the saved device-flow session can be reused consistently.
-
-If an operation fails, the UI shows a short message and writes sanitized details to the application log. When logs exist, use **More > View Logs** in the app to inspect them.
-
----
-
-## Project Structure
-
-```text
-src/
-├── main.rs              # Native entry point and window setup
-├── app.rs               # Top-level egui app and tab orchestration
-├── app/                 # App shell helpers, actions, dialogs, worker events, app-facing ports
-├── core/                # Reusable publish, sync, and tagging services plus service traits
-├── infra/               # Git, GitHub, browser, and keychain implementations
-├── shared/              # Shared Git/GitHub data types and UI actions
-├── state.rs             # Focused app substates for repo, worktree, inspector, commit, dialogs, and UI
-├── ui/                  # Focused panels, dialogs, and status views
-├── worker.rs            # Background workers for repo and welcome-screen operations
-├── commit_rules.rs      # Commit message rules, validation, and suggestions
-├── settings.rs          # Persisted app settings
-├── logging.rs           # Sanitized in-app logging
-└── git_ops.rs           # Compatibility shim around the newer core/infra flow
-```
-
----
-
-## Architecture at a Glance
-
-For contributors, the codebase is organized in a light layered style:
-
-- `app`, `ui`, and `state` handle the desktop UX and tab/panel state
-- `app/ports.rs` provides app-facing facades for repository reads/writes, worker operations, and GitHub auth
-- `core` contains reusable workflows such as publish, sync, and tag creation behind focused traits
-- `infra` contains the concrete Git, GitHub, browser, and keychain adapters used by those workflows
-- `shared` holds the common data models passed between layers
-
-That keeps UI code relatively small while preserving the existing `git_ops.rs` surface for compatibility.
-
----
-
-## Design Goals
-
-- **Simple local workflow** for common Git tasks
-- **Friendly GitHub integration** for publishing and pull requests
-- **Minimal external runtime dependencies**
-- **Cross-platform desktop UX** with Rust and `egui`
-- **Secure credential storage** instead of plain-text tokens
+| Shortcut | Action |
+| --- | --- |
+| Ctrl/Cmd+S | Stage / unstage the selected file |
+| Ctrl/Cmd+Enter | Commit staged changes |
+| Ctrl/Cmd+R or F5 | Refresh |
+| Ctrl/Cmd+L | Focus the commit summary |
 
 ---
 
 ## Contributing
 
-Contributions are welcome.
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-change`
-3. Make your changes
-4. Run:
-
-```bash
-cargo fmt --all
-cargo build
-cargo test
-```
-
-5. Push your branch and open a pull request
-
----
-
-## Roadmap
-
-Areas that would be valuable to improve next:
-
-- richer remote management (multiple remotes, remote renaming)
-- stashes and cherry-pick support
-- better repository settings and preferences
-- improved history graph for more complex merge topologies
-- release packaging for Linux and Windows
-
----
-
-## Acknowledgements
-
-- [egui](https://github.com/emilk/egui) - immediate mode GUI framework
-- [eframe](https://github.com/emilk/egui/tree/master/crates/eframe) - native app wrapper for egui
-- [git2-rs](https://github.com/rust-lang/git2-rs) - Rust bindings for libgit2
-- [keyring-rs](https://crates.io/crates/keyring) - secure credential storage
-- [GitHub REST API](https://docs.github.com/en/rest) - repository and pull request integration
+Contributions are welcome. Fork the repository, make your changes on a branch, run `cargo fmt --all` and `cargo test`, then open a pull request.
