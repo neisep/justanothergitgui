@@ -230,10 +230,43 @@ pub fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), git2::E
     let refname = format!("refs/heads/{}", branch_name);
     let obj = repo.revparse_single(&refname)?;
 
-    repo.checkout_tree(&obj, Some(git2::build::CheckoutBuilder::new().safe()))?;
+    checkout_tree_safe(repo, &obj)?;
     repo.set_head(&refname)?;
 
     Ok(())
+}
+
+/// Safe checkout of `target`. When local changes block it, the error names the
+/// blocking files instead of libgit2's bare "N conflicts prevent checkout",
+/// which otherwise reads like a merge conflict the user cannot find.
+pub(crate) fn checkout_tree_safe(
+    repo: &Repository,
+    target: &git2::Object<'_>,
+) -> Result<(), git2::Error> {
+    let mut blocking_paths = Vec::new();
+    let result = {
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout
+            .safe()
+            .notify_on(git2::CheckoutNotificationType::CONFLICT)
+            .notify(|_, path, _, _, _| {
+                if let Some(path) = path {
+                    blocking_paths.push(path.display().to_string());
+                }
+                true
+            });
+        repo.checkout_tree(target, Some(&mut checkout))
+    };
+
+    match result {
+        Err(error) if error.code() == git2::ErrorCode::Conflict && !blocking_paths.is_empty() => {
+            Err(git2::Error::from_str(&format!(
+                "uncommitted changes in {} would be overwritten; commit, stash or discard them first",
+                blocking_paths.join(", ")
+            )))
+        }
+        other => other,
+    }
 }
 
 fn checkout_remote_tracking_branch(
@@ -557,7 +590,7 @@ pub(crate) fn repo_root_path(repo: &Repository) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_commit_history, get_current_branch, get_outgoing_commit_count};
+    use super::{get_commit_history, get_current_branch, get_outgoing_commit_count, switch_branch};
     use crate::testutil::{TestRepoDir, commit_all, empty_tree, signature_named};
 
     #[test]
@@ -690,5 +723,45 @@ mod tests {
         repo.set_head_detached(oid).expect("detach head");
 
         assert_eq!(get_outgoing_commit_count(&repo).expect("outgoing count"), 0);
+    }
+
+    #[test]
+    fn switch_branch_names_files_whose_local_changes_block_checkout() {
+        let repo_dir = TestRepoDir::init();
+        let repo = repo_dir.open();
+
+        repo_dir.write("cache.db", "one");
+        repo_dir.write("keep.txt", "keep");
+        let first = commit_all(&repo, "first");
+        let home = repo
+            .head()
+            .expect("head")
+            .shorthand()
+            .expect("name")
+            .to_string();
+        repo.branch(
+            "drop-cache",
+            &repo.find_commit(first).expect("commit"),
+            false,
+        )
+        .expect("branch");
+
+        switch_branch(&repo, "drop-cache").expect("switch to drop-cache");
+        std::fs::remove_file(repo_dir.path().join("cache.db")).expect("remove");
+        commit_all(&repo, "drop cache");
+        switch_branch(&repo, &home).expect("switch home");
+
+        repo_dir.write("cache.db", "local edit");
+        let error = switch_branch(&repo, "drop-cache").expect_err("checkout must be blocked");
+
+        assert!(
+            error.message().contains("cache.db"),
+            "unexpected message: {}",
+            error.message()
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.path().join("cache.db")).expect("read"),
+            "local edit"
+        );
     }
 }
