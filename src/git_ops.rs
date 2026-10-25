@@ -98,7 +98,7 @@ fn parse_link_header_next(header: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
+fn parse_semver_tag(name: &str) -> Option<(Vec<u32>, bool)> {
     crate::infra::git::repository::parse_semver_tag(name)
 }
 
@@ -173,14 +173,18 @@ mod tests {
 
     #[test]
     fn parse_semver_tag_accepts_plain_and_v_prefixed() {
-        assert_eq!(parse_semver_tag("v1.2.3"), Some(([1, 2, 3], true)));
-        assert_eq!(parse_semver_tag("0.10.4"), Some(([0, 10, 4], false)));
+        assert_eq!(parse_semver_tag("v1.2.3"), Some((vec![1, 2, 3], true)));
+        assert_eq!(parse_semver_tag("0.10.4"), Some((vec![0, 10, 4], false)));
+        assert_eq!(
+            parse_semver_tag("v1.0.0.10"),
+            Some((vec![1, 0, 0, 10], true))
+        );
     }
 
     #[test]
     fn parse_semver_tag_rejects_non_semver() {
         assert!(parse_semver_tag("v1.2").is_none());
-        assert!(parse_semver_tag("v1.2.3.4").is_none());
+        assert!(parse_semver_tag("v1.2.3.4.5").is_none());
         assert!(parse_semver_tag("release-5").is_none());
         assert!(parse_semver_tag("v1.2.3-rc1").is_none());
     }
@@ -206,7 +210,7 @@ mod tests {
             "v1.2.9",
             "v1.2.10",
             "v1.2.0",
-            "v9.9.9.9",
+            "v9.9.9.9.9",
             "nightly-2024",
             "v2.0.0-rc1",
         ] {
@@ -246,6 +250,75 @@ mod tests {
         }
 
         assert_eq!(suggest_next_tag(&repo), "3.4.6");
+    }
+
+    #[test]
+    fn suggest_next_tag_considers_three_and_four_part_tags_together() {
+        let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
+        let repo = Repository::open(repo_dir.path()).expect("open repo");
+
+        let sig = git2::Signature::now("tester", "tester@example.com").expect("sig");
+        let tree_id = {
+            let mut index = repo.index().expect("index");
+            index.write_tree().expect("write tree")
+        };
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let commit_id = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+        let commit = repo.find_commit(commit_id).expect("find commit");
+
+        for tag in ["v1.0.0.9", "v1.0.0.10"] {
+            repo.tag_lightweight(tag, commit.as_object(), false)
+                .expect("tag");
+        }
+        assert_eq!(suggest_next_tag(&repo), "v1.0.0.11");
+
+        repo.tag_lightweight("v1.1.0", commit.as_object(), false)
+            .expect("tag");
+        assert_eq!(suggest_next_tag(&repo), "v1.1.1");
+    }
+
+    #[test]
+    fn suggest_next_tag_follows_latest_tagged_commit_over_higher_version() {
+        let repo_dir = TestRepoDir::init_with_origin("git@github.com:octocat/hello-world.git");
+        let repo = Repository::open(repo_dir.path()).expect("open repo");
+
+        let tree_id = {
+            let mut index = repo.index().expect("index");
+            index.write_tree().expect("write tree")
+        };
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let older_sig =
+            git2::Signature::new("tester", "tester@example.com", &git2::Time::new(1_000, 0))
+                .expect("sig");
+        let older_id = repo
+            .commit(Some("HEAD"), &older_sig, &older_sig, "older", &tree, &[])
+            .expect("commit");
+        let older = repo.find_commit(older_id).expect("find commit");
+        let newer_sig =
+            git2::Signature::new("tester", "tester@example.com", &git2::Time::new(2_000, 0))
+                .expect("sig");
+        let newer_id = repo
+            .commit(
+                Some("HEAD"),
+                &newer_sig,
+                &newer_sig,
+                "newer",
+                &tree,
+                &[&older],
+            )
+            .expect("commit");
+        let newer = repo.find_commit(newer_id).expect("find commit");
+
+        for tag in ["v1.0.0", "v0.1.0"] {
+            repo.tag_lightweight(tag, older.as_object(), false)
+                .expect("tag");
+        }
+        repo.tag_lightweight("v0.1.1", newer.as_object(), false)
+            .expect("tag");
+
+        assert_eq!(suggest_next_tag(&repo), "v0.1.2");
     }
 
     #[test]
