@@ -337,11 +337,8 @@ fn fast_forward_branch(
     let target_obj = repo
         .find_object(fetch_commit.id(), None)
         .map_err(|error| format!("Pull fast-forward error: {}", error))?;
-    repo.checkout_tree(
-        &target_obj,
-        Some(git2::build::CheckoutBuilder::new().safe()),
-    )
-    .map_err(|error| format!("Pull checkout error: {}", error))?;
+    crate::infra::git::repository::checkout_tree_safe(repo, &target_obj)
+        .map_err(|error| format!("Pull checkout error: {}", error))?;
 
     let mut branch_ref = repo
         .find_reference(&refname)
