@@ -106,20 +106,31 @@ pub fn suggest_next_tag(repo: &Repository) -> String {
         return "v1.0.0".to_string();
     };
 
-    let mut best: Option<([u32; 3], bool)> = None;
+    // The latest tag is the one on the newest commit; the version breaks ties
+    // between tags on the same commit.
+    let mut best: Option<(i64, Vec<u32>, bool)> = None;
     for name in tag_names.iter().flatten() {
-        if let Some((version, has_v_prefix)) = parse_semver_tag(name) {
-            match best {
-                Some((current, _)) if current >= version => {}
-                _ => best = Some((version, has_v_prefix)),
-            }
+        let Some((version, has_v_prefix)) = parse_semver_tag(name) else {
+            continue;
+        };
+        let tagged_at = repo
+            .find_reference(&format!("refs/tags/{}", name))
+            .and_then(|reference| reference.peel_to_commit())
+            .map_or(i64::MIN, |commit| commit.time().seconds());
+        match &best {
+            Some((current_at, current, _)) if (*current_at, current) >= (tagged_at, &version) => {}
+            _ => best = Some((tagged_at, version, has_v_prefix)),
         }
     }
 
     match best {
-        Some(([major, minor, patch], has_v_prefix)) => {
+        Some((_, mut version, has_v_prefix)) => {
+            if let Some(last) = version.last_mut() {
+                *last = last.saturating_add(1);
+            }
             let prefix = if has_v_prefix { "v" } else { "" };
-            format!("{}{}.{}.{}", prefix, major, minor, patch.saturating_add(1))
+            let numbers: Vec<String> = version.iter().map(u32::to_string).collect();
+            format!("{}{}", prefix, numbers.join("."))
         }
         None => "v1.0.0".to_string(),
     }
@@ -522,19 +533,20 @@ fn symbolic_head_branch_name(repo: &Repository) -> Option<String> {
     target.strip_prefix("refs/heads/").map(ToOwned::to_owned)
 }
 
-pub(crate) fn parse_semver_tag(name: &str) -> Option<([u32; 3], bool)> {
+/// Parses `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH.BUILD`, optionally `v`-prefixed.
+pub(crate) fn parse_semver_tag(name: &str) -> Option<(Vec<u32>, bool)> {
     let (rest, has_v_prefix) = match name.strip_prefix('v') {
         Some(rest) => (rest, true),
         None => (name, false),
     };
-    let mut parts = rest.split('.');
-    let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts.next()?.parse::<u32>().ok()?;
-    let patch = parts.next()?.parse::<u32>().ok()?;
-    if parts.next().is_some() {
+    let parts = rest
+        .split('.')
+        .map(|part| part.parse::<u32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if !(3..=4).contains(&parts.len()) {
         return None;
     }
-    Some(([major, minor, patch], has_v_prefix))
+    Some((parts, has_v_prefix))
 }
 
 pub(crate) fn repo_root_path(repo: &Repository) -> PathBuf {
